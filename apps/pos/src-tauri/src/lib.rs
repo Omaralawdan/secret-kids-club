@@ -14,6 +14,12 @@ pub fn run() {
             sql: include_str!("../migrations/001_local_schema_migration.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 2,
+            description: "add_pricing_discounts_and_memberships",
+            sql: include_str!("../migrations/002_pricing_schema.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()
