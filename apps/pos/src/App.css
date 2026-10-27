@@ -1,0 +1,247 @@
+:root {
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", sans-serif;
+  color: #20283a;
+  background: #f5f6fa;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+button {
+  font: inherit;
+}
+
+.app-shell {
+  width: min(100% - 40px, 960px);
+  margin: 0 auto;
+  padding: 28px 0;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-bottom: 26px;
+  border-bottom: 1px solid #e2e5ed;
+}
+
+.brand-mark {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
+  color: white;
+  background: #a51f35;
+  font-size: 17px;
+  font-weight: 800;
+}
+
+.topbar h1,
+.topbar p,
+.welcome h2,
+.welcome p,
+.status-card h3,
+.status-card p {
+  margin: 0;
+}
+
+.topbar h1 {
+  font-size: 18px;
+  letter-spacing: -0.4px;
+}
+
+.topbar p {
+  margin-top: 4px;
+  color: #727b8d;
+  font-size: 13px;
+}
+
+.environment-label {
+  margin-left: auto;
+  padding: 7px 12px;
+  border: 1px solid #e2e5ed;
+  border-radius: 9px;
+  color: #5c6475;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.welcome {
+  padding: 42px 0 24px;
+}
+
+.eyebrow {
+  margin-bottom: 10px !important;
+  color: #a51f35;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 1.5px;
+}
+
+.welcome h2 {
+  font-size: clamp(26px, 4vw, 36px);
+  letter-spacing: -1px;
+}
+
+.welcome > p:last-child {
+  margin-top: 10px;
+  max-width: 560px;
+  color: #727b8d;
+  line-height: 1.6;
+}
+
+.status-card {
+  padding: 26px;
+  border: 1px solid #e2e5ed;
+  border-radius: 18px;
+  background: white;
+  box-shadow: 0 8px 28px rgb(32 40 58 / 4%);
+}
+
+.status-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.status-card h3 {
+  font-size: 17px;
+}
+
+.status-heading p {
+  margin-top: 6px;
+  color: #727b8d;
+  font-size: 13px;
+}
+
+.status-pill {
+  padding: 7px 11px;
+  border-radius: 20px;
+  background: #f0f1f5;
+  color: #5d6575;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.status-pill.connected {
+  background: #e7f7ee;
+  color: #187447;
+}
+
+.status-pill.unavailable {
+  background: #fff0f0;
+  color: #a51f35;
+}
+
+.metric {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 28px;
+  padding: 18px;
+  border-radius: 12px;
+  background: #f7f8fb;
+}
+
+.metric span {
+  color: #727b8d;
+  font-size: 14px;
+}
+
+.metric strong {
+  font-size: 28px;
+}
+
+.detail,
+.error-message {
+  margin-top: 18px !important;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.detail {
+  color: #727b8d;
+}
+
+.error-message {
+  color: #a51f35;
+  overflow-wrap: anywhere;
+}
+
+.retry-button {
+  margin-top: 22px;
+  padding: 11px 16px;
+  border: 0;
+  border-radius: 10px;
+  color: white;
+  background: #a51f35;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.retry-button:hover {
+  background: #84182a;
+}
+
+.retry-button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+details {
+  margin-top: 20px;
+  font-size: 13px;
+}
+
+summary {
+  cursor: pointer;
+  color: #454e60;
+  font-weight: 700;
+}
+
+.table-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+  padding-left: 18px;
+  color: #626b7d;
+}
+
+footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 28px;
+  color: #8a91a0;
+  font-size: 11px;
+}
+
+@media (max-width: 520px) {
+  .app-shell {
+    width: min(100% - 24px, 960px);
+    padding-top: 16px;
+  }
+
+  .status-card {
+    padding: 18px;
+  }
+
+  footer {
+    flex-direction: column;
+  }
+}
