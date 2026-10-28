@@ -20,6 +20,14 @@ pub fn run() {
             sql: include_str!("../migrations/002_pricing_schema.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 3,
+            description: "customer_profiles_and_membership_usage",
+            sql: include_str!(
+                "../migrations/003_customer_profiles_and_membership_usage.sql"
+            ),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()

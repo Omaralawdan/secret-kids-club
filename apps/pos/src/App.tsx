@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Database from "@tauri-apps/plugin-sql";
 import "./App.css";
+import { t, useLanguage, type Language } from "./i18n";
 
 type PricingRule = {
   id: string;
@@ -14,19 +15,22 @@ type ChildDraft = {
   key: string;
   name: string;
   ruleId: string;
+  durationHours: number;
 };
 
-type Screen = "reception" | "pricing";
+type Screen = "reception" | "pricing" | "settings";
 
 const makeId = () => crypto.randomUUID();
 const now = () => new Date().toISOString();
-const money = (minor: number) =>
-  new Intl.NumberFormat("en-EG", {
+const money = (minor: number, language: Language = "en") =>
+  new Intl.NumberFormat(language === "ar" ? "ar-EG" : "en-EG", {
     style: "currency",
     currency: "EGP",
   }).format(minor / 100);
 
 export default function App() {
+  const { language, setLanguage } = useLanguage();
+  const tr = (key: string) => t(language, key);
   const [db, setDb] = useState<Database | null>(null);
   const [databaseStatus, setDatabaseStatus] = useState("Connecting");
   const [error, setError] = useState("");
@@ -40,7 +44,7 @@ export default function App() {
   const [guardianRelation, setGuardianRelation] = useState("Mother");
   const [guardianPhone, setGuardianPhone] = useState("");
   const [children, setChildren] = useState<ChildDraft[]>([
-    { key: makeId(), name: "", ruleId: "" },
+    { key: makeId(), name: "", ruleId: "", durationHours: 1 },
   ]);
 
   const [ruleName, setRuleName] = useState("");
@@ -88,18 +92,26 @@ export default function App() {
     };
   }, [refreshData]);
 
-  function updateChild(key: string, field: "name" | "ruleId", value: string) {
+  function updateChild(
+    key: string,
+    field: "name" | "ruleId" | "durationHours",
+    value: string | number
+  ) {
     setChildren((current) =>
-      current.map((child) =>
-        child.key === key ? { ...child, [field]: value } : child
-      )
+      current.map((child) => {
+        if (child.key !== key) return child;
+        if (field === "durationHours") {
+          return { ...child, durationHours: Number(value) };
+        }
+        return { ...child, [field]: value };
+      })
     );
   }
 
   function addChild() {
     setChildren((current) => [
       ...current,
-      { key: makeId(), name: "", ruleId: "" },
+      { key: makeId(), name: "", ruleId: "", durationHours: 1 },
     ]);
   }
 
@@ -112,8 +124,13 @@ export default function App() {
   function priceFor(child: ChildDraft) {
     const rule = rules.find((item) => item.id === child.ruleId);
     if (!rule) return 0;
-    // Hourly prices are an initial one-hour estimate. Checkout timing will
-    // determine the final amount when the checkout workflow is implemented.
+
+    // Only hourly rules multiply by the booked duration.
+    // Fixed and offer prices remain unchanged.
+    if (rule.pricing_type === "hourly") {
+      return Math.round(rule.amount_minor * child.durationHours);
+    }
+
     return rule.amount_minor;
   }
 
@@ -126,7 +143,7 @@ export default function App() {
 
     const amount = Number(ruleAmount);
     if (!ruleName.trim() || !Number.isFinite(amount) || amount < 0) {
-      setError("Enter a rule name and a valid non-negative price.");
+      setError(tr("Enter a rule name and a valid non-negative price."));
       return;
     }
 
@@ -146,7 +163,7 @@ export default function App() {
       setRuleName("");
       setRuleAmount("");
       await refreshData(db);
-      setMessage("Pricing rule saved.");
+      setMessage(tr("Pricing rule saved."));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -162,17 +179,17 @@ export default function App() {
     }));
 
     if (!guardianName.trim() || !guardianPhone.trim()) {
-      setError("Enter the guardian's name and phone number.");
+      setError(tr("Enter the guardian's name and phone number."));
       return;
     }
 
     if (cleanChildren.some((child) => !child.name || !child.ruleId)) {
-      setError("Enter each child's name and select a pricing rule for every child.");
+      setError(tr("Enter each child's name and select a pricing rule for every child."));
       return;
     }
 
     if (cleanChildren.some((child) => !rules.some((rule) => rule.id === child.ruleId))) {
-      setError("A selected pricing rule is no longer available. Refresh and try again.");
+      setError(tr("A selected pricing rule is no longer available. Refresh and try again."));
       return;
     }
 
@@ -250,7 +267,7 @@ export default function App() {
 
       for (const row of childRows) {
         const selectedRule = rules.find((rule) => rule.id === row.child.ruleId);
-        if (!selectedRule) throw new Error("Pricing rule not found.");
+        if (!selectedRule) throw new Error(tr("Pricing rule not found."));
 
         await db.execute(
           "INSERT INTO local_visit_children (id, visit_id, child_id, child_name_snapshot) VALUES (?, ?, NULL, ?)",
@@ -269,13 +286,23 @@ export default function App() {
             row.id,
             selectedRule.pricing_type,
             selectedRule.id,
-            selectedRule.amount_minor,
-            selectedRule.amount_minor,
-            selectedRule.pricing_type === "hourly" ? 60 : 0,
+            priceFor(row.child),
+            priceFor(row.child),
+            selectedRule.pricing_type === "hourly"
+              ? Math.round(row.child.durationHours * 60)
+              : 0,
             JSON.stringify({
               ruleName: selectedRule.name,
               pricingType: selectedRule.pricing_type,
               initialEstimate: selectedRule.pricing_type === "hourly",
+              bookedDurationMinutes:
+                selectedRule.pricing_type === "hourly"
+                  ? Math.round(row.child.durationHours * 60)
+                  : null,
+              hourlyRateMinor:
+                selectedRule.pricing_type === "hourly"
+                  ? selectedRule.amount_minor
+                  : null,
             }),
             timestamp,
           ]
@@ -286,7 +313,9 @@ export default function App() {
       setGuardianName("");
       setGuardianPhone("");
       setGuardianRelation("Mother");
-      setChildren([{ key: makeId(), name: "", ruleId: "" }]);
+      setChildren([
+        { key: makeId(), name: "", ruleId: "", durationHours: 1 },
+      ]);
       setMessage(`Visit #${visitNumber} saved. Initial total: ${money(amountBeforeDiscount)}.`);
     } catch (err) {
       // Best-effort cleanup if a later insert fails. This is not a substitute
@@ -320,72 +349,103 @@ export default function App() {
         <div className="brand-mark">SK</div>
         <div className="brand-copy">
           <h1>Secret Kids Club</h1>
-          <p>Point of Sale · Local System</p>
+          <p>{tr('Point of Sale · Local System')}</p>
         </div>
         <span className={`connection ${ready ? "online" : "offline"}`}>
-          {databaseStatus}
+          {tr(databaseStatus)}
         </span>
       </header>
 
       <nav className="nav-tabs">
         <button className={screen === "reception" ? "active" : ""} onClick={() => setScreen("reception")}>
-          Reception
+          {tr('Reception')}
         </button>
         <button className={screen === "pricing" ? "active" : ""} onClick={() => setScreen("pricing")}>
-          Pricing setup
+          {tr('Pricing setup')}
+        </button>
+        <button className={screen === "settings" ? "active" : ""} onClick={() => setScreen("settings")}>
+          {tr("Settings")}
         </button>
       </nav>
 
       <section className="page-heading">
-        <p className="eyebrow">CASHIER WORKSPACE</p>
-        <h2>{screen === "reception" ? "New visit" : "Pricing rules"}</h2>
+        <p className="eyebrow">{tr('CASHIER WORKSPACE')}</p>
+        <h2>{screen === "reception" ? tr("New visit") : screen === "pricing" ? tr("Pricing rules") : tr("Settings")}</h2>
         <p>
           {screen === "reception"
-            ? "Register a guardian and each child, then review their individual pricing."
-            : "Configure the prices available to cashiers. No prices are preloaded."}
+            ? tr("Register a guardian and each child, then review their individual pricing.")
+            : screen === "pricing"
+              ? tr("Configure the prices available to cashiers. No prices are preloaded.")
+              : tr("Choose the language used throughout the application.")}
         </p>
       </section>
 
       {error && <div className="notice error" role="alert">{error}</div>}
       {message && <div className="notice success" role="status">{message}</div>}
 
-      {!ready ? (
-        <section className="panel">
-          <h3>Local database</h3>
-          <p>{databaseStatus === "Connecting" ? "Connecting to SQLite…" : error || "The database is unavailable."}</p>
+      {!ready && screen !== "settings" && (
+        <section className="panel database-warning" role="status">
+          <h3>{tr("Local database")}</h3>
+          <p>
+            {databaseStatus === "Connecting"
+              ? tr("Connecting to SQLite…")
+              : tr("The database is unavailable.")}
+          </p>
+          <p>
+            {tr("The screens are available, but saving requires the app database connection.")}
+          </p>
+        </section>
+      )}
+
+      {screen === "settings" ? (
+        <section className="panel settings-panel">
+          <div className="panel-title">
+            <div><span className="step">01</span><h3>{tr("Settings")}</h3></div>
+          </div>
+          <p className="muted intro">{tr("Choose the language used throughout the application.")}</p>
+          <label>
+            {tr("Language")}
+            <select
+              value={language}
+              onChange={(event) => setLanguage(event.target.value as Language)}
+            >
+              <option value="en">{tr("English")}</option>
+              <option value="ar">{tr("Arabic")}</option>
+            </select>
+          </label>
         </section>
       ) : screen === "reception" ? (
         <form className="workspace" onSubmit={createVisit}>
           <section className="panel">
             <div className="panel-title">
-              <div><span className="step">01</span><h3>Guardian information</h3></div>
-              <span className="muted">Required</span>
+              <div><span className="step">01</span><h3>{tr('Guardian information')}</h3></div>
+              <span className="muted">{tr('Required')}</span>
             </div>
             <div className="form-grid">
-              <label>Guardian full name
-                <input value={guardianName} onChange={(e) => setGuardianName(e.target.value)} required placeholder="Full name" />
+              <label>{tr('Guardian full name')}
+                <input value={guardianName} onChange={(e) => setGuardianName(e.target.value)} required placeholder={tr("Full name")} />
               </label>
-              <label>Relationship
+              <label>{tr('Relationship')}
                 <select value={guardianRelation} onChange={(e) => setGuardianRelation(e.target.value)}>
-                  {["Mother", "Father", "Guardian", "Relative", "Other"].map((item) => <option key={item}>{item}</option>)}
+                  {["Mother", "Father", "Guardian", "Relative", "Other"].map((item) => <option key={item} value={item}>{tr(item)}</option>)}
                 </select>
               </label>
-              <label className="full-width">Phone number
-                <input value={guardianPhone} onChange={(e) => setGuardianPhone(e.target.value)} required inputMode="tel" placeholder="Guardian phone" />
+              <label className="full-width">{tr('Phone number')}
+                <input value={guardianPhone} onChange={(e) => setGuardianPhone(e.target.value)} required inputMode="tel" placeholder={tr("Guardian phone")} />
               </label>
             </div>
           </section>
 
           <section className="panel">
             <div className="panel-title">
-              <div><span className="step">02</span><h3>Children and pricing</h3></div>
-              <span className="muted">{children.length} child{children.length === 1 ? "" : "ren"}</span>
+              <div><span className="step">02</span><h3>{tr('Children and pricing')}</h3></div>
+              <span className="muted">{children.length} {tr(children.length === 1 ? "child" : "children")}</span>
             </div>
             {rules.length === 0 && (
               <div className="empty-state">
-                <strong>No pricing rules configured yet.</strong>
-                <p>Open Pricing setup and add your actual prices before registering a visit.</p>
-                <button type="button" className="secondary-button" onClick={() => setScreen("pricing")}>Set up pricing</button>
+                <strong>{tr("No pricing rules configured yet.")}</strong>
+                <p>{tr("Open Pricing setup and add your actual prices before registering a visit.")}</p>
+                <button type="button" className="secondary-button" onClick={() => setScreen("pricing")}>{tr("Set up pricing")}</button>
               </div>
             )}
             <div className="children-list">
@@ -394,69 +454,93 @@ export default function App() {
                 return (
                   <div className="child-row" key={child.key}>
                     <div className="child-number">{index + 1}</div>
-                    <label className="child-name">Child name
-                      <input value={child.name} onChange={(e) => updateChild(child.key, "name", e.target.value)} required placeholder="Child's name" />
+                    <label className="child-name">{tr('Child name')}
+                      <input value={child.name} onChange={(e) => updateChild(child.key, "name", e.target.value)} required placeholder={tr("Child's name")} />
                     </label>
-                    <label className="child-pricing">Pricing rule
+                    <label className="child-pricing">{tr('Pricing rule')}
                       <select value={child.ruleId} onChange={(e) => updateChild(child.key, "ruleId", e.target.value)} required>
-                        <option value="">Select price</option>
-                        {rules.map((rule) => <option key={rule.id} value={rule.id}>{rule.name} · {rule.pricing_type}</option>)}
+                        <option value="">{tr('Select price')}</option>
+                        {rules.map((rule) => <option key={rule.id} value={rule.id}>{rule.name} · {tr(rule.pricing_type)}</option>)}
                       </select>
+                      {selected?.pricing_type === "hourly" && (
+                        <div className="booked-hours-field">
+                          <span>{language === "ar" ? "عدد الساعات المحجوزة" : "Booked hours"}</span>
+                          <input
+                            type="number"
+                            min="0.5"
+                            max="12"
+                            step="0.5"
+                            required
+                            value={child.durationHours}
+                            onChange={(e) =>
+                              updateChild(
+                                child.key,
+                                "durationHours",
+                                Number(e.target.value)
+                              )
+                            }
+                          />
+                        </div>
+                      )}
                     </label>
                     <div className="child-price">
-                      <span>Price estimate</span>
-                      <strong>{selected ? money(priceFor(child)) : "—"}</strong>
+                      <span>{tr('Price estimate')}</span>
+                      <strong>{selected ? money(priceFor(child), language) : "—"}</strong>
                     </div>
                     <button type="button" className="remove-button" onClick={() => removeChild(child.key)} disabled={children.length === 1} aria-label={`Remove child ${index + 1}`}>×</button>
                   </div>
                 );
               })}
             </div>
-            <button type="button" className="secondary-button add-child" onClick={addChild}>+ Add another child</button>
+            <button type="button" className="secondary-button add-child" onClick={addChild}>{`+ ${tr("Add another child")}`}</button>
           </section>
 
           <section className="summary-panel">
             <div>
-              <span className="muted">Initial visit total</span>
-              <strong className="total">{money(total)}</strong>
-              <p>Before discounts · Hourly prices start with a one-hour estimate</p>
+              <span className="muted">{tr('Initial visit total')}</span>
+              <strong className="total">{money(total, language)}</strong>
+              <p>
+                {language === "ar"
+                  ? "قبل الخصومات · السعر بالساعة محسوب حسب مدة الحجز"
+                  : "Before discounts · Hourly pricing uses the booked duration"}
+              </p>
             </div>
-            <button className="primary-button" type="submit" disabled={saving || rules.length === 0}>
-              {saving ? "Saving visit…" : "Confirm check-in"}
+            <button className="primary-button" type="submit" disabled={!ready || saving || rules.length === 0}>
+              {saving ? tr("Saving visit…") : tr("Confirm check-in")}
             </button>
           </section>
         </form>
       ) : (
         <section className="panel">
           <div className="panel-title">
-            <div><span className="step">01</span><h3>Add a pricing rule</h3></div>
+            <div><span className="step">01</span><h3>{tr('Add a pricing rule')}</h3></div>
           </div>
-          <p className="muted intro">Enter the real price used by your club. Prices are stored in EGP.</p>
+          <p className="muted intro">{tr("Enter the real price used by your club. Prices are stored in EGP.")}</p>
           <form className="form-grid" onSubmit={createRule}>
-            <label>Rule name
-              <input value={ruleName} onChange={(e) => setRuleName(e.target.value)} required placeholder="e.g. Standard entry" />
+            <label>{tr('Rule name')}
+              <input value={ruleName} onChange={(e) => setRuleName(e.target.value)} required placeholder={tr("e.g. Standard entry")} />
             </label>
-            <label>Pricing type
+            <label>{tr('Pricing type')}
               <select value={ruleType} onChange={(e) => setRuleType(e.target.value as PricingRule["pricing_type"])}>
-                <option value="fixed">Fixed price</option>
-                <option value="hourly">Hourly (first-hour estimate)</option>
-                <option value="offer">Offer (fixed price)</option>
+                <option value="fixed">{tr("Fixed price")}</option>
+                <option value="hourly">{tr("Hourly (first-hour estimate)")}</option>
+                <option value="offer">{tr("Offer (fixed price)")}</option>
               </select>
             </label>
-            <label>Price in EGP
-              <input type="number" min="0" step="0.01" value={ruleAmount} onChange={(e) => setRuleAmount(e.target.value)} required placeholder="Enter actual price" />
+            <label>{tr('Price in EGP')}
+              <input type="number" min="0" step="0.01" value={ruleAmount} onChange={(e) => setRuleAmount(e.target.value)} required placeholder={tr("Enter actual price")} />
             </label>
             <div className="full-width">
-              <button className="primary-button" type="submit">Save pricing rule</button>
+              <button className="primary-button" type="submit" disabled={!ready}>{tr('Save pricing rule')}</button>
             </div>
           </form>
 
           <div className="rule-list">
-            <h3>Active pricing rules</h3>
-            {rules.length === 0 ? <p className="muted">No rules configured.</p> : rules.map((rule) => (
+            <h3>{tr('Active pricing rules')}</h3>
+            {rules.length === 0 ? <p className="muted">{tr('No rules configured.')}</p> : rules.map((rule) => (
               <div className="rule-item" key={rule.id}>
-                <div><strong>{rule.name}</strong><span>{rule.pricing_type}</span></div>
-                <strong>{money(rule.amount_minor)}</strong>
+                <div><strong>{rule.name}</strong><span>{tr(rule.pricing_type)}</span></div>
+                <strong>{money(rule.amount_minor, language)}</strong>
               </div>
             ))}
           </div>
@@ -465,7 +549,7 @@ export default function App() {
 
       <footer>
         <span>Secret Kids Club POS</span>
-        <span>{visits} saved visit{visits === 1 ? "" : "s"} · Local SQLite</span>
+        <span>{visits} {tr(visits === 1 ? "saved visit" : "saved visits")} · {tr("Local SQLite")}</span>
       </footer>
     </main>
   );

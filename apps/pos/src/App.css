@@ -82,3 +82,27 @@ footer { display: flex; justify-content: space-between; gap: 12px; margin-top: 2
   .summary-panel .primary-button { width: 100%; }
   footer { flex-direction: column; }
 }
+
+/* Language direction and settings */
+html[dir="rtl"] body {
+  direction: rtl;
+  text-align: right;
+}
+
+html[dir="rtl"] .connection {
+  margin-left: 0;
+  margin-right: auto;
+}
+
+html[dir="rtl"] input,
+html[dir="rtl"] select {
+  text-align: right;
+}
+
+.settings-panel {
+  max-width: 680px;
+}
+
+.settings-panel label {
+  max-width: 420px;
+}
