@@ -876,7 +876,7 @@ export default function App() {
                       </select>
                     </label>
                     <label className="booked-hours-field">
-                      {ar ? "مدة الحجز لكل طفل (بالساعات)" : "Booked duration per child (hours)"}
+                      {ar ? "مدة الحجز لكل طفل (بالدقائق)" : "Booked duration per child (minutes)"}
                       <input
                         type="number"
                         min="25"
