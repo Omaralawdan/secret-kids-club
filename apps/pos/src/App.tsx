@@ -181,6 +181,7 @@ export default function App() {
   const [ruleType, setRuleType] =
     useState<PricingRule["pricing_type"]>("fixed");
   const [ruleAmount, setRuleAmount] = useState("");
+  const [ruleDurationHours, setRuleDurationHours] = useState("1");
 
   const refreshData = useCallback(async (connection: Database) => {
     const loadedRules = await connection.select<PricingRule[]>(
@@ -336,7 +337,7 @@ export default function App() {
     if (!db) return;
 
     const amount = Number(ruleAmount);
-    if (!ruleName.trim() || !Number.isFinite(amount) || amount < 0) {
+    if (!ruleName.trim() || !Number.isFinite(amount) || amount < 0 || !Number.isFinite(Number(ruleDurationHours)) || Number(ruleDurationHours) < 25/60 || Number(ruleDurationHours) > 12) {
       setError(tr("Enter a rule name and a valid non-negative price."));
       return;
     }
@@ -349,10 +350,12 @@ export default function App() {
         name: ruleName.trim(),
         pricingType: ruleType,
         amountMinor: Math.round(amount * 100),
+        durationMinutes: Math.round(Number(ruleDurationHours) * 60),
       });
 
       setRuleName("");
       setRuleAmount("");
+      setRuleDurationHours("1");
       await refreshData(db);
       setMessage(tr("Pricing rule saved."));
     } catch (err) {
@@ -943,6 +946,7 @@ export default function App() {
             <label>{tr("Price in EGP")}
               <input type="number" min="0" step="0.01" value={ruleAmount} onChange={(e) => setRuleAmount(e.target.value)} required placeholder={tr("Enter actual price")} />
             </label>
+            <label>{ar ? "مدة الحجز الافتراضية (بالساعات)" : "Default booking duration (hours)"}<input type="number" min="0.42" max="12" step="0.25" value={ruleDurationHours} onChange={e=>setRuleDurationHours(e.target.value)} required /></label>
             <div className="full-width">
               <button className="primary-button" type="submit" disabled={!ready}>{tr("Save pricing rule")}</button>
             </div>
@@ -951,8 +955,9 @@ export default function App() {
             <h3>{tr("Active pricing rules")}</h3>
             {rules.length === 0 ? <p className="muted">{tr("No rules configured.")}</p> : rules.map((rule) => (
               <div className="rule-item" key={rule.id}>
-                <div><strong>{rule.name}</strong><span>{tr(rule.pricing_type)}</span></div>
+                <div><strong>{rule.name}</strong><span>{tr(rule.pricing_type)}</span><span>{ar ? "المدة الافتراضية" : "Default duration"}: {formatDuration((rule as PricingRule & {duration_minutes?:number}).duration_minutes || 60, language)}</span></div>
                 <strong>{money(rule.amount_minor, language)}</strong>
+                {isAdmin && <button type="button" className="remove-button" onClick={()=>{if(!window.confirm(ar?"حذف/إيقاف قاعدة التسعير؟ إذا كانت مستخدمة في زيارات سابقة فسيتم إيقافها فقط للحفاظ على السجلات.":"Remove this pricing rule? If used in past visits, it will be deactivated to preserve history."))return;void invoke("delete_pricing_rule",{ruleId:rule.id}).then(()=>db&&refreshData(db)).then(()=>setMessage(ar?"تم حذف/إيقاف التسعير.":"Pricing rule removed.")).catch(e=>setError(String(e)));}}>{ar?"حذف":"Remove"}</button>}
               </div>
             ))}
           </div>
