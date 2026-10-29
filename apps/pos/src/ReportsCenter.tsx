@@ -85,7 +85,7 @@ function dateValue(value: string | null) {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString("ar-EG");
 }
 
-export default function ReportsCenter({ db, language }: { db: Database | null; language: "ar" | "en" }) {
+export default function ReportsCenter({ db, language, isAdmin = false, canManage = false }: { db: Database | null; language: "ar" | "en"; isAdmin?: boolean; canManage?: boolean }) {
   const [reportKey, setReportKey] = useState<ReportKey>("visits");
   const [selectedFields, setSelectedFields] = useState<string[]>(defaultFields.visits);
   const [startDate, setStartDate] = useState("");
@@ -100,6 +100,7 @@ export default function ReportsCenter({ db, language }: { db: Database | null; l
   const [savedTemplates, setSavedTemplates] = useState<{name:string; key:ReportKey; fields:string[]}[]>(() => {
     try { return JSON.parse(localStorage.getItem("skc.reportTemplates") || "[]"); } catch { return []; }
   });
+  const availableReports = reports.filter(r => (r.key !== "users" || isAdmin) && (!["shifts","audit"].includes(r.key) || canManage));
   const current = reports.find(r => r.key === reportKey)!;
 
   useEffect(() => {
@@ -110,6 +111,7 @@ export default function ReportsCenter({ db, language }: { db: Database | null; l
   }, [reportKey]);
 
   async function runReport() {
+    if (!availableReports.some(r => r.key === reportKey)) { setError("ليس لديك صلاحية لعرض هذا التقرير."); return; }
     if (!db) { setError("قاعدة البيانات غير متصلة."); return; }
     setLoading(true); setError("");
     try {
@@ -217,7 +219,7 @@ export default function ReportsCenter({ db, language }: { db: Database | null; l
     <div className="panel-title"><div><span className="step">05</span><h3>مركز التقارير والتصدير</h3></div><span className="muted">تقارير قابلة للتخصيص</span></div>
     <p className="muted intro">اختار نوع التقرير والفترة والأعمدة والفلاتر، واعرض معاينة قبل التصدير. التقارير تعرض البيانات المحفوظة فعليًا فقط.</p>
     <div className="report-controls">
-      <label>نوع التقرير<select value={reportKey} onChange={e=>setReportKey(e.target.value as ReportKey)}>{reports.map(r=><option key={r.key} value={r.key}>{r.label}</option>)}</select></label>
+      <label>نوع التقرير<select value={reportKey} onChange={e=>setReportKey(e.target.value as ReportKey)}>{availableReports.map(r=><option key={r.key} value={r.key}>{r.label}</option>)}</select></label>
       <label>من تاريخ<input type="date" value={startDate} onChange={e=>setStartDate(e.target.value)}/></label>
       <label>إلى تاريخ<input type="date" value={endDate} onChange={e=>setEndDate(e.target.value)}/></label>
       <label>بحث داخل النتائج<input value={search} onChange={e=>setSearch(e.target.value)} placeholder="اسم، تليفون، أو كلمة..."/></label>
