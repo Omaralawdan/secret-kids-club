@@ -31,9 +31,15 @@ fn database_path(app: &tauri::AppHandle) -> Result<PathBuf, Box<dyn Error>> {
     .into())
 }
 
-fn checkout_transaction(
+fn checkout_transaction(path: &Path, visit_child_id: &str) -> Result<(), Box<dyn Error>> {
+    checkout_transaction_with_overtime(path, visit_child_id, true, None)
+}
+
+fn checkout_transaction_with_overtime(
     path: &Path,
     visit_child_id: &str,
+    overtime_collected: bool,
+    overtime_collection_note: Option<String>,
 ) -> Result<(), Box<dyn Error>> {
     let mut connection = Connection::open_with_flags(
         path,
@@ -212,6 +218,8 @@ fn checkout_transaction(
         SET overtime_minutes = ?,
             overtime_amount_minor = ?,
             final_amount_minor = ?,
+            overtime_collected = ?,
+            overtime_collection_note = ?,
             calculation_json = ?
         WHERE visit_child_id = ?
         "#,
@@ -219,6 +227,8 @@ fn checkout_transaction(
             overtime_minutes,
             overtime_amount,
             final_child_amount,
+            if overtime_amount == 0 || overtime_collected { 1 } else { 0 },
+            if overtime_amount > 0 && !overtime_collected { overtime_collection_note.as_deref().unwrap_or("").trim() } else { "" },
             serde_json::to_string(&calculation)?,
             visit_child_id
         ],
@@ -292,18 +302,21 @@ fn checkout_transaction(
 fn checkout_child(
     app: tauri::AppHandle,
     visit_child_id: String,
+    overtime_collected: bool,
+    overtime_collection_note: Option<String>,
 ) -> Result<(), String> {
     if visit_child_id.trim().is_empty() {
         return Err("Missing child visit ID.".to_string());
     }
 
+    if !overtime_collected && overtime_collection_note.as_deref().unwrap_or("").trim().is_empty() { return Err("يجب تسجيل سبب عدم تحصيل الوقت الإضافي.".into()); }
     // Authorize the operation in the command layer as well as through database guards.
     let db = auth_db(&app)?;
     require_role(&db, &["admin", "manager", "cashier"])?;
     drop(db);
 
     let path = database_path(&app).map_err(|error| error.to_string())?;
-    checkout_transaction(&path, &visit_child_id).map_err(|error| error.to_string())
+    checkout_transaction_with_overtime(&path, &visit_child_id, overtime_collected, overtime_collection_note).map_err(|error| error.to_string())
 }
 
 
