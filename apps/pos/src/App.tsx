@@ -304,7 +304,7 @@ export default function App() {
         }
         if (field === "ruleId") {
           const selected = rules.find(rule => rule.id === String(value));
-          return { ...child, ruleId: String(value), hourlyRateMinor: selected?.pricing_type === "hourly" ? selected.amount_minor : null };
+          return { ...child, ruleId: String(value), durationHours: selected?.duration_minutes ? selected.duration_minutes / 60 : child.durationHours, hourlyRateMinor: selected?.pricing_type === "hourly" ? selected.amount_minor : null };
         }
         return { ...child, [field]: value as string };
       })
@@ -431,8 +431,8 @@ export default function App() {
     ) {
       setError(
         ar
-          ? "أدخل اسم كل طفل وحدد السعر ومدة حجز من 25 دقيقة إلى 12 ساعة."
-          : "Enter each child's name, pricing rule, and a duration between 25 minutes and 12 hours."
+          ? "أدخل اسم كل طفل وحدد السعر ومدة الحجز من 25 دقيقة إلى 12 ساعة."
+          : "Enter each child's name, pricing rule, and duration between 0.42 and 12 hours."
       );
       return;
     }
