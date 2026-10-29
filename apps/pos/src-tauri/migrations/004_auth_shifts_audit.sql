@@ -119,3 +119,40 @@ BEGIN
  VALUES(lower(hex(randomblob(16))),COALESCE((SELECT actor_user_id FROM local_session WHERE singleton_id=1),'system'),'pricing_rule_deleted','pricing_rule',OLD.id,
  json_object('name',OLD.name,'pricing_type',OLD.pricing_type,'amount_minor',OLD.amount_minor,'is_active',OLD.is_active),strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 END;
+
+CREATE TRIGGER IF NOT EXISTS require_admin_for_pricing_rule_delete BEFORE DELETE ON local_pricing_rules
+WHEN NOT EXISTS (SELECT 1 FROM local_session s JOIN local_users u ON u.id=s.actor_user_id WHERE s.singleton_id=1 AND u.is_active=1 AND u.role_codes_json LIKE '%admin%')
+BEGIN SELECT RAISE(ABORT,'حذف قواعد الأسعار متاح للمدير فقط.'); END;
+CREATE TRIGGER IF NOT EXISTS guard_visit_pricing_changes BEFORE UPDATE OF base_amount_minor,discount_amount_minor,overtime_amount_minor,final_amount_minor ON local_visit_child_pricing
+WHEN NOT EXISTS (
+ SELECT 1 FROM local_session s JOIN local_users u ON u.id=s.actor_user_id
+ WHERE s.singleton_id=1 AND u.is_active=1 AND (
+   u.role_codes_json LIKE '%admin%' OR u.role_codes_json LIKE '%manager%' OR
+   (u.role_codes_json LIKE '%cashier%' AND json_extract(NEW.calculation_json,'$.checkoutCalculatedAt') IS NOT NULL)
+ )
+)
+BEGIN SELECT RAISE(ABORT,'تعديل الأسعار أو الخصومات يتطلب صلاحية المدير، باستثناء تسجيل الخروج المعتمد.'); END;
+CREATE TRIGGER IF NOT EXISTS guard_visit_financial_update BEFORE UPDATE OF final_amount_minor,discount_amount_minor ON local_visits
+WHEN NOT EXISTS (
+ SELECT 1 FROM local_session s JOIN local_users u ON u.id=s.actor_user_id
+ WHERE s.singleton_id=1 AND u.is_active=1 AND (
+   u.role_codes_json LIKE '%admin%' OR u.role_codes_json LIKE '%manager%' OR
+   (u.role_codes_json LIKE '%cashier%' AND OLD.status='active' AND NEW.status='completed')
+ )
+)
+BEGIN SELECT RAISE(ABORT,'تعديل إجمالي الزيارة يتطلب صلاحية المدير، باستثناء إتمام الخروج.'); END;
+CREATE TRIGGER IF NOT EXISTS guard_payment_insert BEFORE INSERT ON local_payments
+WHEN NOT EXISTS (
+ SELECT 1 FROM local_session s JOIN local_users u ON u.id=s.actor_user_id
+ JOIN local_visits v ON v.id=NEW.visit_id
+ WHERE s.singleton_id=1 AND u.is_active=1 AND v.status='completed'
+ AND NEW.amount_minor=v.final_amount_minor AND NEW.status='confirmed'
+ AND (u.role_codes_json LIKE '%admin%' OR u.role_codes_json LIKE '%manager%' OR u.role_codes_json LIKE '%cashier%')
+)
+BEGIN SELECT RAISE(ABORT,'لا يمكن تسجيل التحصيل إلا لمبلغ الزيارة النهائي المكتمل.'); END;
+CREATE TRIGGER IF NOT EXISTS guard_payment_update BEFORE UPDATE ON local_payments
+WHEN NOT EXISTS (SELECT 1 FROM local_session s JOIN local_users u ON u.id=s.actor_user_id WHERE s.singleton_id=1 AND u.is_active=1 AND (u.role_codes_json LIKE '%admin%' OR u.role_codes_json LIKE '%manager%'))
+BEGIN SELECT RAISE(ABORT,'تعديل المدفوعات متاح للمدير أو مدير الوردية فقط.'); END;
+CREATE TRIGGER IF NOT EXISTS guard_payment_delete BEFORE DELETE ON local_payments
+WHEN NOT EXISTS (SELECT 1 FROM local_session s JOIN local_users u ON u.id=s.actor_user_id WHERE s.singleton_id=1 AND u.is_active=1 AND (u.role_codes_json LIKE '%admin%' OR u.role_codes_json LIKE '%manager%'))
+BEGIN SELECT RAISE(ABORT,'حذف المدفوعات متاح للمدير أو مدير الوردية فقط.'); END;
