@@ -137,9 +137,9 @@ export default function ReportsCenter({ db, language, isAdmin = false, canManage
           [startDate,startDate,endDate,endDate]);
       } else if (reportKey === "payments") {
         result = await db.select<ReportRow[]>(`SELECT p.created_at, v.visit_number_local AS visit_number,
-          v.guardian_name_snapshot AS guardian_name, v.guardian_phone_snapshot AS phone, s.sale_number_local AS sale_number, si.description_snapshot AS sale_description, p.method,
+          v.guardian_name_snapshot AS guardian_name, v.guardian_phone_snapshot AS phone, s.sale_number_local AS sale_number, (SELECT group_concat(description_snapshot, ', ') FROM local_sale_items si WHERE si.sale_id=s.id) AS sale_description, p.method,
           p.amount_minor/100.0 AS amount, p.status, p.received_by, p.external_reference
-          FROM local_payments p LEFT JOIN local_visits v ON v.id=p.visit_id LEFT JOIN local_sales s ON s.id=p.sale_id LEFT JOIN local_sale_items si ON si.sale_id=s.id
+          FROM local_payments p LEFT JOIN local_visits v ON v.id=p.visit_id LEFT JOIN local_sales s ON s.id=p.sale_id
           WHERE (?='' OR date(p.created_at)>=date(?)) AND (?='' OR date(p.created_at)<=date(?))
           ORDER BY p.created_at DESC`, [startDate,startDate,endDate,endDate]);
       } else if (reportKey === "shifts") {
