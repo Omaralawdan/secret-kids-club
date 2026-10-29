@@ -311,9 +311,23 @@ fn auth_db(app: &tauri::AppHandle) -> Result<Connection, String> {
  let path=database_path(app).map_err(|e|e.to_string())?; Connection::open(path).map_err(|e|e.to_string())
 }
 fn hash_password(password:&str,salt:&[u8])->String { let mut out=[0u8;32]; pbkdf2_hmac::<Sha256>(password.as_bytes(),salt,600_000,&mut out); hex::encode(out) }
-fn active_user(db:&Connection)->Result<(String,Vec<String>),String>{
- let(id,roles):(String,String)=db.query_row("SELECT u.id,u.role_codes_json FROM local_session s JOIN local_users u ON u.id=s.actor_user_id WHERE s.singleton_id=1 AND u.is_active=1",[],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|_|"لا يوجد مستخدم مسجل الدخول.".to_string())?;
- Ok((id,serde_json::from_str(&roles).unwrap_or_default()))
+fn active_user(db: &Connection) -> Result<(String, Vec<String>), String> {
+    let (id, roles_json): (String, String) = db
+        .query_row(
+            "SELECT u.id, u.role_codes_json FROM local_session s
+             JOIN local_users u ON u.id = s.actor_user_id
+             WHERE s.singleton_id = 1 AND u.is_active = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|_| "لا يوجد مستخدم نشط مسجل الدخول.".to_string())?;
+
+    let roles: Vec<String> = serde_json::from_str(&roles_json)
+        .map_err(|_| "إعدادات صلاحيات المستخدم غير صالحة؛ تواصل مع المدير.".to_string())?;
+    if roles.is_empty() || roles.iter().any(|role| !["admin", "manager", "cashier", "viewer"].contains(&role.as_str())) {
+        return Err("إعدادات صلاحيات المستخدم غير صالحة؛ تواصل مع المدير.".to_string());
+    }
+    Ok((id, roles))
 }
 fn require_role(db:&Connection,allowed:&[&str])->Result<(String,Vec<String>),String>{let(id,roles)=active_user(db)?;if roles.iter().any(|r|allowed.contains(&r.as_str())){Ok((id,roles))}else{Err("ليس لديك صلاحية لتنفيذ هذه العملية.".into())}}
 #[tauri::command]
@@ -363,6 +377,47 @@ fn admin_set_user_active(app:tauri::AppHandle,user_id:String,is_active:bool)->Re
  let mut db=auth_db(&app)?;let(actor,_)=require_role(&db,&["admin"])?;let(current,_)=active_user(&db)?;if current==user_id&&!is_active{return Err("لا يمكنك إيقاف حسابك أثناء تسجيل الدخول.".into())}
  let now=Utc::now().to_rfc3339();let tx=db.transaction().map_err(|e|e.to_string())?;let before:i64=tx.query_row("SELECT is_active FROM local_users WHERE id=?",params![user_id],|r|r.get(0)).map_err(|e|e.to_string())?;tx.execute("UPDATE local_users SET is_active=? WHERE id=?",params![if is_active{1}else{0},user_id]).map_err(|e|e.to_string())?;tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,before_json,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'user_status_changed','user',?,?,?,?)",params![actor,user_id,json!({"is_active":before}).to_string(),json!({"is_active":is_active}).to_string(),now]).map_err(|e|e.to_string())?;tx.commit().map_err(|e|e.to_string())?;Ok(())
 }
+#[tauri::command]
+fn create_pricing_rule(
+    app: tauri::AppHandle,
+    name: String,
+    pricing_type: String,
+    amount_minor: i64,
+) -> Result<(), String> {
+    let clean_name = name.trim();
+    if clean_name.is_empty() || clean_name.chars().count() > 100 {
+        return Err("اسم قاعدة السعر مطلوب ويجب ألا يتجاوز 100 حرف.".into());
+    }
+    if !["fixed", "hourly", "offer"].contains(&pricing_type.as_str()) {
+        return Err("نوع التسعير غير صالح.".into());
+    }
+    if amount_minor < 0 {
+        return Err("السعر لا يمكن أن يكون سالبًا.".into());
+    }
+
+    let mut db = auth_db(&app)?;
+    let (actor, _) = require_role(&db, &["admin", "manager"])?;
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
+    tx.execute(
+        "INSERT INTO local_pricing_rules
+         (id, name, pricing_type, calculation_type, amount_minor,
+          duration_minutes, free_minutes, priority, weekdays_json,
+          is_active, created_at)
+         VALUES (?, ?, ?, 'fixed', ?, 60, 0, 100, '[]', 1, ?)",
+        params![id, clean_name, pricing_type, amount_minor, now],
+    ).map_err(|e| e.to_string())?;
+    tx.execute(
+        "INSERT INTO local_audit_log
+         (id, actor_user_id, action, entity_type, entity_id, after_json, created_at)
+         VALUES (lower(hex(randomblob(16))), ?, 'pricing_rule_created', 'pricing_rule', ?, ?, ?)",
+        params![actor, id, json!({"name": clean_name, "pricing_type": pricing_type, "amount_minor": amount_minor}).to_string(), now],
+    ).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 fn open_cash_shift(app:tauri::AppHandle,opening_float_minor:i64)->Result<Value,String>{
  if opening_float_minor<0{return Err("رصيد بداية الوردية غير صحيح.".into())}
@@ -435,7 +490,7 @@ pub fn run() {
                 .add_migrations("sqlite:secret-kids-club.db", migrations)
                 .build(),
         )
-        .invoke_handler(tauri::generate_handler![greet, checkout_child, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_create_user, admin_set_user_active, open_cash_shift, close_cash_shift, admin_audit_log])
+        .invoke_handler(tauri::generate_handler![greet, checkout_child, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_create_user, admin_set_user_active, create_pricing_rule, open_cash_shift, close_cash_shift, admin_audit_log])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
