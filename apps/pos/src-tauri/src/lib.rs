@@ -6,6 +6,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use tauri::Manager;
 use tauri_plugin_sql::{Migration, MigrationKind};
+use pbkdf2::pbkdf2_hmac;
+use sha2::Sha256;
+use rand::RngCore;
 
 fn database_path(app: &tauri::AppHandle) -> Result<PathBuf, Box<dyn Error>> {
     // Must match tauri-plugin-sql's app_config_dir() + database filename.
@@ -287,6 +290,75 @@ fn checkout_child(
     checkout_transaction(&path, &visit_child_id).map_err(|error| error.to_string())
 }
 
+
+fn auth_db(app: &tauri::AppHandle) -> Result<Connection, String> {
+ let path=database_path(app).map_err(|e|e.to_string())?; Connection::open(path).map_err(|e|e.to_string())
+}
+fn hash_password(password:&str,salt:&[u8])->String { let mut out=[0u8;32]; pbkdf2_hmac::<Sha256>(password.as_bytes(),salt,600_000,&mut out); hex::encode(out) }
+fn active_user(db:&Connection)->Result<(String,Vec<String>),String>{
+ let(id,roles):(String,String)=db.query_row("SELECT u.id,u.role_codes_json FROM local_session s JOIN local_users u ON u.id=s.actor_user_id WHERE s.singleton_id=1 AND u.is_active=1",[],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|_|"لا يوجد مستخدم مسجل الدخول.".to_string())?;
+ Ok((id,serde_json::from_str(&roles).unwrap_or_default()))
+}
+fn require_role(db:&Connection,allowed:&[&str])->Result<(String,Vec<String>),String>{let(id,roles)=active_user(db)?;if roles.iter().any(|r|allowed.contains(&r.as_str())){Ok((id,roles))}else{Err("ليس لديك صلاحية لتنفيذ هذه العملية.".into())}}
+#[tauri::command]
+fn auth_status(app:tauri::AppHandle)->Result<Value,String>{
+ let db=auth_db(&app)?;let count:i64=db.query_row("SELECT COUNT(*) FROM local_users",[],|r|r.get(0)).map_err(|e|e.to_string())?;
+ let user:Option<(String,String,String)>=db.query_row("SELECT u.id,u.display_name,u.role_codes_json FROM local_session s JOIN local_users u ON u.id=s.actor_user_id WHERE s.singleton_id=1 AND u.is_active=1",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(|e|e.to_string())?;
+ Ok(json!({"needsSetup":count==0,"user":user.map(|(id,name,roles)|json!({"id":id,"name":name,"roles":roles}))}))
+}
+#[tauri::command]
+fn setup_first_admin(app:tauri::AppHandle,username:String,display_name:String,password:String)->Result<Value,String>{
+ if username.trim().len()<3||display_name.trim().is_empty()||password.chars().count()<12{return Err("اسم المستخدم 3 أحرف على الأقل وكلمة المرور 12 حرفًا على الأقل.".into())}
+ let mut db=auth_db(&app)?;let tx=db.transaction().map_err(|e|e.to_string())?;let count:i64=tx.query_row("SELECT COUNT(*) FROM local_users",[],|r|r.get(0)).map_err(|e|e.to_string())?;if count>0{return Err("تم إعداد المدير بالفعل.".into())}
+ let mut salt=[0u8;16];rand::thread_rng().fill_bytes(&mut salt);let id=uuid::Uuid::new_v4().to_string();let now=Utc::now().to_rfc3339();
+ tx.execute("INSERT INTO local_users(id,display_name,role_codes_json,permissions_json,is_active,last_authenticated_at,username,password_salt,password_hash,created_at) VALUES(?,?,'[\"admin\"]','[\"all\"]',1,?,?,?,?,?)",params![id,display_name.trim(),now,username.trim(),hex::encode(salt),hash_password(&password,&salt),now]).map_err(|e|e.to_string())?;
+ tx.execute("UPDATE local_session SET actor_user_id=?,authenticated_at=? WHERE singleton_id=1",params![id,now]).map_err(|e|e.to_string())?;tx.commit().map_err(|e|e.to_string())?;Ok(json!({"id":id,"name":display_name.trim(),"roles":"[\"admin\"]"}))
+}
+#[tauri::command]
+fn login_user(app:tauri::AppHandle,username:String,password:String)->Result<Value,String>{
+ let mut db=auth_db(&app)?;let row:Option<(String,String,String,String,i64)>=db.query_row("SELECT id,display_name,password_salt,password_hash,is_active FROM local_users WHERE username=? COLLATE NOCASE",params![username.trim()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional().map_err(|e|e.to_string())?;
+ let(id,name,salt,expected,active)=row.ok_or("اسم المستخدم أو كلمة المرور غير صحيحة.")?;let salt=hex::decode(salt).map_err(|e|e.to_string())?;if active!=1||hash_password(&password,&salt)!=expected{return Err("اسم المستخدم أو كلمة المرور غير صحيحة.".into())}
+ let now=Utc::now().to_rfc3339();let tx=db.transaction().map_err(|e|e.to_string())?;tx.execute("UPDATE local_session SET actor_user_id=?,authenticated_at=? WHERE singleton_id=1",params![id,now]).map_err(|e|e.to_string())?;tx.execute("UPDATE local_users SET last_authenticated_at=? WHERE id=?",params![now,id]).map_err(|e|e.to_string())?;tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,created_at) VALUES(lower(hex(randomblob(16))),?,'login','user',?,?)",params![id,id,now]).map_err(|e|e.to_string())?;tx.commit().map_err(|e|e.to_string())?;
+ let roles:String=db.query_row("SELECT role_codes_json FROM local_users WHERE id=?",params![id],|r|r.get(0)).map_err(|e|e.to_string())?;Ok(json!({"id":id,"name":name,"roles":roles}))
+}
+#[tauri::command]
+fn logout_user(app:tauri::AppHandle)->Result<(),String>{let db=auth_db(&app)?;db.execute("UPDATE local_session SET actor_user_id=NULL,authenticated_at=NULL WHERE singleton_id=1",[]).map_err(|e|e.to_string())?;Ok(())}
+#[tauri::command]
+fn change_own_password(app:tauri::AppHandle,current_password:String,new_password:String)->Result<(),String>{
+ if new_password.chars().count()<12{return Err("كلمة المرور الجديدة يجب أن تكون 12 حرفًا على الأقل.".into())}
+ let mut db=auth_db(&app)?;let(id,_)=active_user(&db)?;let(salt,expected):(String,String)=db.query_row("SELECT password_salt,password_hash FROM local_users WHERE id=?",params![id],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|e|e.to_string())?;let salt=hex::decode(salt).map_err(|e|e.to_string())?;if hash_password(&current_password,&salt)!=expected{return Err("كلمة المرور الحالية غير صحيحة.".into())}
+ let mut new_salt=[0u8;16];rand::thread_rng().fill_bytes(&mut new_salt);let now=Utc::now().to_rfc3339();let tx=db.transaction().map_err(|e|e.to_string())?;tx.execute("UPDATE local_users SET password_salt=?,password_hash=? WHERE id=?",params![hex::encode(new_salt),hash_password(&new_password,&new_salt),id]).map_err(|e|e.to_string())?;tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,created_at) VALUES(lower(hex(randomblob(16))),?,'password_changed','user',?,?)",params![id,id,now]).map_err(|e|e.to_string())?;tx.commit().map_err(|e|e.to_string())?;Ok(())
+}
+#[tauri::command]
+fn admin_list_users(app:tauri::AppHandle)->Result<Vec<Value>,String>{
+ let db=auth_db(&app)?;require_role(&db,&["admin"])?;let mut st=db.prepare("SELECT id,username,display_name,role_codes_json,is_active,created_at,last_authenticated_at FROM local_users ORDER BY display_name").map_err(|e|e.to_string())?;
+ let rows=st.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"username":r.get::<_,Option<String>>(1)?,"name":r.get::<_,String>(2)?,"roles":r.get::<_,String>(3)?,"active":r.get::<_,i64>(4)?,"createdAt":r.get::<_,Option<String>>(5)?,"lastLogin":r.get::<_,Option<String>>(6)?}))).map_err(|e|e.to_string())?;rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())
+}
+#[tauri::command]
+fn admin_create_user(app:tauri::AppHandle,username:String,display_name:String,password:String,role:String)->Result<(),String>{
+ if username.trim().len()<3||display_name.trim().is_empty()||password.chars().count()<12{return Err("أدخل اسم مستخدم واسم موظف وكلمة مرور 12 حرفًا على الأقل.".into())}if !["admin","manager","cashier","viewer"].contains(&role.as_str()){return Err("الدور غير صالح.".into())}
+ let mut db=auth_db(&app)?;let(actor,_)=require_role(&db,&["admin"])?;let mut salt=[0u8;16];rand::thread_rng().fill_bytes(&mut salt);let id=uuid::Uuid::new_v4().to_string();let now=Utc::now().to_rfc3339();let tx=db.transaction().map_err(|e|e.to_string())?;
+ tx.execute("INSERT INTO local_users(id,username,display_name,password_salt,password_hash,role_codes_json,permissions_json,is_active,created_at) VALUES(?,?,?,?,?,?,?,1,?)",params![id,username.trim(),display_name.trim(),hex::encode(salt),hash_password(&password,&salt),json!([role]).to_string(),if role=="admin"{"[\"all\"]"}else{"[]"},now]).map_err(|e|e.to_string())?;
+ tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'user_created','user',?,?,?)",params![actor,id,json!({"username":username,"name":display_name,"role":role}).to_string(),now]).map_err(|e|e.to_string())?;tx.commit().map_err(|e|e.to_string())?;Ok(())
+}
+#[tauri::command]
+fn admin_set_user_active(app:tauri::AppHandle,user_id:String,is_active:bool)->Result<(),String>{
+ let mut db=auth_db(&app)?;let(actor,_)=require_role(&db,&["admin"])?;let(current,_)=active_user(&db)?;if current==user_id&&!is_active{return Err("لا يمكنك إيقاف حسابك أثناء تسجيل الدخول.".into())}
+ let now=Utc::now().to_rfc3339();let tx=db.transaction().map_err(|e|e.to_string())?;let before:i64=tx.query_row("SELECT is_active FROM local_users WHERE id=?",params![user_id],|r|r.get(0)).map_err(|e|e.to_string())?;tx.execute("UPDATE local_users SET is_active=? WHERE id=?",params![if is_active{1}else{0},user_id]).map_err(|e|e.to_string())?;tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,before_json,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'user_status_changed','user',?,?,?,?)",params![actor,user_id,json!({"is_active":before}).to_string(),json!({"is_active":is_active}).to_string(),now]).map_err(|e|e.to_string())?;tx.commit().map_err(|e|e.to_string())?;Ok(())
+}
+#[tauri::command]
+fn open_cash_shift(app:tauri::AppHandle,opening_float_minor:i64)->Result<Value,String>{
+ if opening_float_minor<0{return Err("رصيد بداية الوردية غير صحيح.".into())}let mut db=auth_db(&app)?;let(actor,_)=require_role(&db,&["admin","manager","cashier"])?;let count:i64=db.query_row("SELECT COUNT(*) FROM local_cash_sessions WHERE closed_at IS NULL",[],|r|r.get(0)).map_err(|e|e.to_string())?;if count>0{return Err("هناك وردية مفتوحة بالفعل.".into())}let id=uuid::Uuid::new_v4().to_string();let now=Utc::now().to_rfc3339();db.execute("INSERT INTO local_cash_sessions(id,opening_float_minor,opened_by,opened_at) VALUES(?,?,?,?)",params![id,opening_float_minor,actor,now]).map_err(|e|e.to_string())?;Ok(json!({"id":id,"openedAt":now}))
+}
+#[tauri::command]
+fn close_cash_shift(app:tauri::AppHandle,counted_cash_minor:i64)->Result<Value,String>{
+ if counted_cash_minor<0{return Err("النقدية المعدودة غير صحيحة.".into())}let mut db=auth_db(&app)?;let(actor,_)=require_role(&db,&["admin","manager","cashier"])?;let shift:Option<(String,i64,String)>=db.query_row("SELECT id,opening_float_minor,opened_at FROM local_cash_sessions WHERE closed_at IS NULL ORDER BY opened_at DESC LIMIT 1",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(|e|e.to_string())?;let(id,float,opened)=shift.ok_or("لا توجد وردية مفتوحة.")?;let sales:i64=db.query_row("SELECT COALESCE(SUM(amount_minor),0) FROM local_payments WHERE method='cash' AND status='confirmed' AND created_at>=?",params![opened],|r|r.get(0)).map_err(|e|e.to_string())?;let expected=float+sales;let variance=counted_cash_minor-expected;let now=Utc::now().to_rfc3339();db.execute("UPDATE local_cash_sessions SET closed_by=?,closed_at=?,counted_cash_minor=?,expected_cash_minor=?,variance_minor=? WHERE id=? AND closed_at IS NULL",params![actor,now,counted_cash_minor,expected,variance,id]).map_err(|e|e.to_string())?;Ok(json!({"id":id,"expectedCashMinor":expected,"countedCashMinor":counted_cash_minor,"varianceMinor":variance,"closedAt":now}))
+}
+#[tauri::command]
+fn admin_audit_log(app:tauri::AppHandle,limit:i64)->Result<Vec<Value>,String>{
+ let db=auth_db(&app)?;require_role(&db,&["admin","manager"])?;let mut st=db.prepare("SELECT created_at,actor_user_id,action,entity_type,entity_id,reason,before_json,after_json FROM local_audit_log ORDER BY created_at DESC LIMIT ?").map_err(|e|e.to_string())?;let rows=st.query_map(params![limit.clamp(1,5000)],|r|Ok(json!({"createdAt":r.get::<_,String>(0)?,"actor":r.get::<_,String>(1)?,"action":r.get::<_,String>(2)?,"entityType":r.get::<_,String>(3)?,"entityId":r.get::<_,Option<String>>(4)?,"reason":r.get::<_,Option<String>>(5)?,"before":r.get::<_,Option<String>>(6)?,"after":r.get::<_,Option<String>>(7)?}))).map_err(|e|e.to_string())?;rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())
+}
+
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
@@ -313,6 +385,7 @@ pub fn run() {
             sql: include_str!("../migrations/003_customer_profiles_and_membership_usage.sql"),
             kind: MigrationKind::Up,
         },
+        Migration { version: 4, description: "auth_shifts_audit", sql: include_str!("../migrations/004_auth_shifts_audit.sql"), kind: MigrationKind::Up },
     ];
 
     tauri::Builder::default()
@@ -322,7 +395,7 @@ pub fn run() {
                 .add_migrations("sqlite:secret-kids-club.db", migrations)
                 .build(),
         )
-        .invoke_handler(tauri::generate_handler![greet, checkout_child])
+        .invoke_handler(tauri::generate_handler![greet, checkout_child, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_create_user, admin_set_user_active, open_cash_shift, close_cash_shift, admin_audit_log])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
