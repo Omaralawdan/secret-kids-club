@@ -123,3 +123,53 @@ WHEN NOT EXISTS (
   WHERE s.singleton_id=1 AND u.is_active=1 AND u.role_codes_json LIKE '%admin%'
 )
 BEGIN SELECT RAISE(ABORT,'حذف قواعد الأسعار متاح للمدير فقط.'); END;
+
+CREATE TRIGGER IF NOT EXISTS require_operator_for_visit_delete
+BEFORE DELETE ON local_visits
+WHEN NOT EXISTS (
+  SELECT 1 FROM local_session s JOIN local_users u ON u.id=s.actor_user_id
+  WHERE s.singleton_id=1 AND u.is_active=1
+    AND (u.role_codes_json LIKE '%admin%' OR u.role_codes_json LIKE '%manager%')
+)
+BEGIN SELECT RAISE(ABORT,'حذف الزيارات يتطلب صلاحية مدير.'); END;
+
+CREATE TRIGGER IF NOT EXISTS require_operator_for_guardian_delete
+BEFORE DELETE ON local_guardians
+WHEN NOT EXISTS (
+  SELECT 1 FROM local_session s JOIN local_users u ON u.id=s.actor_user_id
+  WHERE s.singleton_id=1 AND u.is_active=1
+    AND (u.role_codes_json LIKE '%admin%' OR u.role_codes_json LIKE '%manager%')
+)
+BEGIN SELECT RAISE(ABORT,'حذف بيانات العملاء يتطلب صلاحية مدير.'); END;
+
+CREATE TRIGGER IF NOT EXISTS require_admin_for_user_privilege_update
+BEFORE UPDATE OF username, password_salt, password_hash, role_codes_json, permissions_json, is_active ON local_users
+WHEN NOT EXISTS (
+  SELECT 1 FROM local_session s JOIN local_users u ON u.id=s.actor_user_id
+  WHERE s.singleton_id=1 AND u.is_active=1 AND u.role_codes_json LIKE '%admin%'
+)
+BEGIN SELECT RAISE(ABORT,'تعديل صلاحيات وحسابات الموظفين يتطلب صلاحية المدير.'); END;
+
+CREATE TRIGGER IF NOT EXISTS require_admin_for_user_delete
+BEFORE DELETE ON local_users
+WHEN NOT EXISTS (
+  SELECT 1 FROM local_session s JOIN local_users u ON u.id=s.actor_user_id
+  WHERE s.singleton_id=1 AND u.is_active=1 AND u.role_codes_json LIKE '%admin%'
+)
+BEGIN SELECT RAISE(ABORT,'حذف حسابات الموظفين يتطلب صلاحية المدير.'); END;
+
+CREATE TRIGGER IF NOT EXISTS require_admin_for_audit_update
+BEFORE UPDATE ON local_audit_log
+WHEN NOT EXISTS (
+  SELECT 1 FROM local_session s JOIN local_users u ON u.id=s.actor_user_id
+  WHERE s.singleton_id=1 AND u.is_active=1 AND u.role_codes_json LIKE '%admin%'
+)
+BEGIN SELECT RAISE(ABORT,'تعديل سجل المراجعة غير مسموح.'); END;
+
+CREATE TRIGGER IF NOT EXISTS require_admin_for_audit_delete
+BEFORE DELETE ON local_audit_log
+WHEN NOT EXISTS (
+  SELECT 1 FROM local_session s JOIN local_users u ON u.id=s.actor_user_id
+  WHERE s.singleton_id=1 AND u.is_active=1 AND u.role_codes_json LIKE '%admin%'
+)
+BEGIN SELECT RAISE(ABORT,'حذف سجل المراجعة غير مسموح.'); END;
