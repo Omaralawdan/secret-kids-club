@@ -706,7 +706,7 @@ export default function App() {
       )}
 
       {screen === "admin" ? (
-        <AdminTools user={authUser} onLogout={() => { void invoke("logout_user").finally(() => setAuthUser(null)); }} onChanged={() => {}} />
+        <AdminTools user={authUser} onLogout={() => { void invoke("logout_user").finally(() => setAuthUser(null)); }}  />
       ) : screen === "reports" ? (
         <ReportsCenter db={db} language={language} />
       ) : screen === "settings" && isAdmin ? (
