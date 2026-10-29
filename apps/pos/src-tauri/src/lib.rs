@@ -51,7 +51,8 @@ fn checkout_transaction(
                 p.duration_minutes,
                 p.base_amount_minor,
                 p.discount_amount_minor,
-                p.calculation_json
+                p.calculation_json,
+                p.pricing_rule_id
             FROM local_visit_children vc
             JOIN local_visits v ON v.id = vc.visit_id
             JOIN local_visit_child_pricing p ON p.visit_child_id = vc.id
@@ -69,6 +70,7 @@ fn checkout_transaction(
                     row.get::<_, i64>(5)?,
                     row.get::<_, i64>(6)?,
                     row.get::<_, String>(7)?,
+                    row.get::<_, Option<String>>(8)?,
                 ))
             },
         )
@@ -89,6 +91,7 @@ fn checkout_transaction(
         base_amount,
         discount_amount,
         calculation_json,
+        pricing_rule_id,
     ) = record;
 
     if visit_status != "active" {
@@ -115,10 +118,31 @@ fn checkout_transaction(
         .into());
     }
 
-    let hourly_rate = calculation
+    // Older visits can lack the hourly rate in their saved calculation snapshot.
+    // Recover it from the linked pricing rule without changing the original visit.
+    let saved_hourly_rate = calculation
         .get("hourlyRateMinor")
         .and_then(Value::as_i64)
         .filter(|rate| *rate >= 0);
+    let recovered_hourly_rate = if pricing_type == "hourly" && saved_hourly_rate.is_none() {
+        pricing_rule_id.as_deref().and_then(|rule_id| {
+            tx.query_row(
+                "SELECT amount_minor FROM local_pricing_rules WHERE id = ? AND pricing_type = 'hourly'",
+                params![rule_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .ok()
+            .flatten()
+            .filter(|rate| *rate >= 0)
+        })
+    } else {
+        None
+    };
+    let hourly_rate = saved_hourly_rate.or(recovered_hourly_rate);
+    if let Some(rate) = hourly_rate {
+        calculation["hourlyRateMinor"] = json!(rate);
+    }
 
     if pricing_type == "hourly" && hourly_rate.is_none() {
         return Err(io::Error::other(
