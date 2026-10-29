@@ -13,6 +13,7 @@ type PricingRule = {
   name: string;
   pricing_type: "fixed" | "hourly" | "offer";
   amount_minor: number;
+  duration_minutes: number;
   is_active: number;
 };
 
@@ -185,7 +186,7 @@ export default function App() {
 
   const refreshData = useCallback(async (connection: Database) => {
     const loadedRules = await connection.select<PricingRule[]>(
-      `SELECT id, name, pricing_type, amount_minor, is_active
+      `SELECT id, name, pricing_type, amount_minor, duration_minutes, is_active
        FROM local_pricing_rules
        WHERE is_active = 1 AND calculation_type = 'fixed'
        ORDER BY priority, name`
@@ -971,7 +972,7 @@ export default function App() {
             <h3>{tr("Active pricing rules")}</h3>
             {rules.length === 0 ? <p className="muted">{tr("No rules configured.")}</p> : rules.map((rule) => (
               <div className="rule-item" key={rule.id}>
-                <div><strong>{rule.name}</strong><span>{tr(rule.pricing_type)}</span><span>{ar ? "المدة الافتراضية" : "Default duration"}: {formatDuration((rule as PricingRule & {duration_minutes?:number}).duration_minutes || 60, language)}</span></div>
+                <div><strong>{rule.name}</strong><span>{tr(rule.pricing_type)}</span><span>{ar ? "المدة الافتراضية" : "Default duration"}: {formatDuration(rule.duration_minutes || 60, language)}</span></div>
                 <strong>{money(rule.amount_minor, language)}</strong>
                 {isAdmin && <button type="button" className="remove-button" onClick={()=>{if(!window.confirm(ar?"حذف/إيقاف قاعدة التسعير؟ إذا كانت مستخدمة في زيارات سابقة فسيتم إيقافها فقط للحفاظ على السجلات.":"Remove this pricing rule? If used in past visits, it will be deactivated to preserve history."))return;void invoke("delete_pricing_rule",{ruleId:rule.id}).then(()=>db&&refreshData(db)).then(()=>setMessage(ar?"تم حذف/إيقاف التسعير.":"Pricing rule removed.")).catch(e=>setError(String(e)));}}>{ar?"حذف":"Remove"}</button>}
               </div>
