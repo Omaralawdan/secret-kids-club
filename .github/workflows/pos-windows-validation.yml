@@ -7,7 +7,7 @@ on:
       - "apps/pos/**"
       - ".github/workflows/pos-windows-validation.yml"
   push:
-    branches: [main, "feat/**"]
+    branches: [main, "feat/**", "rollback/**"]
     paths:
       - "apps/pos/**"
       - ".github/workflows/pos-windows-validation.yml"
