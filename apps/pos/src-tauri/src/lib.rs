@@ -368,7 +368,7 @@ fn close_cash_shift(app:tauri::AppHandle,counted_cash_minor:i64)->Result<Value,S
 }
 #[tauri::command]
 fn admin_audit_log(app:tauri::AppHandle,limit:i64)->Result<Vec<Value>,String>{
- let db=auth_db(&app)?;require_role(&db,&["admin","manager"])?;let mut st=db.prepare("SELECT created_at,actor_user_id,action,entity_type,entity_id,reason,before_json,after_json FROM local_audit_log ORDER BY created_at DESC LIMIT ?").map_err(|e|e.to_string())?;let rows=st.query_map(params![limit.clamp(1,5000)],|r|Ok(json!({"createdAt":r.get::<_,String>(0)?,"actor":r.get::<_,String>(1)?,"action":r.get::<_,String>(2)?,"entityType":r.get::<_,String>(3)?,"entityId":r.get::<_,Option<String>>(4)?,"reason":r.get::<_,Option<String>>(5)?,"before":r.get::<_,Option<String>>(6)?,"after":r.get::<_,Option<String>>(7)?}))).map_err(|e|e.to_string())?;rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())
+ let db=auth_db(&app)?;require_role(&db,&["admin","manager"])?;let mut st=db.prepare("SELECT a.created_at,COALESCE(u.display_name,a.actor_user_id),a.action,a.entity_type,a.entity_id,a.reason,a.before_json,a.after_json FROM local_audit_log a LEFT JOIN local_users u ON u.id=a.actor_user_id ORDER BY a.created_at DESC LIMIT ?").map_err(|e|e.to_string())?;let rows=st.query_map(params![limit.clamp(1,5000)],|r|Ok(json!({"createdAt":r.get::<_,String>(0)?,"actor":r.get::<_,String>(1)?,"action":r.get::<_,String>(2)?,"entityType":r.get::<_,String>(3)?,"entityId":r.get::<_,Option<String>>(4)?,"reason":r.get::<_,Option<String>>(5)?,"before":r.get::<_,Option<String>>(6)?,"after":r.get::<_,Option<String>>(7)?}))).map_err(|e|e.to_string())?;rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())
 }
 
 #[tauri::command]
