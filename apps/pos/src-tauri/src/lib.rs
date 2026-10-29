@@ -643,12 +643,17 @@ mod checkout_tests {
                 id TEXT PRIMARY KEY,
                 visit_child_id TEXT NOT NULL UNIQUE,
                 pricing_type TEXT NOT NULL,
+                pricing_rule_id TEXT,
+                membership_id TEXT,
                 duration_minutes INTEGER NOT NULL DEFAULT 0,
+                included_minutes INTEGER NOT NULL DEFAULT 0,
                 base_amount_minor INTEGER NOT NULL DEFAULT 0,
                 discount_amount_minor INTEGER NOT NULL DEFAULT 0,
                 calculation_json TEXT NOT NULL DEFAULT '{}',
                 overtime_minutes INTEGER NOT NULL DEFAULT 0,
                 overtime_amount_minor INTEGER NOT NULL DEFAULT 0,
+                overtime_collected INTEGER NOT NULL DEFAULT 1,
+                overtime_collection_note TEXT,
                 final_amount_minor INTEGER NOT NULL DEFAULT 0
             );
             "
