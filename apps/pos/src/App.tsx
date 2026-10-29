@@ -659,7 +659,7 @@ export default function App() {
         </button>}
         {canOperate && <button className={screen === "admin" ? "active" : ""} onClick={() => setScreen("admin")}>
           {ar ? "الموظفون والورديات" : "Staff & Shifts"}
-        </button>
+        </button>}
       </nav>
 
       <section className="page-heading">
