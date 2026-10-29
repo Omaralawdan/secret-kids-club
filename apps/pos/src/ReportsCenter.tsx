@@ -54,7 +54,7 @@ function createStoredZip(files: {name:string; data:Uint8Array}[]) {
     centrals.push(join([u32(0x02014b50),u16(20),u16(20),u16(0),u16(0),u16(0),u16(0),u32(crc),u32(data.length),u32(data.length),u16(name.length),u16(0),u16(0),u16(0),u16(0),u32(0),u32(offset),name]));offset+=local.length;
   }
   const central=join(centrals),end=join([u32(0x06054b50),u16(0),u16(0),u16(files.length),u16(files.length),u32(central.length),u32(offset),u16(0)]);
-  return new Blob([...locals,central,end],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
+  const packed=join([...locals,central,end]); const exact=new ArrayBuffer(packed.length); new Uint8Array(exact).set(packed); return new Blob([exact],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
 }
 function makeXlsx(headers:string[], rows:unknown[][]) {
   const enc=new TextEncoder();
