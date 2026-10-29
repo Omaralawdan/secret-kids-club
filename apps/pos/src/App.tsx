@@ -166,6 +166,8 @@ export default function App() {
   const [guardianName, setGuardianName] = useState("");
   const [guardianRelation, setGuardianRelation] = useState("Mother");
   const [guardianPhone, setGuardianPhone] = useState("");
+  const [paymentMethod, setPaymentMethod] = useState<"cash" | "instapay" | "wallet">("cash");
+  const [customerLookupMessage, setCustomerLookupMessage] = useState("");
   const [children, setChildren] = useState<ChildDraft[]>([
     { key: makeId(), name: "", ruleId: "", durationHours: 1 },
   ]);
