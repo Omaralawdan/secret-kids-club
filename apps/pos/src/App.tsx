@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+
+import { useCallback, useEffect, useState, type FormEvent } from "react";
 import Database from "@tauri-apps/plugin-sql";
+import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 import { t, useLanguage, type Language } from "./i18n";
 
@@ -18,19 +20,81 @@ type ChildDraft = {
   durationHours: number;
 };
 
-type Screen = "reception" | "pricing" | "settings";
+type Screen = "reception" | "active" | "pricing" | "settings";
+
+type ActiveChild = {
+  visit_id: string;
+  visit_number: number;
+  visit_child_id: string;
+  child_name: string;
+  guardian_name: string;
+  guardian_phone: string;
+  checked_in_at: string;
+  pricing_id: string;
+  pricing_type: "fixed" | "hourly" | "offer" | "membership";
+  duration_minutes: number;
+  base_amount_minor: number;
+  discount_amount_minor: number;
+  final_amount_minor: number;
+  calculation_json: string;
+};
 
 const makeId = () => crypto.randomUUID();
 const now = () => new Date().toISOString();
+
 const money = (minor: number, language: Language = "en") =>
   new Intl.NumberFormat(language === "ar" ? "ar-EG" : "en-EG", {
     style: "currency",
     currency: "EGP",
   }).format(minor / 100);
 
+function formatDate(value: string, language: Language) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat(language === "ar" ? "ar-EG" : "en-EG", {
+    hour: "2-digit",
+    minute: "2-digit",
+    day: "2-digit",
+    month: "short",
+  }).format(date);
+}
+
+
+function formatDuration(minutes: number, language: Language) {
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+
+  if (language === "ar") {
+    if (hours && remainder) return `${hours} ساعة و${remainder} دقيقة`;
+    if (hours) return `${hours} ساعة`;
+    return `${remainder} دقيقة`;
+  }
+
+
+
+  if (hours && remainder) return `${hours}h ${remainder}m`;
+  if (hours) return `${hours}h`;
+  return `${remainder}m`;
+}
+
+function readHourlyRate(json: string): number | null {
+  try {
+    const value = JSON.parse(json) as { hourlyRateMinor?: unknown };
+    return typeof value.hourlyRateMinor === "number" &&
+      Number.isFinite(value.hourlyRateMinor) &&
+      value.hourlyRateMinor >= 0
+      ? value.hourlyRateMinor
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 export default function App() {
   const { language, setLanguage } = useLanguage();
   const tr = (key: string) => t(language, key);
+  const ar = language === "ar";
+
   const [db, setDb] = useState<Database | null>(null);
   const [databaseStatus, setDatabaseStatus] = useState("Connecting");
   const [error, setError] = useState("");
@@ -38,7 +102,10 @@ export default function App() {
   const [screen, setScreen] = useState<Screen>("reception");
   const [rules, setRules] = useState<PricingRule[]>([]);
   const [visits, setVisits] = useState(0);
+  const [activeChildren, setActiveChildren] = useState<ActiveChild[]>([]);
   const [saving, setSaving] = useState(false);
+  const [checkoutId, setCheckoutId] = useState("");
+  const [clock, setClock] = useState(Date.now());
 
   const [guardianName, setGuardianName] = useState("");
   const [guardianRelation, setGuardianRelation] = useState("Mother");
@@ -65,6 +132,32 @@ export default function App() {
       "SELECT COUNT(*) AS total FROM local_visits"
     );
     setVisits(counts[0]?.total ?? 0);
+
+    const active = await connection.select<ActiveChild[]>(
+      `SELECT
+         v.id AS visit_id,
+         v.visit_number_local AS visit_number,
+         vc.id AS visit_child_id,
+         vc.child_name_snapshot AS child_name,
+         v.guardian_name_snapshot AS guardian_name,
+         v.guardian_phone_snapshot AS guardian_phone,
+         v.checked_in_at,
+         p.id AS pricing_id,
+         p.pricing_type,
+         p.duration_minutes,
+         p.base_amount_minor,
+         p.discount_amount_minor,
+         p.final_amount_minor,
+         p.calculation_json
+       FROM local_visits v
+       JOIN local_visit_children vc ON vc.visit_id = v.id
+       JOIN local_visit_child_pricing p ON p.visit_child_id = vc.id
+       WHERE v.status = 'active'
+         AND vc.checked_out_at IS NULL
+       ORDER BY v.checked_in_at ASC, v.visit_number_local ASC`
+    );
+
+    setActiveChildren(active);
   }, []);
 
   useEffect(() => {
@@ -91,6 +184,11 @@ export default function App() {
       mounted = false;
     };
   }, [refreshData]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setClock(Date.now()), 30000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   function updateChild(
     key: string,
@@ -125,8 +223,6 @@ export default function App() {
     const rule = rules.find((item) => item.id === child.ruleId);
     if (!rule) return 0;
 
-    // Only hourly rules multiply by the booked duration.
-    // Fixed and offer prices remain unchanged.
     if (rule.pricing_type === "hourly") {
       return Math.round(rule.amount_minor * child.durationHours);
     }
@@ -137,7 +233,7 @@ export default function App() {
   const total = children.reduce((sum, child) => sum + priceFor(child), 0);
   const ready = databaseStatus === "Connected" && db !== null;
 
-  async function createRule(event: React.FormEvent<HTMLFormElement>) {
+  async function createRule(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!db) return;
 
@@ -169,7 +265,7 @@ export default function App() {
     }
   }
 
-  async function createVisit(event: React.FormEvent<HTMLFormElement>) {
+  async function createVisit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!db || saving) return;
 
@@ -183,12 +279,29 @@ export default function App() {
       return;
     }
 
-    if (cleanChildren.some((child) => !child.name || !child.ruleId)) {
-      setError(tr("Enter each child's name and select a pricing rule for every child."));
+    if (
+      cleanChildren.some(
+        (child) =>
+          !child.name ||
+          !child.ruleId ||
+          !Number.isFinite(child.durationHours) ||
+          child.durationHours < 0.5 ||
+          child.durationHours > 12
+      )
+    ) {
+      setError(
+        ar
+          ? "أدخل اسم كل طفل وحدد السعر ومدة حجز من نصف ساعة إلى 12 ساعة."
+          : "Enter each child's name, pricing rule, and a duration between 0.5 and 12 hours."
+      );
       return;
     }
 
-    if (cleanChildren.some((child) => !rules.some((rule) => rule.id === child.ruleId))) {
+    if (
+      cleanChildren.some(
+        (child) => !rules.some((rule) => rule.id === child.ruleId)
+      )
+    ) {
       setError(tr("A selected pricing rule is no longer available. Refresh and try again."));
       return;
     }
@@ -198,12 +311,11 @@ export default function App() {
     setMessage("");
 
     const visitId = makeId();
-    const childRows: { id: string; pricingId: string; child: ChildDraft }[] =
-      cleanChildren.map((child) => ({
-        id: makeId(),
-        pricingId: makeId(),
-        child,
-      }));
+    const childRows = cleanChildren.map((child) => ({
+      id: makeId(),
+      pricingId: makeId(),
+      child,
+    }));
     const createdVisitChildIds: string[] = [];
     let visitInserted = false;
 
@@ -269,8 +381,13 @@ export default function App() {
         const selectedRule = rules.find((rule) => rule.id === row.child.ruleId);
         if (!selectedRule) throw new Error(tr("Pricing rule not found."));
 
+        const bookedMinutes = Math.round(row.child.durationHours * 60);
+        const baseAmount = priceFor(row.child);
+
         await db.execute(
-          "INSERT INTO local_visit_children (id, visit_id, child_id, child_name_snapshot) VALUES (?, ?, NULL, ?)",
+          `INSERT INTO local_visit_children
+           (id, visit_id, child_id, child_name_snapshot)
+           VALUES (?, ?, NULL, ?)`,
           [row.id, visitId, row.child.name]
         );
         createdVisitChildIds.push(row.id);
@@ -286,19 +403,14 @@ export default function App() {
             row.id,
             selectedRule.pricing_type,
             selectedRule.id,
-            priceFor(row.child),
-            priceFor(row.child),
-            selectedRule.pricing_type === "hourly"
-              ? Math.round(row.child.durationHours * 60)
-              : 0,
+            baseAmount,
+            baseAmount,
+            bookedMinutes,
             JSON.stringify({
               ruleName: selectedRule.name,
               pricingType: selectedRule.pricing_type,
               initialEstimate: selectedRule.pricing_type === "hourly",
-              bookedDurationMinutes:
-                selectedRule.pricing_type === "hourly"
-                  ? Math.round(row.child.durationHours * 60)
-                  : null,
+              bookedDurationMinutes: bookedMinutes,
               hourlyRateMinor:
                 selectedRule.pricing_type === "hourly"
                   ? selectedRule.amount_minor
@@ -316,10 +428,12 @@ export default function App() {
       setChildren([
         { key: makeId(), name: "", ruleId: "", durationHours: 1 },
       ]);
-      setMessage(`Visit #${visitNumber} saved. Initial total: ${money(amountBeforeDiscount)}.`);
+      setMessage(
+        ar
+          ? `تم تسجيل الزيارة رقم ${visitNumber}. السعر المبدئي: ${money(amountBeforeDiscount, language)}`
+          : `Visit #${visitNumber} saved. Initial total: ${money(amountBeforeDiscount, language)}.`
+      );
     } catch (err) {
-      // Best-effort cleanup if a later insert fails. This is not a substitute
-      // for a native atomic transaction; production hardening is still needed.
       try {
         for (const childId of createdVisitChildIds) {
           await db.execute(
@@ -343,13 +457,55 @@ export default function App() {
     }
   }
 
+  async function checkOutChild(child: ActiveChild) {
+    if (!db || checkoutId) return;
+
+    const confirmMessage = ar
+      ? `تأكيد تسجيل خروج الطفل ${child.child_name}؟`
+      : `Confirm checkout for ${child.child_name}?`;
+
+    if (!window.confirm(confirmMessage)) return;
+
+    setCheckoutId(child.visit_child_id);
+    setError("");
+    setMessage("");
+
+    try {
+      await invoke<void>("checkout_child", {
+        visitChildId: child.visit_child_id,
+      });
+
+      await refreshData(db);
+
+      setMessage(
+        ar
+          ? `تم تسجيل خروج ${child.child_name} وحفظ الحساب بنجاح.`
+          : `${child.child_name} checked out and the final price was saved.`
+      );
+    } catch (err) {
+      setError(
+        `${ar ? "تعذر تسجيل الخروج: " : "Checkout failed: "}${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+      // A failed transaction leaves the child active; refresh from SQLite.
+      try {
+        await refreshData(db);
+      } catch {
+        // Keep the original checkout error visible.
+      }
+    } finally {
+      setCheckoutId("");
+    }
+  }
+
   return (
     <main className="app-shell">
       <header className="topbar">
         <div className="brand-mark">SK</div>
         <div className="brand-copy">
           <h1>Secret Kids Club</h1>
-          <p>{tr('Point of Sale · Local System')}</p>
+          <p>{tr("Point of Sale · Local System")}</p>
         </div>
         <span className={`connection ${ready ? "online" : "offline"}`}>
           {tr(databaseStatus)}
@@ -358,10 +514,14 @@ export default function App() {
 
       <nav className="nav-tabs">
         <button className={screen === "reception" ? "active" : ""} onClick={() => setScreen("reception")}>
-          {tr('Reception')}
+          {tr("Reception")}
+        </button>
+        <button className={screen === "active" ? "active" : ""} onClick={() => setScreen("active")}>
+          {ar ? "الزيارات النشطة" : "Active visits"}
+          {activeChildren.length > 0 ? ` (${activeChildren.length})` : ""}
         </button>
         <button className={screen === "pricing" ? "active" : ""} onClick={() => setScreen("pricing")}>
-          {tr('Pricing setup')}
+          {tr("Pricing setup")}
         </button>
         <button className={screen === "settings" ? "active" : ""} onClick={() => setScreen("settings")}>
           {tr("Settings")}
@@ -369,14 +529,26 @@ export default function App() {
       </nav>
 
       <section className="page-heading">
-        <p className="eyebrow">{tr('CASHIER WORKSPACE')}</p>
-        <h2>{screen === "reception" ? tr("New visit") : screen === "pricing" ? tr("Pricing rules") : tr("Settings")}</h2>
+        <p className="eyebrow">{tr("CASHIER WORKSPACE")}</p>
+        <h2>
+          {screen === "reception"
+            ? tr("New visit")
+            : screen === "active"
+              ? ar ? "الزيارات النشطة" : "Active visits"
+              : screen === "pricing"
+                ? tr("Pricing rules")
+                : tr("Settings")}
+        </h2>
         <p>
           {screen === "reception"
             ? tr("Register a guardian and each child, then review their individual pricing.")
-            : screen === "pricing"
-              ? tr("Configure the prices available to cashiers. No prices are preloaded.")
-              : tr("Choose the language used throughout the application.")}
+            : screen === "active"
+              ? ar
+                ? "تابع الأطفال الموجودين وسجّل خروج كل طفل عند مغادرته."
+                : "Track children currently in the club and check each child out individually."
+              : screen === "pricing"
+                ? tr("Configure the prices available to cashiers. No prices are preloaded.")
+                : tr("Choose the language used throughout the application.")}
         </p>
       </section>
 
@@ -386,14 +558,8 @@ export default function App() {
       {!ready && screen !== "settings" && (
         <section className="panel database-warning" role="status">
           <h3>{tr("Local database")}</h3>
-          <p>
-            {databaseStatus === "Connecting"
-              ? tr("Connecting to SQLite…")
-              : tr("The database is unavailable.")}
-          </p>
-          <p>
-            {tr("The screens are available, but saving requires the app database connection.")}
-          </p>
+          <p>{databaseStatus === "Connecting" ? tr("Connecting to SQLite…") : tr("The database is unavailable.")}</p>
+          <p>{tr("The screens are available, but saving requires the app database connection.")}</p>
         </section>
       )}
 
@@ -405,32 +571,112 @@ export default function App() {
           <p className="muted intro">{tr("Choose the language used throughout the application.")}</p>
           <label>
             {tr("Language")}
-            <select
-              value={language}
-              onChange={(event) => setLanguage(event.target.value as Language)}
-            >
+            <select value={language} onChange={(event) => setLanguage(event.target.value as Language)}>
               <option value="en">{tr("English")}</option>
               <option value="ar">{tr("Arabic")}</option>
             </select>
           </label>
         </section>
+      ) : screen === "active" ? (
+        <section className="panel">
+          <div className="panel-title">
+            <div>
+              <span className="step">01</span>
+              <h3>{ar ? "الأطفال الموجودون حاليًا" : "Children currently checked in"}</h3>
+            </div>
+            <button type="button" className="secondary-button" disabled={!ready} onClick={() => db && void refreshData(db)}>
+              {ar ? "تحديث" : "Refresh"}
+            </button>
+          </div>
+
+          {activeChildren.length === 0 ? (
+            <div className="empty-state">
+              <strong>{ar ? "لا توجد زيارات نشطة حاليًا." : "There are no active visits."}</strong>
+              <p>{ar ? "ستظهر هنا الزيارات المسجلة بمجرد تأكيد الدخول." : "Confirmed check-ins will appear here."}</p>
+            </div>
+          ) : (
+            <div className="children-list">
+              {activeChildren.map((child) => {
+               const actual = Math.max(
+  0,
+  Math.ceil(
+    (clock - new Date(child.checked_in_at).getTime()) / 60000
+  )
+);
+                const booked = child.duration_minutes;
+                const rate = readHourlyRate(child.calculation_json);
+                const estimatedOvertime =
+                  child.pricing_type === "hourly" &&
+                  rate !== null &&
+                  booked > 0
+                    ? Math.max(0, actual - booked)
+                    : 0;
+
+                return (
+                  <article className="child-row active-visit-row" key={child.visit_child_id}>
+                    <div className="child-number">#{child.visit_number}</div>
+                    <div className="child-name">
+                      <strong>{child.child_name}</strong>
+                      <span className="muted">{child.guardian_name} · {child.guardian_phone}</span>
+                      <span className="muted">
+                        {ar ? "الدخول: " : "Checked in: "}{formatDate(child.checked_in_at, language)}
+                      </span>
+                    </div>
+                    <div className="child-price">
+                      <span>{ar ? "المدة المحجوزة" : "Booked duration"}</span>
+                      <strong>{booked > 0 ? formatDuration(booked, language) : (ar ? "غير محددة" : "Not recorded")}</strong>
+                      <span>{ar ? "المدة الفعلية" : "Elapsed time"}</span>
+                      <strong>{formatDuration(actual, language)}</strong>
+                    </div>
+                    <div className="child-price">
+                      <span>{ar ? "السعر الأساسي" : "Base price"}</span>
+                      <strong>{money(child.base_amount_minor, language)}</strong>
+                      <span>{ar ? "إضافي تقديري" : "Estimated overtime"}</span>
+                      <strong>{money(
+                        estimatedOvertime > 0 && rate !== null
+                          ? Math.round(rate * estimatedOvertime / 60)
+                          : 0,
+                        language
+                      )}</strong>
+                    </div>
+                    <button
+                      type="button"
+                      className="primary-button"
+                      disabled={!ready || checkoutId !== ""}
+                      onClick={() => void checkOutChild(child)}
+                    >
+                      {checkoutId === child.visit_child_id
+                        ? (ar ? "جارٍ الخروج..." : "Checking out...")
+                        : (ar ? "تسجيل الخروج" : "Check out")}
+                    </button>
+                  </article>
+                );
+              })}
+            </div>
+          )}
+          <p className="muted intro">
+            {ar
+              ? "الوقت الإضافي المعروض تقديري؛ المبلغ النهائي يُحفظ عند تسجيل الخروج."
+              : "Overtime shown here is an estimate. The final amount is saved when checking out."}
+          </p>
+        </section>
       ) : screen === "reception" ? (
         <form className="workspace" onSubmit={createVisit}>
           <section className="panel">
             <div className="panel-title">
-              <div><span className="step">01</span><h3>{tr('Guardian information')}</h3></div>
-              <span className="muted">{tr('Required')}</span>
+              <div><span className="step">01</span><h3>{tr("Guardian information")}</h3></div>
+              <span className="muted">{tr("Required")}</span>
             </div>
             <div className="form-grid">
-              <label>{tr('Guardian full name')}
+              <label>{tr("Guardian full name")}
                 <input value={guardianName} onChange={(e) => setGuardianName(e.target.value)} required placeholder={tr("Full name")} />
               </label>
-              <label>{tr('Relationship')}
+              <label>{tr("Relationship")}
                 <select value={guardianRelation} onChange={(e) => setGuardianRelation(e.target.value)}>
                   {["Mother", "Father", "Guardian", "Relative", "Other"].map((item) => <option key={item} value={item}>{tr(item)}</option>)}
                 </select>
               </label>
-              <label className="full-width">{tr('Phone number')}
+              <label className="full-width">{tr("Phone number")}
                 <input value={guardianPhone} onChange={(e) => setGuardianPhone(e.target.value)} required inputMode="tel" placeholder={tr("Guardian phone")} />
               </label>
             </div>
@@ -438,7 +684,7 @@ export default function App() {
 
           <section className="panel">
             <div className="panel-title">
-              <div><span className="step">02</span><h3>{tr('Children and pricing')}</h3></div>
+              <div><span className="step">02</span><h3>{tr("Children and pricing")}</h3></div>
               <span className="muted">{children.length} {tr(children.length === 1 ? "child" : "children")}</span>
             </div>
             {rules.length === 0 && (
@@ -454,37 +700,34 @@ export default function App() {
                 return (
                   <div className="child-row" key={child.key}>
                     <div className="child-number">{index + 1}</div>
-                    <label className="child-name">{tr('Child name')}
+                    <label className="child-name">{tr("Child name")}
                       <input value={child.name} onChange={(e) => updateChild(child.key, "name", e.target.value)} required placeholder={tr("Child's name")} />
                     </label>
-                    <label className="child-pricing">{tr('Pricing rule')}
+                    <label className="child-pricing">{tr("Pricing rule")}
                       <select value={child.ruleId} onChange={(e) => updateChild(child.key, "ruleId", e.target.value)} required>
-                        <option value="">{tr('Select price')}</option>
+                        <option value="">{tr("Select price")}</option>
                         {rules.map((rule) => <option key={rule.id} value={rule.id}>{rule.name} · {tr(rule.pricing_type)}</option>)}
                       </select>
-                      {selected?.pricing_type === "hourly" && (
-                        <div className="booked-hours-field">
-                          <span>{language === "ar" ? "عدد الساعات المحجوزة" : "Booked hours"}</span>
-                          <input
-                            type="number"
-                            min="0.5"
-                            max="12"
-                            step="0.5"
-                            required
-                            value={child.durationHours}
-                            onChange={(e) =>
-                              updateChild(
-                                child.key,
-                                "durationHours",
-                                Number(e.target.value)
-                              )
-                            }
-                          />
-                        </div>
-                      )}
+                    </label>
+                    <label className="booked-hours-field">
+                      {ar ? "مدة الحجز لكل طفل (بالساعات)" : "Booked duration per child (hours)"}
+                      <input
+                        type="number"
+                        min="0.5"
+                        max="12"
+                        step="0.5"
+                        required
+                        value={child.durationHours}
+                        onChange={(e) => updateChild(child.key, "durationHours", Number(e.target.value))}
+                      />
+                      <span className="muted">
+                        {selected?.pricing_type === "hourly"
+                          ? (ar ? "السعر يتغير حسب عدد الساعات" : "Price is multiplied by booked hours")
+                          : (ar ? "السعر الأساسي ثابت؛ الإضافي بالدقيقة متاح للتسعير بالساعة فقط" : "Base price stays fixed; per-minute overtime is available for hourly pricing only")}
+                      </span>
                     </label>
                     <div className="child-price">
-                      <span>{tr('Price estimate')}</span>
+                      <span>{tr("Price estimate")}</span>
                       <strong>{selected ? money(priceFor(child), language) : "—"}</strong>
                     </div>
                     <button type="button" className="remove-button" onClick={() => removeChild(child.key)} disabled={children.length === 1} aria-label={`Remove child ${index + 1}`}>×</button>
@@ -497,13 +740,9 @@ export default function App() {
 
           <section className="summary-panel">
             <div>
-              <span className="muted">{tr('Initial visit total')}</span>
+              <span className="muted">{tr("Initial visit total")}</span>
               <strong className="total">{money(total, language)}</strong>
-              <p>
-                {language === "ar"
-                  ? "قبل الخصومات · السعر بالساعة محسوب حسب مدة الحجز"
-                  : "Before discounts · Hourly pricing uses the booked duration"}
-              </p>
+              <p>{ar ? "قبل الخصومات؛ يتم حساب الوقت الإضافي عند الخروج بالدقيقة." : "Before discounts; applicable overtime is calculated per minute at checkout."}</p>
             </div>
             <button className="primary-button" type="submit" disabled={!ready || saving || rules.length === 0}>
               {saving ? tr("Saving visit…") : tr("Confirm check-in")}
@@ -513,31 +752,30 @@ export default function App() {
       ) : (
         <section className="panel">
           <div className="panel-title">
-            <div><span className="step">01</span><h3>{tr('Add a pricing rule')}</h3></div>
+            <div><span className="step">01</span><h3>{tr("Add a pricing rule")}</h3></div>
           </div>
           <p className="muted intro">{tr("Enter the real price used by your club. Prices are stored in EGP.")}</p>
           <form className="form-grid" onSubmit={createRule}>
-            <label>{tr('Rule name')}
+            <label>{tr("Rule name")}
               <input value={ruleName} onChange={(e) => setRuleName(e.target.value)} required placeholder={tr("e.g. Standard entry")} />
             </label>
-            <label>{tr('Pricing type')}
+            <label>{tr("Pricing type")}
               <select value={ruleType} onChange={(e) => setRuleType(e.target.value as PricingRule["pricing_type"])}>
                 <option value="fixed">{tr("Fixed price")}</option>
                 <option value="hourly">{tr("Hourly (first-hour estimate)")}</option>
                 <option value="offer">{tr("Offer (fixed price)")}</option>
               </select>
             </label>
-            <label>{tr('Price in EGP')}
+            <label>{tr("Price in EGP")}
               <input type="number" min="0" step="0.01" value={ruleAmount} onChange={(e) => setRuleAmount(e.target.value)} required placeholder={tr("Enter actual price")} />
             </label>
             <div className="full-width">
-              <button className="primary-button" type="submit" disabled={!ready}>{tr('Save pricing rule')}</button>
+              <button className="primary-button" type="submit" disabled={!ready}>{tr("Save pricing rule")}</button>
             </div>
           </form>
-
           <div className="rule-list">
-            <h3>{tr('Active pricing rules')}</h3>
-            {rules.length === 0 ? <p className="muted">{tr('No rules configured.')}</p> : rules.map((rule) => (
+            <h3>{tr("Active pricing rules")}</h3>
+            {rules.length === 0 ? <p className="muted">{tr("No rules configured.")}</p> : rules.map((rule) => (
               <div className="rule-item" key={rule.id}>
                 <div><strong>{rule.name}</strong><span>{tr(rule.pricing_type)}</span></div>
                 <strong>{money(rule.amount_minor, language)}</strong>
