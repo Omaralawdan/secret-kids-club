@@ -186,15 +186,17 @@ export default function ReportsCenter({ db, language, isAdmin = false, canManage
   function exportCsv() {
     if (!loaded) { setError("اعرض التقرير أولًا قبل التصدير."); return; }
     const columns = current.fields.filter(f => selectedFields.includes(f.key));
+    if (!columns.length) { setError("اختار عمودًا واحدًا على الأقل قبل التصدير."); return; }
     const data = [columns.map(f => csvCell(f.label)).join(","), ...rows.map(row => columns.map(f => csvCell(row[f.key])).join(","))].join("\r\n");
     const blob = new Blob(["\uFEFF", data], {type:"text/csv;charset=utf-8;"});
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a"); anchor.href=url; anchor.download=`secret-kids-club-${reportKey}-${new Date().toISOString().slice(0,10)}.csv`;
-    anchor.click(); URL.revokeObjectURL(url);
+    anchor.click(); window.setTimeout(()=>URL.revokeObjectURL(url),1000);
   }
   function exportXlsx() {
     if (!loaded) { setError("اعرض التقرير أولًا قبل التصدير."); return; }
     const columns = current.fields.filter(f => selectedFields.includes(f.key));
+    if (!columns.length) { setError("اختار عمودًا واحدًا على الأقل قبل التصدير."); return; }
     const values = rows.map(row => columns.map(field => row[field.key] ?? ""));
     const blob = makeXlsx(columns.map(field=>field.label), values);
     const url = URL.createObjectURL(blob);
