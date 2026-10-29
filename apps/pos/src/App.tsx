@@ -77,6 +77,54 @@ function formatDuration(minutes: number, language: Language) {
   return `${remainder}m`;
 }
 
+type ReceiptData = {
+  visitNumber: number; guardianName: string; guardianPhone: string; childName: string;
+  checkedInAt: string; checkedOutAt?: string | null; bookedMinutes: number; actualMinutes?: number | null;
+  baseAmountMinor: number; discountAmountMinor: number; overtimeMinutes?: number | null;
+  overtimeAmountMinor?: number | null; totalAmountMinor?: number | null;
+  venueName: string; venueAddress: string; venuePhone: string; issuer: string;
+};
+
+function escapeReceipt(value: unknown): string {
+  return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  })[char] ?? char);
+}
+
+function printReceipt(data: ReceiptData, language: Language) {
+  const ar = language === "ar";
+  const finalReceipt = Boolean(data.checkedOutAt);
+  const label = (en: string, arabic: string) => ar ? arabic : en;
+  const row = (name: string, value: string) => '<div class="row"><span>' + name + '</span><strong>' + value + '</strong></div>';
+  const amount = (name: string, value: number) => row(label(name, name), escapeReceipt(money(value, language)));
+  const popup = window.open("", "_blank", "width=420,height=720");
+  if (!popup) { window.alert(label("Allow pop-ups to print the receipt.", "اسمح بالنوافذ المنبثقة لطباعة الإيصال.")); return; }
+  const date = (value: string) => escapeReceipt(new Date(value).toLocaleString(ar ? "ar-EG" : "en-EG"));
+  let html = '<!doctype html><html lang="' + (ar ? "ar" : "en") + '" dir="' + (ar ? "rtl" : "ltr") + '"><head><meta charset="utf-8"><title>Secret Kids Club Receipt</title>';
+  html += '<style>@page{size:80mm auto;margin:3mm}*{box-sizing:border-box}body{margin:0;font:12px/1.45 Arial,Tahoma,sans-serif;color:#171717}.receipt{width:74mm;margin:auto;padding:2mm}.head{text-align:center;border-bottom:2px dashed #555;padding-bottom:10px;margin-bottom:8px}h1{font-size:18px;margin:0 0 3px;color:#b91c45}h2{font-size:14px;margin:5px 0}.sub{font-size:10px;color:#444}.row{display:flex;justify-content:space-between;gap:8px;padding:4px 0;border-bottom:1px dotted #ddd;align-items:flex-start}.row span{color:#444;max-width:48%}.row strong{text-align:end;max-width:58%;overflow-wrap:anywhere}.section{font-weight:700;margin:10px 0 3px;color:#b91c45}.total{margin-top:7px;padding:8px;background:#fff0f4;border:1px solid #f2b8c8;border-radius:6px;font-size:14px}.foot{text-align:center;border-top:2px dashed #555;margin-top:12px;padding-top:8px;font-size:10px}@media screen{body{background:#eee;padding:12px}.receipt{background:white;padding:10px;box-shadow:0 2px 14px #0002}}</style></head><body><main class="receipt">';
+  html += '<header class="head"><h1>' + escapeReceipt(data.venueName || "Secret Kids Club") + '</h1>';
+  if (data.venueAddress) html += '<div class="sub">' + escapeReceipt(data.venueAddress) + '</div>';
+  html += '<div class="sub">' + label("Phone", "تليفون") + ': ' + escapeReceipt(data.venuePhone || "01122799113") + '</div><h2>' + label("VISIT RECEIPT", "إيصال زيارة طفل") + '</h2>';
+  html += '<div class="sub">' + label("Receipt No.", "رقم الإيصال") + ': SKC-' + data.visitNumber + '-' + (finalReceipt ? "OUT" : "IN") + '-' + Date.now().toString().slice(-6) + '</div></header>';
+  html += '<div class="section">' + label("Visit details", "بيانات الزيارة") + '</div>';
+  html += row(label("Visit number", "رقم الزيارة"), String(data.visitNumber));
+  html += row(label("Visit date", "تاريخ الزيارة"), date(data.checkedInAt));
+  html += row(label("Guardian", "اسم المرافق"), escapeReceipt(data.guardianName));
+  html += row(label("Guardian phone", "تليفون المرافق"), escapeReceipt(data.guardianPhone));
+  html += row(label("Child", "اسم الطفل"), escapeReceipt(data.childName));
+  html += row(label("Check-in", "وقت الدخول"), date(data.checkedInAt));
+  if (finalReceipt) html += row(label("Check-out", "وقت الخروج"), date(data.checkedOutAt || ""));
+  html += row(label("Booked duration", "المدة المحجوزة"), escapeReceipt(formatDuration(data.bookedMinutes, language)));
+  if (finalReceipt) html += row(label("Actual duration", "المدة الفعلية"), escapeReceipt(formatDuration(data.actualMinutes || 0, language)));
+  html += '<div class="section">' + label("Payment details", "تفاصيل الحساب") + '</div>';
+  html += amount(label("Base price", "السعر الأساسي"), data.baseAmountMinor);
+  html += amount(label("Discount", "الخصم"), data.discountAmountMinor);
+  if (finalReceipt) { html += row(label("Overtime duration", "مدة الوقت الإضافي"), escapeReceipt(formatDuration(data.overtimeMinutes || 0, language))); html += amount(label("Overtime amount", "قيمة الوقت الإضافي"), data.overtimeAmountMinor || 0); }
+  html += '<div class="row total"><span>' + label(finalReceipt ? "FINAL TOTAL" : "INITIAL ESTIMATE", finalReceipt ? "الإجمالي النهائي" : "السعر المبدئي") + '</span><strong>' + escapeReceipt(money(finalReceipt ? (data.totalAmountMinor || 0) : (data.baseAmountMinor - data.discountAmountMinor), language)) + '</strong></div>';
+  html += '<div class="section">' + label("Receipt details", "بيانات الإيصال") + '</div>' + row(label("Issued by", "مُصدر الإيصال"), escapeReceipt(data.issuer || label("Cashier", "الكاشير")));
+  html += '<footer class="foot">' + label("Thank you for visiting! ❤️", "شكرًا لزيارتكم ❤️") + '</footer></main><script>window.addEventListener("load",()=>setTimeout(()=>window.print(),250));window.addEventListener("afterprint",()=>setTimeout(()=>window.close(),300));</script></body></html>';
+  popup.document.open(); popup.document.write(html); popup.document.close();
+}
 function readHourlyRate(json: string): number | null {
   try {
     const value = JSON.parse(json) as { hourlyRateMinor?: unknown };
@@ -106,6 +154,10 @@ export default function App() {
   const [saving, setSaving] = useState(false);
   const [checkoutId, setCheckoutId] = useState("");
   const [clock, setClock] = useState(Date.now());
+  const [venueName, setVenueName] = useState("Secret Kids Club");
+  const [venueAddress, setVenueAddress] = useState("");
+  const [venuePhone, setVenuePhone] = useState("01122799113");
+  const [fontScale, setFontScale] = useState("1");
 
   const [guardianName, setGuardianName] = useState("");
   const [guardianRelation, setGuardianRelation] = useState("Mother");
@@ -184,6 +236,25 @@ export default function App() {
       mounted = false;
     };
   }, [refreshData]);
+
+  useEffect(() => {
+    try {
+      setVenueName(localStorage.getItem("skc.venueName") || "Secret Kids Club");
+      setVenueAddress(localStorage.getItem("skc.venueAddress") || "");
+      setVenuePhone(localStorage.getItem("skc.venuePhone") || "01122799113");
+      setFontScale(localStorage.getItem("skc.fontScale") || "1");
+    } catch { /* Use in-memory defaults if storage is unavailable. */ }
+  }, []);
+
+  useEffect(() => {
+    document.documentElement.style.setProperty("--app-scale", fontScale);
+    try {
+      localStorage.setItem("skc.venueName", venueName);
+      localStorage.setItem("skc.venueAddress", venueAddress);
+      localStorage.setItem("skc.venuePhone", venuePhone);
+      localStorage.setItem("skc.fontScale", fontScale);
+    } catch { /* Current settings remain usable for this session. */ }
+  }, [venueName, venueAddress, venuePhone, fontScale]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setClock(Date.now()), 30000);
@@ -422,6 +493,15 @@ export default function App() {
       }
 
       await refreshData(db);
+      for (const row of childRows) {
+        printReceipt({
+          visitNumber, guardianName: guardianName.trim(), guardianPhone: guardianPhone.trim(),
+          childName: row.child.name, checkedInAt: timestamp,
+          bookedMinutes: Math.round(row.child.durationHours * 60),
+          baseAmountMinor: priceFor(row.child), discountAmountMinor: 0,
+          venueName, venueAddress, venuePhone, issuer: "Cashier",
+        }, language);
+      }
       setGuardianName("");
       setGuardianPhone("");
       setGuardianRelation("Mother");
@@ -475,6 +555,34 @@ export default function App() {
         visitChildId: child.visit_child_id,
       });
 
+      const receiptRows = await db.select<{
+        visit_number: number; guardian_name: string; guardian_phone: string; child_name: string;
+        checked_in_at: string; checked_out_at: string; duration_minutes: number;
+        actual_duration_minutes: number | null; base_amount_minor: number; discount_amount_minor: number;
+        overtime_minutes: number | null; overtime_amount_minor: number | null; final_amount_minor: number;
+      }[]>(
+        `SELECT v.visit_number_local AS visit_number, v.guardian_name_snapshot AS guardian_name,
+                v.guardian_phone_snapshot AS guardian_phone, vc.child_name_snapshot AS child_name,
+                v.checked_in_at, vc.checked_out_at, p.duration_minutes, vc.actual_duration_minutes,
+                p.base_amount_minor, p.discount_amount_minor, p.overtime_minutes,
+                p.overtime_amount_minor, p.final_amount_minor
+         FROM local_visits v JOIN local_visit_children vc ON vc.visit_id = v.id
+         JOIN local_visit_child_pricing p ON p.visit_child_id = vc.id WHERE vc.id = ?`,
+        [child.visit_child_id]
+      );
+      const receipt = receiptRows[0];
+      if (receipt && receipt.checked_out_at) {
+        printReceipt({
+          visitNumber: receipt.visit_number, guardianName: receipt.guardian_name,
+          guardianPhone: receipt.guardian_phone, childName: receipt.child_name,
+          checkedInAt: receipt.checked_in_at, checkedOutAt: receipt.checked_out_at,
+          bookedMinutes: receipt.duration_minutes, actualMinutes: receipt.actual_duration_minutes || 0,
+          baseAmountMinor: receipt.base_amount_minor, discountAmountMinor: receipt.discount_amount_minor,
+          overtimeMinutes: receipt.overtime_minutes || 0, overtimeAmountMinor: receipt.overtime_amount_minor || 0,
+          totalAmountMinor: receipt.final_amount_minor, venueName, venueAddress, venuePhone, issuer: "Cashier",
+        }, language);
+      }
+
       await refreshData(db);
 
       setMessage(
@@ -500,7 +608,7 @@ export default function App() {
   }
 
   return (
-    <main className="app-shell">
+    <main className="app-shell" style={{ zoom: Number(fontScale) || 1 }}>
       <header className="topbar">
         <div className="brand-mark">SK</div>
         <div className="brand-copy">
@@ -568,14 +676,31 @@ export default function App() {
           <div className="panel-title">
             <div><span className="step">01</span><h3>{tr("Settings")}</h3></div>
           </div>
-          <p className="muted intro">{tr("Choose the language used throughout the application.")}</p>
-          <label>
-            {tr("Language")}
-            <select value={language} onChange={(event) => setLanguage(event.target.value as Language)}>
-              <option value="en">{tr("English")}</option>
-              <option value="ar">{tr("Arabic")}</option>
-            </select>
-          </label>
+          <p className="muted intro">{ar ? "خصص شكل البرنامج وبيانات المكان التي ستظهر على الإيصالات." : "Customize the app appearance and the venue details printed on receipts."}</p>
+          <div className="settings-grid">
+            <label>{tr("Language")}
+              <select value={language} onChange={(event) => setLanguage(event.target.value as Language)}>
+                <option value="en">{tr("English")}</option><option value="ar">{tr("Arabic")}</option>
+              </select>
+            </label>
+            <label>{ar ? "حجم الخط" : "App font size"}
+              <select value={fontScale} onChange={(event) => setFontScale(event.target.value)}>
+                <option value="0.9">{ar ? "صغير" : "Small"}</option>
+                <option value="1">{ar ? "متوسط" : "Medium"}</option>
+                <option value="1.1">{ar ? "كبير" : "Large"}</option>
+              </select>
+            </label>
+            <label>{ar ? "اسم المكان على الإيصال" : "Venue name on receipt"}
+              <input value={venueName} onChange={(event) => setVenueName(event.target.value)} required />
+            </label>
+            <label>{ar ? "رقم تليفون المكان" : "Venue phone number"}
+              <input value={venuePhone} onChange={(event) => setVenuePhone(event.target.value)} inputMode="tel" required />
+            </label>
+            <label className="full-width">{ar ? "عنوان المكان (اختياري)" : "Venue address (optional)"}
+              <input value={venueAddress} onChange={(event) => setVenueAddress(event.target.value)} />
+            </label>
+          </div>
+          <div className="settings-preview"><strong>{ar ? "معاينة الإيصال" : "Receipt preview"}</strong><span>{venueName || "Secret Kids Club"}</span><span>{venuePhone || "01122799113"}</span></div>
         </section>
       ) : screen === "active" ? (
         <section className="panel">
