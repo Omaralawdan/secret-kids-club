@@ -302,9 +302,10 @@ fn active_user(db:&Connection)->Result<(String,Vec<String>),String>{
 fn require_role(db:&Connection,allowed:&[&str])->Result<(String,Vec<String>),String>{let(id,roles)=active_user(db)?;if roles.iter().any(|r|allowed.contains(&r.as_str())){Ok((id,roles))}else{Err("ليس لديك صلاحية لتنفيذ هذه العملية.".into())}}
 #[tauri::command]
 fn auth_status(app:tauri::AppHandle)->Result<Value,String>{
- let db=auth_db(&app)?;let count:i64=db.query_row("SELECT COUNT(*) FROM local_users",[],|r|r.get(0)).map_err(|e|e.to_string())?;
- let user:Option<(String,String,String)>=db.query_row("SELECT u.id,u.display_name,u.role_codes_json FROM local_session s JOIN local_users u ON u.id=s.actor_user_id WHERE s.singleton_id=1 AND u.is_active=1",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(|e|e.to_string())?;
- Ok(json!({"needsSetup":count==0,"user":user.map(|(id,name,roles)|json!({"id":id,"name":name,"roles":roles}))}))
+ let db=auth_db(&app)?;
+ db.execute("UPDATE local_session SET actor_user_id=NULL,authenticated_at=NULL WHERE singleton_id=1",[]).map_err(|e|e.to_string())?;
+ let count:i64=db.query_row("SELECT COUNT(*) FROM local_users",[],|r|r.get(0)).map_err(|e|e.to_string())?;
+ Ok(json!({"needsSetup":count==0,"user":null}))
 }
 #[tauri::command]
 fn setup_first_admin(app:tauri::AppHandle,username:String,display_name:String,password:String)->Result<Value,String>{
