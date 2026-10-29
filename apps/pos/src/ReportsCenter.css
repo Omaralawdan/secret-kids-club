@@ -1,0 +1,32 @@
+.report-center{margin-top:18px}
+.report-controls{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin:18px 0}
+.report-controls label{display:flex;flex-direction:column;gap:7px;min-width:0}
+.report-field-panel{border:1px solid #e6e8ef;border-radius:12px;padding:14px;margin:12px 0}
+.report-field-title{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px}
+.report-field-title>div{display:flex;gap:7px;flex-wrap:wrap}
+.report-field-list{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.report-check{display:flex;align-items:center;gap:8px;font-weight:500;min-width:0}
+.report-check input{width:16px;min-width:16px;min-height:16px;accent-color:#a51f35}
+.report-actions,.report-templates{display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin:16px 0}
+.report-templates{padding:12px;background:#fafbfe;border-radius:10px}
+.report-preview{margin-top:22px;border:1px solid #e6e8ef;border-radius:12px;overflow:hidden;background:white}
+.report-preview-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px;border-bottom:1px solid #e6e8ef}
+.report-preview-head h3{margin:0;font-size:17px}
+.report-preview-head p{margin:5px 0 0;color:#737b8d;font-size:12px}
+.report-preview-head>strong{white-space:nowrap;color:#a51f35}
+.report-table-wrap{width:100%;overflow:auto}
+.report-table{width:100%;border-collapse:collapse;font-size:12px}
+.report-table th,.report-table td{padding:10px 12px;border-bottom:1px solid #edf0f4;text-align:start;white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis}
+.report-table th{background:#f7f8fb;color:#414a5e;font-weight:800}
+.report-table tbody tr:hover{background:#fff8fa}
+@media(max-width:850px){.report-controls{grid-template-columns:repeat(2,minmax(0,1fr))}.report-field-list{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:560px){.report-controls{grid-template-columns:1fr}.report-field-list{grid-template-columns:repeat(2,minmax(0,1fr))}.report-field-title{align-items:flex-start;flex-direction:column}.report-actions{align-items:stretch;flex-direction:column}.report-actions button{width:100%}}
+@media print{
+  body *{visibility:hidden!important}
+  #report-print-area,#report-print-area *{visibility:visible!important}
+  #report-print-area{position:absolute;left:0;top:0;width:100%;border:0;overflow:visible}
+  .report-table-wrap{overflow:visible}
+  .report-table{font-size:9pt}
+  .report-table th,.report-table td{white-space:normal;max-width:none}
+  @page{size:A4 landscape;margin:10mm}
+}
