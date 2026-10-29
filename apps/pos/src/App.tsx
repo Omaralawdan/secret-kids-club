@@ -21,6 +21,7 @@ type ChildDraft = {
   name: string;
   ruleId: string;
   durationHours: number;
+  hourlyRateMinor: number | null;
 };
 
 type Screen = "reception" | "active" | "pricing" | "settings" | "reports" | "admin";
@@ -171,8 +172,9 @@ export default function App() {
   const [guardianPhone, setGuardianPhone] = useState("");
   const [paymentMethod, setPaymentMethod] = useState<"cash" | "instapay" | "wallet">("cash");
   const [customerLookupMessage, setCustomerLookupMessage] = useState("");
+  const [previousChildren, setPreviousChildren] = useState<{name:string;lastVisit:string}[]>([]);
   const [children, setChildren] = useState<ChildDraft[]>([
-    { key: makeId(), name: "", ruleId: "", durationHours: 1 },
+    { key: makeId(), name: "", ruleId: "", durationHours: 1, hourlyRateMinor: null },
   ]);
 
   const [ruleName, setRuleName] = useState("");
@@ -276,16 +278,22 @@ export default function App() {
 
   function updateChild(
     key: string,
-    field: "name" | "ruleId" | "durationHours",
-    value: string | number
+    field: "name" | "ruleId" | "durationHours" | "hourlyRateMinor",
+    value: string | number | null
   ) {
     setChildren((current) =>
       current.map((child) => {
         if (child.key !== key) return child;
-        if (field === "durationHours") {
-          return { ...child, durationHours: Number(value) };
+        if (field === "durationHours") return { ...child, durationHours: Number(value) };
+        if (field === "hourlyRateMinor") {
+          const rate = value === null ? null : Number(value);
+          return { ...child, hourlyRateMinor: rate };
         }
-        return { ...child, [field]: value };
+        if (field === "ruleId") {
+          const selected = rules.find(rule => rule.id === String(value));
+          return { ...child, ruleId: String(value), hourlyRateMinor: selected?.pricing_type === "hourly" ? selected.amount_minor : null };
+        }
+        return { ...child, [field]: value as string };
       })
     );
   }
@@ -293,7 +301,7 @@ export default function App() {
   function addChild() {
     setChildren((current) => [
       ...current,
-      { key: makeId(), name: "", ruleId: "", durationHours: 1 },
+      { key: makeId(), name: "", ruleId: "", durationHours: 1, hourlyRateMinor: null },
     ]);
   }
 
@@ -308,7 +316,7 @@ export default function App() {
     if (!rule) return 0;
 
     if (rule.pricing_type === "hourly") {
-      return Math.round(rule.amount_minor * child.durationHours);
+      return Math.round((child.hourlyRateMinor ?? rule.amount_minor) * child.durationHours);
     }
 
     return rule.amount_minor;
@@ -501,7 +509,7 @@ export default function App() {
               bookedDurationMinutes: bookedMinutes,
               hourlyRateMinor:
                 selectedRule.pricing_type === "hourly"
-                  ? selectedRule.amount_minor
+                  ? (row.child.hourlyRateMinor ?? selectedRule.amount_minor)
                   : null,
             }),
             timestamp,
@@ -836,9 +844,10 @@ export default function App() {
                 </select>
               </label>
               <label className="full-width">{tr("Phone number")}
-                <input value={guardianPhone} onChange={(e) => { setGuardianPhone(e.target.value); setCustomerLookupMessage(""); }} onBlur={() => { if (!db || !guardianPhone.trim()) return; void db.select<{full_name:string}[]>("SELECT full_name FROM local_guardians WHERE phone = ? ORDER BY created_at DESC LIMIT 1", [guardianPhone.trim()]).then(found => { if (found[0]) { setGuardianName(found[0].full_name); setCustomerLookupMessage(ar ? "تم العثور على العميل السابق وملء الاسم تلقائيًا." : "Existing customer found; name filled automatically."); } }).catch(() => {}); }} required inputMode="tel" placeholder={tr("Guardian phone")} />
+                <input value={guardianPhone} onChange={(e) => { setGuardianPhone(e.target.value); setCustomerLookupMessage(""); }} onBlur={() => { if (!db || !guardianPhone.trim()) return; void (async()=>{ const found=await db!.select<{full_name:string}[]>("SELECT full_name FROM local_guardians WHERE phone = ? ORDER BY created_at DESC LIMIT 1",[guardianPhone.trim()]); if(found[0]) setGuardianName(found[0].full_name); const history=await db!.select<{name:string;lastVisit:string}[]>(`SELECT vc.child_name_snapshot AS name, MAX(v.checked_in_at) AS lastVisit FROM local_visits v JOIN local_visit_children vc ON vc.visit_id=v.id WHERE v.guardian_phone_snapshot=? GROUP BY vc.child_name_snapshot ORDER BY MAX(v.checked_in_at) DESC LIMIT 20`,[guardianPhone.trim()]); setPreviousChildren(history); setCustomerLookupMessage(history.length ? (ar ? "تم العثور على العميل وأطفاله السابقين. اضغط على اسم طفل لإضافته." : "Customer history found. Select a previous child to add them.") : (found[0] ? (ar ? "تم العثور على العميل السابق." : "Existing customer found.") : "")); })().catch(()=>{}); }}  required inputMode="tel" placeholder={tr("Guardian phone")} />
                 {customerLookupMessage && <span className="muted">{customerLookupMessage}</span>}
               </label>
+              {previousChildren.length>0 && <div className="full-width panel"><strong>{ar ? "الأطفال المسجلون سابقًا لنفس رقم الهاتف" : "Children previously registered to this phone"}</strong><div className="rule-list">{previousChildren.map((item,i)=><button type="button" className="secondary-button" key={item.name+i} onClick={()=>{setChildren(current=>[...current,{key:makeId(),name:item.name,ruleId:rules[0]?.id||"",durationHours:1,hourlyRateMinor:rules[0]?.pricing_type==="hourly"?rules[0].amount_minor:null}]);setMessage(ar ? "تمت إضافة الطفل؛ يمكنك تعديل الاسم والمدة والسعر." : "Child added. You can edit the name, duration and price.");}}>{item.name} · {formatDate(item.lastVisit,language)} · {ar ? "إضافة" : "Add"}</button>)}</div></div>}
               <label className="full-width">{ar ? "طريقة الدفع" : "Payment method"}
                 <select value={paymentMethod} onChange={e => setPaymentMethod(e.target.value as "cash"|"instapay"|"wallet")}><option value="cash">{ar ? "كاش" : "Cash"}</option><option value="instapay">InstaPay</option><option value="wallet">{ar ? "محفظة إلكترونية" : "E-Wallet"}</option></select>
               </label>
@@ -873,15 +882,16 @@ export default function App() {
                       </select>
                     </label>
                     <label className="booked-hours-field">
-                      {ar ? "مدة الحجز لكل طفل (بالدقائق)" : "Booked duration per child (minutes)"}
+                      {ar ? "مدة الحجز (بالساعات أو الدقائق)" : "Booked duration (hours or minutes)"}
                       <input
                         type="number"
                         min="25"
                         max="720"
                         step="5"
                         required
-                        value={Math.round(child.durationHours * 60)}
-                        onChange={(e) => updateChild(child.key, "durationHours", Number(e.target.value) / 60)}
+                        value={Number(child.durationHours.toFixed(2))}
+                        step="0.25"
+                        onChange={(e) => updateChild(child.key, "durationHours", Number(e.target.value))}
                       />
                       <span className="muted">
                         {selected?.pricing_type === "hourly"
@@ -889,6 +899,7 @@ export default function App() {
                           : (ar ? "السعر الأساسي ثابت؛ الإضافي بالدقيقة متاح للتسعير بالساعة فقط" : "Base price stays fixed; per-minute overtime is available for hourly pricing only")}
                       </span>
                     </label>
+                    {selected?.pricing_type === "hourly" && <label className="child-pricing">{ar ? "سعر الساعة لهذا الطفل (جنيه)" : "Hourly price for this child (EGP)"}<input type="number" min="0" step="0.01" value={((child.hourlyRateMinor ?? selected.amount_minor) / 100).toFixed(2)} onChange={e => { const v=Math.round(Number(e.target.value||0)*100); setChildren(current=>current.map(item=>item.key===child.key||current.every(x=>x.hourlyRateMinor===null||x.hourlyRateMinor===selected.amount_minor)?{...item,hourlyRateMinor:v}:item)); }} /><span className="muted">{ar ? "تغيير السعر هنا يطبّقه على باقي الأطفال، ويمكنك تعديل سعر أي طفل بعد ذلك." : "Changing this rate applies it to the other children; you can then adjust any child individually."}</span></label>}
                     <div className="child-price">
                       <span>{tr("Price estimate")}</span>
                       <strong>{selected ? money(priceFor(child), language) : "—"}</strong>
