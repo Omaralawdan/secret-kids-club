@@ -90,12 +90,15 @@ export default function ReportsCenter({ db, language }: { db: Database | null; l
           GROUP BY g.id, g.full_name, g.phone, c.child_name_snapshot ORDER BY last_visit DESC`,
           [startDate,startDate,endDate,endDate]);
       } else if (reportKey === "payments") {
-        result = await db.select<ReportRow[]>(`SELECT p.created_at, v.visit_number_local AS visit_number,
-          v.guardian_name_snapshot AS guardian_name, v.guardian_phone_snapshot AS phone, p.method,
-          p.amount_minor/100.0 AS amount, p.status, p.received_by, p.external_reference
-          FROM local_payments p LEFT JOIN local_visits v ON v.id=p.visit_id
-          WHERE (?='' OR date(p.created_at)>=date(?)) AND (?='' OR date(p.created_at)<=date(?))
-          ORDER BY p.created_at DESC`, [startDate,startDate,endDate,endDate]);
+        result = await db.select<ReportRow[]>(`SELECT v.checked_in_at AS created_at, v.visit_number_local AS visit_number,
+          v.guardian_name_snapshot AS guardian_name, v.guardian_phone_snapshot AS phone,
+          json_extract(p.calculation_json, '$.paymentMethod') AS method,
+          p.final_amount_minor/100.0 AS amount, v.status,
+          v.cashier_user_id AS received_by, NULL AS external_reference
+          FROM local_visits v JOIN local_visit_children vc ON vc.visit_id=v.id
+          JOIN local_visit_child_pricing p ON p.visit_child_id=vc.id
+          WHERE (?='' OR date(v.checked_in_at)>=date(?)) AND (?='' OR date(v.checked_in_at)<=date(?))
+          ORDER BY v.checked_in_at DESC`, [startDate,startDate,endDate,endDate]);
       } else if (reportKey === "shifts") {
         result = await db.select<ReportRow[]>(`SELECT opened_at, closed_at, opened_by, closed_by,
           opening_float_minor/100.0 AS opening_float, expected_cash_minor/100.0 AS expected_cash,
