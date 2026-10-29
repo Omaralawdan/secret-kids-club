@@ -61,7 +61,9 @@ fn checkout_transaction_with_overtime(
                 p.base_amount_minor,
                 p.discount_amount_minor,
                 p.calculation_json,
-                p.pricing_rule_id
+                p.pricing_rule_id,
+                p.membership_id,
+                p.included_minutes
             FROM local_visit_children vc
             JOIN local_visits v ON v.id = vc.visit_id
             JOIN local_visit_child_pricing p ON p.visit_child_id = vc.id
@@ -80,6 +82,8 @@ fn checkout_transaction_with_overtime(
                     row.get::<_, i64>(6)?,
                     row.get::<_, String>(7)?,
                     row.get::<_, Option<String>>(8)?,
+                    row.get::<_, Option<String>>(9)?,
+                    row.get::<_, i64>(10)?,
                 ))
             },
         )
@@ -101,6 +105,8 @@ fn checkout_transaction_with_overtime(
         discount_amount,
         calculation_json,
         pricing_rule_id,
+        membership_id,
+        included_minutes,
     ) = record;
 
     if visit_status != "active" {
@@ -180,6 +186,27 @@ fn checkout_transaction_with_overtime(
     } else {
         0
     };
+
+    let membership_minutes_used = if pricing_type == "membership" {
+        let membership_id = membership_id.as_deref().ok_or_else(|| io::Error::other("اشتراك الطفل غير محدد."))?;
+        let membership: Option<(i64,i64,String)> = tx.query_row(
+            "SELECT included_minutes, used_minutes, status FROM local_child_memberships WHERE id=?",
+            params![membership_id],
+            |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))
+        ).optional()?;
+        let (total_minutes, used_minutes, status) = membership.ok_or_else(|| io::Error::other("الاشتراك غير موجود."))?;
+        if status != "active" { return Err(io::Error::other("الاشتراك غير نشط.").into()); }
+        let expiry: String = tx.query_row("SELECT expires_at FROM local_child_memberships WHERE id=?",params![membership_id],|r|r.get(0))?;
+        if DateTime::parse_from_rfc3339(&expiry).map(|d| d <= checkout_time).unwrap_or(true) { return Err(io::Error::other("انتهت صلاحية الباقة.").into()); }
+        let available = total_minutes.saturating_sub(used_minutes).max(0);
+        let consumed = actual_minutes.min(available);
+        let new_used = used_minutes.saturating_add(consumed);
+        tx.execute("UPDATE local_child_memberships SET used_minutes=?, status=CASE WHEN ?>=included_minutes THEN 'used' ELSE 'active' END WHERE id=?",params![new_used,new_used,membership_id])?;
+        tx.execute("INSERT INTO local_membership_usage(id,membership_id,visit_child_id,minutes_used,created_at) VALUES(?,?,?,?,?)",params![uuid::Uuid::new_v4().to_string(),membership_id,visit_child_id,consumed,checkout_time.to_rfc3339()])?;
+        consumed
+    } else { 0 };
+    calculation["membershipMinutesUsed"] = json!(membership_minutes_used);
+    calculation["membershipIncludedMinutesAtCheckout"] = json!(included_minutes);
 
     let base_final_amount = base_amount
         .checked_sub(discount_amount)
