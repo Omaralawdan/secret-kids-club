@@ -5,6 +5,8 @@ import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 import { t, useLanguage, type Language } from "./i18n";
 import ReportsCenter from "./ReportsCenter";
+import AuthGate, { type AuthUser } from "./AuthGate";
+import AdminTools from "./AdminTools";
 
 type PricingRule = {
   id: string;
@@ -21,7 +23,7 @@ type ChildDraft = {
   durationHours: number;
 };
 
-type Screen = "reception" | "active" | "pricing" | "settings" | "reports";
+type Screen = "reception" | "active" | "pricing" | "settings" | "reports" | "admin";
 
 type ActiveChild = {
   visit_id: string;
@@ -146,6 +148,7 @@ export default function App() {
   const tr = (key: string) => t(language, key);
   const ar = language === "ar";
 
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [db, setDb] = useState<Database | null>(null);
   const [databaseStatus, setDatabaseStatus] = useState("Connecting");
   const [error, setError] = useState("");
@@ -315,6 +318,10 @@ export default function App() {
 
   const total = children.reduce((sum, child) => sum + priceFor(child), 0);
   const ready = databaseStatus === "Connected" && db !== null;
+  const authRoles: string[] = (() => { try { return authUser ? JSON.parse(authUser.roles) : []; } catch { return []; } })();
+  const isAdmin = authRoles.includes("admin");
+  const canManage = isAdmin || authRoles.includes("manager");
+  if (!authUser) return <AuthGate onAuthenticated={setAuthUser} />;
 
   async function createRule(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -647,8 +654,11 @@ export default function App() {
         <button className={screen === "settings" ? "active" : ""} onClick={() => setScreen("settings")}>
           {tr("Settings")}
         </button>
-        <button className={screen === "reports" ? "active" : ""} onClick={() => setScreen("reports")}>
+        {(isAdmin || canManage) && <button className={screen === "reports" ? "active" : ""} onClick={() => setScreen("reports")}>
           {ar ? "التقارير والتصدير" : "Reports & Export"}
+        </button>}
+        {(isAdmin || canManage) && <button className={screen === "admin" ? "active" : ""} onClick={() => setScreen("admin")}>
+          {ar ? "الموظفون والورديات" : "Staff & Shifts"}
         </button>
       </nav>
 
@@ -663,7 +673,9 @@ export default function App() {
                 ? tr("Pricing rules")
                 : screen === "reports"
                   ? (ar ? "مركز التقارير والتصدير" : "Reports Center")
-                  : tr("Settings")}
+                  : screen === "admin"
+                    ? (ar ? "الموظفون والورديات" : "Staff & Shifts")
+                    : tr("Settings")}
         </h2>
         <p>
           {screen === "reception"
@@ -676,7 +688,9 @@ export default function App() {
                 ? tr("Configure the prices available to cashiers. No prices are preloaded.")
                 : screen === "reports"
                   ? (ar ? "اختار البيانات والفلاتر والأعمدة وشكل التقرير ثم صدّره." : "Choose data, filters, columns, and export format.")
-                  : tr("Choose the language used throughout the application.")}
+                  : screen === "admin"
+                    ? (ar ? "إدارة الحسابات وكلمات المرور والورديات وسجل المراجعة." : "Manage accounts, passwords, shifts and audit history.")
+                    : tr("Choose the language used throughout the application.")}
         </p>
       </section>
 
@@ -691,9 +705,11 @@ export default function App() {
         </section>
       )}
 
-      {screen === "reports" ? (
+      {screen === "admin" ? (
+        <AdminTools user={authUser} onLogout={() => { void invoke("logout_user").finally(() => setAuthUser(null)); }} onChanged={() => {}} />
+      ) : screen === "reports" ? (
         <ReportsCenter db={db} language={language} />
-      ) : screen === "settings" ? (
+      ) : screen === "settings" && isAdmin ? (
         <section className="panel settings-panel">
           <div className="panel-title">
             <div><span className="step">01</span><h3>{tr("Settings")}</h3></div>
@@ -937,7 +953,8 @@ export default function App() {
 
       <footer>
         <span>Secret Kids Club POS</span>
-        <span>{visits} {tr(visits === 1 ? "saved visit" : "saved visits")} · {tr("Local SQLite")}</span>
+        <span>{authUser.name} · {authRoles.join(", ")} · {visits} {tr(visits === 1 ? "saved visit" : "saved visits")} · {tr("Local SQLite")}</span>
+        <button type="button" className="secondary-button" onClick={() => { void invoke("logout_user").finally(() => setAuthUser(null)); }}>{ar ? "تسجيل الخروج" : "Log out"}</button>
       </footer>
       {receiptPreviewHtml && (
         <div className="receipt-modal-backdrop" role="dialog" aria-modal="true" aria-label={ar ? "معاينة الإيصال" : "Receipt preview"}>
