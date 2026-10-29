@@ -30,6 +30,51 @@ const defaultFields: Record<ReportKey, string[]> = {
   users:["display_name","role_codes_json","is_active","last_authenticated_at"],
 };
 
+
+function xmlEscape(value: unknown) {
+  return String(value ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&apos;");
+}
+function excelColumn(n: number) {
+  let out = "";
+  while (n > 0) { const r = (n - 1) % 26; out = String.fromCharCode(65 + r) + out; n = Math.floor((n - 1) / 26); }
+  return out;
+}
+function crc32(data: Uint8Array) {
+  let crc = 0xffffffff;
+  for (const byte of data) { crc ^= byte; for (let k=0;k<8;k++) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0); }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+function createStoredZip(files: {name:string; data:Uint8Array}[]) {
+  const enc = new TextEncoder(); const locals:Uint8Array[]=[]; const centrals:Uint8Array[]=[]; let offset=0;
+  const u16=(v:number)=>{const a=new Uint8Array(2);new DataView(a.buffer).setUint16(0,v,true);return a};
+  const u32=(v:number)=>{const a=new Uint8Array(4);new DataView(a.buffer).setUint32(0,v>>>0,true);return a};
+  const join=(parts:Uint8Array[])=>{const out=new Uint8Array(parts.reduce((n,p)=>n+p.length,0));let at=0;for(const p of parts){out.set(p,at);at+=p.length;}return out};
+  for(const file of files){const name=enc.encode(file.name),data=file.data,crc=crc32(data);
+    const local=join([u32(0x04034b50),u16(20),u16(0),u16(0),u16(0),u16(0),u32(crc),u32(data.length),u32(data.length),u16(name.length),u16(0),name,data]);locals.push(local);
+    centrals.push(join([u32(0x02014b50),u16(20),u16(20),u16(0),u16(0),u16(0),u16(0),u32(crc),u32(data.length),u32(data.length),u16(name.length),u16(0),u16(0),u16(0),u16(0),u32(0),u32(offset),name]));offset+=local.length;
+  }
+  const central=join(centrals),end=join([u32(0x06054b50),u16(0),u16(0),u16(files.length),u16(files.length),u32(central.length),u32(offset),u16(0)]);
+  return new Blob([...locals,central,end],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
+}
+function makeXlsx(headers:string[], rows:unknown[][]) {
+  const enc=new TextEncoder();
+  const sheetRows=[headers,...rows].map((row,ri)=>'<row r="'+(ri+1)+'">'+row.map((value,ci)=>{
+    const ref=excelColumn(ci+1)+(ri+1);
+    if(typeof value==="number"&&Number.isFinite(value))return '<c r="'+ref+'" t="n"><v>'+value+'</v></c>';
+    return '<c r="'+ref+'" t="inlineStr"><is><t xml:space="preserve">'+xmlEscape(value)+'</t></is></c>';
+  }).join("")+'</row>').join("");
+  const sheet='<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>'+sheetRows+'</sheetData></worksheet>';
+  const workbook='<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Report" sheetId="1" r:id="rId1"/></sheets></workbook>';
+  const files=[
+    {name:"[Content_Types].xml",data:enc.encode('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>')},
+    {name:"_rels/.rels",data:enc.encode('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>')},
+    {name:"xl/workbook.xml",data:enc.encode(workbook)},
+    {name:"xl/_rels/workbook.xml.rels",data:enc.encode('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>')},
+    {name:"xl/worksheets/sheet1.xml",data:enc.encode(sheet)}
+  ];
+  return createStoredZip(files);
+}
+
 function csvCell(value: unknown) {
   const text = String(value ?? "");
   return '"' + text.replace(/"/g, '""') + '"';
@@ -148,6 +193,15 @@ export default function ReportsCenter({ db, language }: { db: Database | null; l
     const anchor = document.createElement("a"); anchor.href=url; anchor.download=`secret-kids-club-${reportKey}-${new Date().toISOString().slice(0,10)}.csv`;
     anchor.click(); URL.revokeObjectURL(url);
   }
+  function exportXlsx() {
+    if (!loaded) { setError("اعرض التقرير أولًا قبل التصدير."); return; }
+    const columns = current.fields.filter(f => selectedFields.includes(f.key));
+    const values = rows.map(row => columns.map(field => row[field.key] ?? ""));
+    const blob = makeXlsx(columns.map(field=>field.label), values);
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a"); anchor.href=url; anchor.download=`secret-kids-club-${reportKey}-${new Date().toISOString().slice(0,10)}.xlsx`;
+    anchor.click(); window.setTimeout(()=>URL.revokeObjectURL(url),1000);
+  }
   function exportPdf() {
     if (!loaded) { setError("اعرض التقرير أولًا قبل التصدير."); return; }
     window.print();
@@ -176,7 +230,7 @@ export default function ReportsCenter({ db, language }: { db: Database | null; l
     <div className="report-field-panel"><div className="report-field-title"><strong>الأعمدة المطلوبة</strong><div><button type="button" className="secondary-button" onClick={()=>setSelectedFields(current.fields.map(f=>f.key))}>تحديد الكل</button><button type="button" className="secondary-button" onClick={()=>setSelectedFields([])}>مسح الاختيار</button></div></div>
       <div className="report-field-list">{current.fields.map(field=><label key={field.key} className="report-check"><input type="checkbox" checked={selectedFields.includes(field.key)} onChange={e=>setSelectedFields(old=>e.target.checked?[...old,field.key]:old.filter(key=>key!==field.key))}/><span>{field.label}</span></label>)}</div>
     </div>
-    <div className="report-actions"><button className="primary-button" type="button" onClick={()=>void runReport()} disabled={loading||!db}>{loading?"جارٍ إعداد التقرير...":"عرض التقرير"}</button><button className="secondary-button" type="button" onClick={saveTemplate}>حفظ كقالب</button><button className="secondary-button" type="button" onClick={exportCsv} disabled={!loaded}>تصدير Excel / CSV</button><button className="secondary-button" type="button" onClick={exportPdf} disabled={!loaded}>طباعة / حفظ PDF</button></div>
+    <div className="report-actions"><button className="primary-button" type="button" onClick={()=>void runReport()} disabled={loading||!db}>{loading?"جارٍ إعداد التقرير...":"عرض التقرير"}</button><button className="secondary-button" type="button" onClick={saveTemplate}>حفظ كقالب</button><button className="secondary-button" type="button" onClick={exportXlsx} disabled={!loaded}>تصدير Excel (.xlsx)</button><button className="secondary-button" type="button" onClick={exportCsv} disabled={!loaded}>تصدير CSV</button><button className="secondary-button" type="button" onClick={exportPdf} disabled={!loaded}>طباعة / حفظ PDF</button></div>
     {savedTemplates.length>0&&<div className="report-templates"><strong>قوالبي المحفوظة</strong>{savedTemplates.map((template,index)=><button key={template.name+index} className="secondary-button" type="button" onClick={()=>useTemplate(index)}>{template.name}</button>)}</div>}
     {error&&<div className="notice error" role="alert">{error}</div>}
     {loaded&&<div className="report-preview" id="report-print-area"><div className="report-preview-head"><div><h3>{current.label}</h3><p>{startDate||"بداية الفترة"} — {endDate||"حتى الآن"}</p></div><strong>{rows.length} سجل</strong></div>
