@@ -789,3 +789,117 @@ mod checkout_tests {
         let _ = std::fs::remove_file(path);
     }
 }
+
+
+#[cfg(test)]
+mod extension_tests {
+    use super::extend_child_time_transaction;
+    use rusqlite::{params, Connection};
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn extension_db(membership: bool) -> PathBuf {
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(format!("skc-extension-test-{}-{nonce}.db", std::process::id()));
+        let db = Connection::open(&path).unwrap();
+        db.execute_batch(
+            "CREATE TABLE local_visits (
+                id TEXT PRIMARY KEY, status TEXT NOT NULL
+            );
+            CREATE TABLE local_visit_children (
+                id TEXT PRIMARY KEY, visit_id TEXT NOT NULL,
+                child_name_snapshot TEXT NOT NULL, checked_out_at TEXT
+            );
+            CREATE TABLE local_pricing_rules (
+                id TEXT PRIMARY KEY, amount_minor INTEGER, duration_minutes INTEGER
+            );
+            CREATE TABLE local_visit_child_pricing (
+                id TEXT PRIMARY KEY, visit_child_id TEXT NOT NULL,
+                pricing_type TEXT NOT NULL, pricing_rule_id TEXT,
+                membership_id TEXT, duration_minutes INTEGER NOT NULL,
+                base_amount_minor INTEGER NOT NULL, discount_amount_minor INTEGER NOT NULL,
+                final_amount_minor INTEGER NOT NULL, calculation_json TEXT NOT NULL
+            );
+            CREATE TABLE local_audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, actor_user_id TEXT NOT NULL,
+                action TEXT NOT NULL, entity_type TEXT NOT NULL, entity_id TEXT,
+                reason TEXT, before_json TEXT, after_json TEXT, created_at TEXT NOT NULL
+            );
+            INSERT INTO local_visits (id, status) VALUES ('visit-1', 'active');
+            INSERT INTO local_visit_children (id, visit_id, child_name_snapshot)
+                VALUES ('child-1', 'visit-1', 'Test child');
+            INSERT INTO local_pricing_rules (id, amount_minor, duration_minutes)
+                VALUES ('rule-1', 6000, 60);"
+        ).unwrap();
+        db.execute(
+            "INSERT INTO local_visit_child_pricing
+             (id, visit_child_id, pricing_type, pricing_rule_id, membership_id,
+              duration_minutes, base_amount_minor, discount_amount_minor,
+              final_amount_minor, calculation_json)
+             VALUES ('pricing-1', 'child-1', ?, 'rule-1', ?, 60, 6000, 0, 6000, ?)",
+            params![
+                if membership { "membership" } else { "hourly" },
+                if membership { Some("membership-1") } else { None },
+                if membership { r#"{"hourlyRateMinor":6000}"# } else { r#"{"hourlyRateMinor":6000}"# }
+            ],
+        ).unwrap();
+        drop(db);
+        path
+    }
+
+    #[test]
+    fn extension_updates_price_duration_expiry_and_audit_atomically() {
+        let path = extension_db(false);
+        extend_child_time_transaction(&path, "child-1", 30).unwrap();
+
+        let db = Connection::open(&path).unwrap();
+        let saved: (i64, i64, i64, String) = db.query_row(
+            "SELECT duration_minutes, base_amount_minor, final_amount_minor, calculation_json
+             FROM local_visit_child_pricing WHERE visit_child_id = 'child-1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        ).unwrap();
+        assert_eq!(saved.0, 90);
+        assert_eq!(saved.1, 9000);
+        assert_eq!(saved.2, 9000);
+        assert!(saved.3.contains("expiresAt"));
+
+        let audit_count: i64 = db.query_row(
+            "SELECT COUNT(*) FROM local_audit_log WHERE action = 'visit_time_extended'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(audit_count, 1);
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn membership_extension_is_rejected_without_changing_records() {
+        let path = extension_db(true);
+        assert!(extend_child_time_transaction(&path, "child-1", 30).is_err());
+        let db = Connection::open(&path).unwrap();
+        let saved: (i64, i64) = db.query_row(
+            "SELECT duration_minutes, base_amount_minor FROM local_visit_child_pricing
+             WHERE visit_child_id = 'child-1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert_eq!(saved, (60, 6000));
+        let audit_count: i64 = db.query_row(
+            "SELECT COUNT(*) FROM local_audit_log",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(audit_count, 0);
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn unsupported_extension_duration_is_rejected() {
+        let path = extension_db(false);
+        assert!(extend_child_time_transaction(&path, "child-1", 20).is_err());
+        let _ = std::fs::remove_file(path);
+    }
+}
