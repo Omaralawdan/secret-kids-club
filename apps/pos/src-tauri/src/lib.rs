@@ -255,6 +255,25 @@ fn checkout_transaction_with_overtime(
         .into());
     }
 
+    if overtime_amount > 0 && !overtime_collected {
+        let actor: String = tx.query_row(
+            "SELECT COALESCE(actor_user_id, 'system') FROM local_session WHERE singleton_id = 1",
+            [],
+            |row| row.get(0),
+        )?;
+        tx.execute(
+            "INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,reason,before_json,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'overtime_waived','visit_child_pricing',?,?,?,?,?)",
+            params![
+                actor,
+                visit_child_id,
+                overtime_collection_note.as_deref().unwrap_or("").trim(),
+                json!({"overtime_amount_minor": overtime_amount, "overtime_collected": true}).to_string(),
+                json!({"overtime_amount_minor": 0, "overtime_collected": false, "charged_amount_minor": final_child_amount}).to_string(),
+                checkout_time_string,
+            ],
+        )?;
+    }
+
     let remaining: i64 = tx.query_row(
         r#"
         SELECT COUNT(*)
@@ -600,7 +619,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod checkout_tests {
-    use super::checkout_transaction;
+    use super::{checkout_transaction, checkout_transaction_with_overtime};
     use chrono::{Duration, SecondsFormat, Utc};
     use rusqlite::{params, Connection};
     use std::path::{Path, PathBuf};
@@ -631,6 +650,13 @@ mod checkout_tests {
                 visit_id TEXT NOT NULL,
                 checked_out_at TEXT,
                 actual_duration_minutes INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE local_session (singleton_id INTEGER PRIMARY KEY, actor_user_id TEXT);
+            INSERT INTO local_session(singleton_id, actor_user_id) VALUES (1, 'test-cashier');
+            CREATE TABLE local_audit_log (
+                id TEXT PRIMARY KEY, actor_user_id TEXT NOT NULL, action TEXT NOT NULL,
+                entity_type TEXT NOT NULL, entity_id TEXT, reason TEXT, before_json TEXT,
+                after_json TEXT, created_at TEXT NOT NULL
             );
             CREATE TABLE local_visit_child_pricing (
                 id TEXT PRIMARY KEY,
@@ -732,6 +758,43 @@ mod checkout_tests {
         assert!(visit.1.is_some());
         assert_eq!(visit.2, 10200);
 
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn authorized_overtime_waiver_is_excluded_from_total_and_audited() {
+        let path = setup_db(3690);
+        add_child(&path, "child-waived", "hourly", 60, 12000, 2000,
+            r#"{"hourlyRateMinor":6000}"#);
+
+        checkout_transaction_with_overtime(&path, "child-waived", false,
+            Some("Manager approved 5-minute grace".to_string())).unwrap();
+
+        let db = Connection::open(&path).unwrap();
+        let saved: (i64, i64, i64, i64, Option<String>) = db.query_row(
+            "SELECT overtime_minutes, overtime_amount_minor, final_amount_minor,
+                    overtime_collected, overtime_collection_note
+             FROM local_visit_child_pricing WHERE visit_child_id='child-waived'",
+            [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        ).unwrap();
+        assert_eq!(saved.0, 2);
+        assert_eq!(saved.1, 200);
+        assert_eq!(saved.2, 10000);
+        assert_eq!(saved.3, 0);
+        assert_eq!(saved.4.as_deref(), Some("Manager approved 5-minute grace"));
+
+        let visit_total: i64 = db.query_row(
+            "SELECT final_amount_minor FROM local_visits WHERE id='visit-1'", [], |r| r.get(0)
+        ).unwrap();
+        assert_eq!(visit_total, 10000);
+        let audit: (String, String, String) = db.query_row(
+            "SELECT action, reason, actor_user_id FROM local_audit_log WHERE entity_id='child-waived'",
+            [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        ).unwrap();
+        assert_eq!(audit.0, "overtime_waived");
+        assert_eq!(audit.1, "Manager approved 5-minute grace");
+        assert_eq!(audit.2, "test-cashier");
         drop(db);
         let _ = std::fs::remove_file(path);
     }
