@@ -449,7 +449,7 @@ export default function App() {
           checked_in_at, checked_out_at, status, pricing_type,
           amount_before_discount_minor, discount_amount_minor,
           final_amount_minor, cashier_user_id, sync_state, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 'active', ?, ?, 0, ?, 'local-cashier', 'pending', ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 'active', ?, ?, 0, ?, (SELECT actor_user_id FROM local_session WHERE singleton_id=1), 'pending', ?)`,
         [
           visitId,
           visitNumber,
@@ -648,12 +648,12 @@ export default function App() {
           {ar ? "الزيارات النشطة" : "Active visits"}
           {activeChildren.length > 0 ? ` (${activeChildren.length})` : ""}
         </button>
-        <button className={screen === "pricing" ? "active" : ""} onClick={() => setScreen("pricing")}>
+        {isAdmin && <button className={screen === "pricing" ? "active" : ""} onClick={() => setScreen("pricing")}>
           {tr("Pricing setup")}
-        </button>
-        <button className={screen === "settings" ? "active" : ""} onClick={() => setScreen("settings")}>
+        </button>}
+        {isAdmin && <button className={screen === "settings" ? "active" : ""} onClick={() => setScreen("settings")}>
           {tr("Settings")}
-        </button>
+        </button>}
         {(isAdmin || canManage) && <button className={screen === "reports" ? "active" : ""} onClick={() => setScreen("reports")}>
           {ar ? "التقارير والتصدير" : "Reports & Export"}
         </button>}
