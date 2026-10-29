@@ -297,6 +297,11 @@ fn checkout_child(
         return Err("Missing child visit ID.".to_string());
     }
 
+    // Authorize the operation in the command layer as well as through database guards.
+    let db = auth_db(&app)?;
+    require_role(&db, &["admin", "manager", "cashier"])?;
+    drop(db);
+
     let path = database_path(&app).map_err(|error| error.to_string())?;
     checkout_transaction(&path, &visit_child_id).map_err(|error| error.to_string())
 }
