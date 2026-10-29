@@ -127,7 +127,7 @@ fn checkout_transaction(
     let recovered_hourly_rate = if pricing_type == "hourly" && saved_hourly_rate.is_none() {
         pricing_rule_id.as_deref().and_then(|rule_id| {
             tx.query_row(
-                "SELECT amount_minor FROM local_pricing_rules WHERE id = ? AND pricing_type = 'hourly' AND is_active = 1",
+                "SELECT amount_minor FROM local_pricing_rules WHERE id = ? AND pricing_type = 'hourly'",
                 params![rule_id],
                 |row| row.get::<_, i64>(0),
             )
