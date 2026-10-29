@@ -655,7 +655,7 @@ export default function App() {
           {ar ? "التقارير والتصدير" : "Reports & Export"}
         </button>}
         {canOperate && <button className={screen === "admin" ? "active" : ""} onClick={() => setScreen("admin")}>
-          {ar ? "الموظفون والورديات" : "Staff & Shifts"}
+          {ar ? "الوردية والصندوق" : "Shift & Cash"}
         </button>}
       </nav>
 
