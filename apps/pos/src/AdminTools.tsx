@@ -4,7 +4,7 @@ import type { AuthUser } from "./AuthGate";
 type UserRow={id:string;username:string|null;name:string;roles:string;active:number;createdAt:string|null;lastLogin:string|null};
 type AuditRow={createdAt:string;actor:string;action:string;entityType:string;entityId:string|null;reason:string|null;before:string|null;after:string|null};
 type ShiftResult={expectedCashMinor:number;countedCashMinor:number;varianceMinor:number;closedAt?:string};
-export default function AdminTools({user,onLogout,onChanged}:{user:AuthUser;onLogout:()=>void;onChanged:()=>void}){
+export default function AdminTools({user,onLogout}:{user:AuthUser;onLogout:()=>void}){
  const roles:string[]=(()=>{try{return JSON.parse(user.roles)}catch{return []}})(),admin=roles.includes("admin"),manager=admin||roles.includes("manager");
  const [users,setUsers]=useState<UserRow[]>([]),[audit,setAudit]=useState<AuditRow[]>([]),[error,setError]=useState(""),[message,setMessage]=useState("");
  const [username,setUsername]=useState(""),[name,setName]=useState(""),[password,setPassword]=useState(""),[role,setRole]=useState("cashier");
