@@ -30,3 +30,13 @@ jobs:
         run: npm ci
       - name: TypeScript and Vite build only
         run: npm run build
+
+  rust-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Tauri Linux build prerequisites
+        run: sudo apt-get update && sudo apt-get install -y build-essential curl wget file libxdo-dev libssl-dev librsvg2-dev libayatana-appindicator3-dev libwebkit2gtk-4.1-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check Rust backend (no installer)
+        run: cargo check --manifest-path apps/pos/src-tauri/Cargo.toml
