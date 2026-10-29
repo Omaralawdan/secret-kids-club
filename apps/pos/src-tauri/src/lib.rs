@@ -420,6 +420,17 @@ fn create_pricing_rule(
 }
 
 #[tauri::command]
+fn get_active_cash_shift(app: tauri::AppHandle) -> Result<Value, String> {
+    let db = auth_db(&app)?;
+    require_role(&db, &["admin", "manager", "cashier"])?;
+    let shift: Option<Value> = db.query_row(
+        "SELECT s.id, s.opening_float_minor, s.opened_at, COALESCE(u.display_name, s.opened_by), COALESCE((SELECT SUM(p.amount_minor) FROM local_payments p WHERE p.method='cash' AND p.status='confirmed' AND p.created_at >= s.opened_at AND p.created_at <= strftime('%Y-%m-%dT%H:%M:%fZ','now')), 0) FROM local_cash_sessions s LEFT JOIN local_users u ON u.id=s.opened_by WHERE s.closed_at IS NULL ORDER BY s.opened_at DESC LIMIT 1",
+        [], |row| { let opening: i64 = row.get(1)?; let sales: i64 = row.get(4)?; Ok(json!({"id":row.get::<_,String>(0)?,"openingFloatMinor":opening,"openedAt":row.get::<_,String>(2)?,"openedBy":row.get::<_,String>(3)?,"cashSalesMinor":sales,"expectedCashMinor":opening.saturating_add(sales)})) }
+    ).optional().map_err(|e| e.to_string())?;
+    Ok(shift.unwrap_or(Value::Null))
+}
+
+#[tauri::command]
 fn open_cash_shift(app:tauri::AppHandle,opening_float_minor:i64)->Result<Value,String>{
  if opening_float_minor<0{return Err("رصيد بداية الوردية غير صحيح.".into())}
  let mut db=auth_db(&app)?;
@@ -492,7 +503,7 @@ pub fn run() {
                 .add_migrations("sqlite:secret-kids-club.db", migrations)
                 .build(),
         )
-        .invoke_handler(tauri::generate_handler![greet, checkout_child, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_create_user, admin_set_user_active, create_pricing_rule, open_cash_shift, close_cash_shift, admin_audit_log])
+        .invoke_handler(tauri::generate_handler![greet, checkout_child, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_create_user, admin_set_user_active, create_pricing_rule, get_active_cash_shift, open_cash_shift, close_cash_shift, admin_audit_log])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
