@@ -24,7 +24,7 @@ const reports: { key: ReportKey; label: string; description: string; fields: Fie
 const defaultFields: Record<ReportKey, string[]> = {
   visits:["visit_number","child_name","guardian_name","phone","checked_in_at","expected_checkout","checked_out_at","duration_minutes","total_amount","status"],
   customers:["guardian_name","phone","child_name","visit_count","last_visit"],
-  payments:["created_at","visit_number","guardian_name","method","amount","status","received_by"],
+  payments:["created_at","visit_number","sale_number","sale_description","guardian_name","method","amount","status","received_by"],
   shifts:["opened_at","closed_at","opened_by","closed_by","expected_cash","counted_cash","variance"],
   audit:["created_at","actor","action","entity_type","entity_id"],
   users:["display_name","username","role_codes_json","is_active","last_authenticated_at"],
