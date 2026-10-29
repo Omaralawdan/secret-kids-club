@@ -39,6 +39,8 @@ type ActiveChild = {
   calculation_json: string;
 };
 
+type ExtensionChoice = Record<string, number>;
+
 const makeId = () => crypto.randomUUID();
 const now = () => new Date().toISOString();
 
@@ -106,6 +108,8 @@ export default function App() {
   const [saving, setSaving] = useState(false);
   const [checkoutId, setCheckoutId] = useState("");
   const [clock, setClock] = useState(Date.now());
+  const [extensionChoices, setExtensionChoices] = useState<ExtensionChoice>({});
+  const [extendingId, setExtendingId] = useState("");
 
   const [guardianName, setGuardianName] = useState("");
   const [guardianRelation, setGuardianRelation] = useState("Mother");
@@ -186,7 +190,7 @@ export default function App() {
   }, [refreshData]);
 
   useEffect(() => {
-    const timer = window.setInterval(() => setClock(Date.now()), 30000);
+    const timer = window.setInterval(() => setClock(Date.now()), 10000);
     return () => window.clearInterval(timer);
   }, []);
 
@@ -499,6 +503,77 @@ export default function App() {
     }
   }
 
+  const expiredChildren = activeChildren.filter((child) => {
+    if (child.duration_minutes <= 0) return false;
+    const expiresAt = new Date(child.checked_in_at).getTime() + child.duration_minutes * 60000;
+    return clock >= expiresAt;
+  });
+
+  async function extendChildTime(child: ActiveChild) {
+    if (!db || extendingId) return;
+    const minutes = extensionChoices[child.visit_child_id] ?? 30;
+    if (![15, 30, 60, 120].includes(minutes)) return;
+    let calculation: Record<string, unknown>;
+    try {
+      const parsed: unknown = JSON.parse(child.calculation_json);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("Saved pricing calculation is invalid.");
+      }
+      calculation = parsed as Record<string, unknown>;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      return;
+    }
+
+    const hourlyRate = readHourlyRate(child.calculation_json);
+    const extensionCharge = child.pricing_type === "hourly" && hourlyRate !== null
+      ? Math.round(hourlyRate * minutes / 60)
+      : 0;
+    const confirmText = ar
+      ? `تمديد وقت ${child.child_name} لمدة ${formatDuration(minutes, language)}؟ ${extensionCharge > 0 ? `التكلفة الإضافية: ${money(extensionCharge, language)}` : "لا يوجد سعر ساعة إضافية محفوظ لهذا السعر؛ لن تُضاف تكلفة."}`
+      : `Extend ${child.child_name}'s visit by ${formatDuration(minutes, language)}? ${extensionCharge > 0 ? `Additional charge: ${money(extensionCharge, language)}` : "No hourly rate is saved for this pricing rule, so no extra charge will be added."}`;
+    if (!window.confirm(confirmText)) return;
+
+    setExtendingId(child.visit_child_id);
+    setError("");
+    setMessage("");
+    try {
+      const newDuration = child.duration_minutes + minutes;
+      const newBase = child.base_amount_minor + extensionCharge;
+      const newFinal = Math.max(0, newBase - child.discount_amount_minor);
+      const extensions = Array.isArray(calculation.extensions)
+        ? calculation.extensions as Array<Record<string, unknown>>
+        : [];
+      const updatedCalculation = {
+        ...calculation,
+        bookedDurationMinutes: newDuration,
+        extensionCount: extensions.length + 1,
+        extensions: [...extensions, {
+          minutes,
+          chargeMinor: extensionCharge,
+          extendedAt: now(),
+        }],
+      };
+      await db.execute(
+        `UPDATE local_visit_child_pricing
+         SET duration_minutes = ?, base_amount_minor = ?, final_amount_minor = ?,
+             calculation_json = ?
+         WHERE visit_child_id = ?`,
+        [newDuration, newBase, newFinal, JSON.stringify(updatedCalculation), child.visit_child_id]
+      );
+      await refreshData(db);
+      setMessage(
+        ar
+          ? `تم تمديد وقت ${child.child_name} لمدة ${formatDuration(minutes, language)}.`
+          : `${child.child_name}'s visit was extended by ${formatDuration(minutes, language)}.`
+      );
+    } catch (err) {
+      setError(`${ar ? "تعذر تمديد الوقت: " : "Could not extend the visit: "}${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setExtendingId("");
+    }
+  }
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -552,6 +627,46 @@ export default function App() {
         </p>
       </section>
 
+      {expiredChildren.length > 0 && (
+        <section className="expiry-alerts" aria-label={ar ? "تنبيهات انتهاء الوقت" : "Expired visit alerts"} role="alert">
+          <div className="expiry-alerts-heading">
+            <strong>{ar ? "انتهى الوقت المحجوز" : "Booked time has expired"}</strong>
+            <span>{ar ? "مدّد الوقت أو سجّل خروج الطفل لإغلاق التنبيه." : "Extend the visit or check the child out to resolve each alert."}</span>
+          </div>
+          {expiredChildren.map((child) => (
+            <article className="expiry-alert" key={child.visit_child_id}>
+              <div className="expiry-alert-child">
+                <strong>{child.child_name}</strong>
+                <span>{ar ? `زيارة رقم ${child.visit_number} · ` : `Visit #${child.visit_number} · `}{ar ? "انتهى الوقت المحجوز" : "time expired"}</span>
+              </div>
+              <label className="expiry-duration">
+                {ar ? "تمديد" : "Extend by"}
+                <select
+                  value={extensionChoices[child.visit_child_id] ?? 30}
+                  disabled={!ready || extendingId !== ""}
+                  onChange={(event) => setExtensionChoices((current) => ({
+                    ...current,
+                    [child.visit_child_id]: Number(event.target.value),
+                  }))}
+                >
+                  <option value={15}>{ar ? "15 دقيقة" : "15 minutes"}</option>
+                  <option value={30}>{ar ? "30 دقيقة" : "30 minutes"}</option>
+                  <option value={60}>{ar ? "ساعة" : "1 hour"}</option>
+                  <option value={120}>{ar ? "ساعتان" : "2 hours"}</option>
+                </select>
+              </label>
+              <div className="expiry-actions">
+                <button type="button" className="secondary-button" disabled={!ready || extendingId !== "" || checkoutId !== ""} onClick={() => void extendChildTime(child)}>
+                  {extendingId === child.visit_child_id ? (ar ? "جارٍ التمديد..." : "Extending...") : (ar ? "تمديد الوقت" : "Extend time")}
+                </button>
+                <button type="button" className="primary-button" disabled={!ready || checkoutId !== ""} onClick={() => void checkOutChild(child)}>
+                  {checkoutId === child.visit_child_id ? (ar ? "جارٍ الخروج..." : "Checking out...") : (ar ? "إنهاء الزيارة" : "End visit")}
+                </button>
+              </div>
+            </article>
+          ))}
+        </section>
+      )}
       {error && <div className="notice error" role="alert">{error}</div>}
       {message && <div className="notice success" role="status">{message}</div>}
 
