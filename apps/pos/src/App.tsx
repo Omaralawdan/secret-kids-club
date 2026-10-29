@@ -8,6 +8,9 @@ import ReportsCenter from "./ReportsCenter";
 import AuthGate, { type AuthUser } from "./AuthGate";
 import AdminTools from "./AdminTools";
 
+type MembershipPlan = { id:string; name:string; price_minor:number; included_minutes:number; validity_days:number; is_active:number };
+type ChildMembership = { id:string; child_name_snapshot:string; guardian_phone_snapshot:string; plan_id:string; plan_name:string; purchased_at:string; expires_at:string; included_minutes:number; used_minutes:number; status:string };
+
 type PricingRule = {
   id: string;
   name: string;
@@ -183,6 +186,10 @@ export default function App() {
     useState<PricingRule["pricing_type"]>("fixed");
   const [ruleAmount, setRuleAmount] = useState("");
   const [ruleDurationHours, setRuleDurationHours] = useState("1");
+  const [membershipPlans,setMembershipPlans]=useState<MembershipPlan[]>([]);
+  const [memberships,setMemberships]=useState<ChildMembership[]>([]);
+  const [planName,setPlanName]=useState(""); const [planPrice,setPlanPrice]=useState(""); const [planHours,setPlanHours]=useState("20"); const [planValidity,setPlanValidity]=useState("30");
+  const [memberName,setMemberName]=useState(""); const [memberPhone,setMemberPhone]=useState(""); const [memberPlanId,setMemberPlanId]=useState("");
 
   const refreshData = useCallback(async (connection: Database) => {
     const loadedRules = await connection.select<PricingRule[]>(
@@ -192,6 +199,10 @@ export default function App() {
        ORDER BY priority, name`
     );
     setRules(loadedRules);
+    try {
+      setMembershipPlans(await connection.select<MembershipPlan[]>("SELECT id,name,price_minor,included_minutes,validity_days,is_active FROM local_membership_plans WHERE is_active=1 ORDER BY name"));
+      setMemberships(await connection.select<ChildMembership[]>("SELECT m.id,m.child_name_snapshot,m.guardian_phone_snapshot,m.plan_id,p.name AS plan_name,m.purchased_at,m.expires_at,m.included_minutes,m.used_minutes,m.status FROM local_child_memberships m JOIN local_membership_plans p ON p.id=m.plan_id ORDER BY m.purchased_at DESC"));
+    } catch { /* Membership tables are created by the installed schema migration. */ }
 
     const counts = await connection.select<{ total: number }[]>(
       "SELECT COUNT(*) AS total FROM local_visits"
@@ -362,6 +373,36 @@ export default function App() {
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
+  }
+
+  async function createMembershipPlan(e:FormEvent<HTMLFormElement>) {
+    e.preventDefault(); if(!db)return;
+    const hours=Number(planHours), price=Number(planPrice), days=Number(planValidity);
+    if(!planName.trim()||!Number.isFinite(hours)||hours<=0||!Number.isFinite(price)||price<0||![7,30].includes(days)){setError("راجع اسم الباقة والسعر وعدد الساعات.");return}
+    try { await db.execute("INSERT INTO local_membership_plans(id,name,price_minor,included_minutes,validity_days,description,is_active,created_at) VALUES(?,?,?,?,?,NULL,1,?)",[makeId(),planName.trim(),Math.round(price*100),Math.round(hours*60),days,now()]);setPlanName("");setPlanPrice("");await refreshData(db);setMessage("تم حفظ الباقة.");setError("") } catch(e){setError(String(e))}
+  }
+  async function enrollMembership(e:FormEvent<HTMLFormElement>) {
+    e.preventDefault(); if(!db)return;
+    const plan=membershipPlans.find(p=>p.id===memberPlanId);
+    if(!plan||!memberName.trim()||!memberPhone.trim()){setError("أدخل اسم الطفل ورقم الهاتف واختار الباقة.");return}
+    const purchased=new Date(), expires=new Date(purchased.getTime()+plan.validity_days*86400000);
+    try { await db.execute("INSERT INTO local_child_memberships(id,child_id,child_name_snapshot,guardian_phone_snapshot,plan_id,purchased_at,starts_at,expires_at,included_minutes,used_minutes,status,sync_state) VALUES(?,NULL,?,?,?,?,?,?,?,0,'active','pending')",[makeId(),memberName.trim(),memberPhone.trim(),plan.id,purchased.toISOString(),purchased.toISOString(),expires.toISOString(),plan.included_minutes]);setMemberName("");setMemberPhone("");await refreshData(db);setMessage("تم تسجيل الطفل في الباقة.");setError("") } catch(e){setError(String(e))}
+  }
+  async function checkInMember(m:ChildMembership) {
+    if(!db)return;
+    const remaining=m.included_minutes-m.used_minutes;
+    if(m.status!=="active"||new Date(m.expires_at)<=new Date()||remaining<=0){setError("الباقة منتهية أو لا يوجد بها وقت متبقٍ.");return}
+    if(!window.confirm("تسجيل دخول "+m.child_name_snapshot+" على باقة "+m.plan_name+"؟ الوقت المتبقي: "+formatDuration(remaining,language)))return;
+    try {
+      const visitId=makeId(), childId=makeId(), pricingId=makeId(), stamp=now();
+      const numRows=await db.select<{n:number}[]>("SELECT COALESCE(MAX(visit_number_local),0)+1 AS n FROM local_visits");
+      const guardian=await db.select<{full_name:string;id:string}[]>("SELECT id,full_name FROM local_guardians WHERE phone=? ORDER BY created_at DESC LIMIT 1",[m.guardian_phone_snapshot]);
+      const visitNo=numRows[0]?.n||1, guardianName=guardian[0]?.full_name||"ولي الأمر";
+      await db.execute("INSERT INTO local_visits(id,visit_number_local,guardian_id,guardian_name_snapshot,guardian_relation,guardian_phone_snapshot,child_count,checked_in_at,checked_out_at,status,pricing_type,amount_before_discount_minor,discount_amount_minor,final_amount_minor,cashier_user_id,sync_state,created_at) VALUES(?,?,?,?,?, ?,1,?,NULL,'active','membership',0,0,0,(SELECT actor_user_id FROM local_session WHERE singleton_id=1),'pending',?)",[visitId,visitNo,guardian[0]?.id||null,guardianName,"Guardian",m.guardian_phone_snapshot,stamp,stamp]);
+      await db.execute("INSERT INTO local_visit_children(id,visit_id,child_id,child_name_snapshot) VALUES(?,?,NULL,?)",[childId,visitId,m.child_name_snapshot]);
+      await db.execute("INSERT INTO local_visit_child_pricing(id,visit_child_id,pricing_type,pricing_rule_id,membership_id,base_amount_minor,discount_amount_minor,final_amount_minor,duration_minutes,included_minutes,calculation_json,created_at) VALUES(?,?,'membership',NULL,?,0,0,0,?,?,?,?)",[pricingId,childId,m.id,remaining,remaining,JSON.stringify({membershipId:m.id,membershipPlan:m.plan_name,initialEstimate:true}),stamp]);
+      await refreshData(db);setMessage("تم تسجيل دخول الطفل على الباقة. الوقت المتاح: "+formatDuration(remaining,language));setError("");setScreen("active");
+    } catch(e){setError(String(e))}
   }
 
   async function createVisit(event: FormEvent<HTMLFormElement>) {
@@ -977,6 +1018,26 @@ export default function App() {
               </div>
             ))}
           </div>
+          <section className="report-field-panel">
+            <h3>{ar ? "باقات الاشتراك الأسبوعية والشهرية" : "Weekly and monthly packages"}</h3>
+            <p className="muted">{ar ? "أنشئ باقة بعدد ساعات وصلاحية 7 أيام أو 30 يومًا، ثم سجّل الطفل في الباقة. وقت الباقة يُخصم عند تسجيل الخروج." : "Create a package with included hours and 7-day or 30-day validity. Enroll a child; used minutes are deducted at checkout."}</p>
+            <form className="form-grid" onSubmit={createMembershipPlan}>
+              <label>{ar?"اسم الباقة":"Package name"}<input value={planName} onChange={e=>setPlanName(e.target.value)} required/></label>
+              <label>{ar?"السعر بالجنيه":"Price (EGP)"}<input type="number" min="0" step="0.01" value={planPrice} onChange={e=>setPlanPrice(e.target.value)} required/></label>
+              <label>{ar?"عدد الساعات":"Included hours"}<input type="number" min="1" step="1" value={planHours} onChange={e=>setPlanHours(e.target.value)} required/></label>
+              <label>{ar?"مدة الباقة":"Validity"}<select value={planValidity} onChange={e=>setPlanValidity(e.target.value)}><option value="7">{ar?"أسبوع (7 أيام)":"Weekly (7 days)"}</option><option value="30">{ar?"شهر (30 يومًا)":"Monthly (30 days)"}</option></select></label>
+              <div className="full-width"><button className="primary-button" type="submit">{ar?"حفظ الباقة":"Save package"}</button></div>
+            </form>
+            <h4>{ar?"تسجيل طفل في باقة":"Enroll a child"}</h4>
+            <form className="form-grid" onSubmit={enrollMembership}>
+              <label>{ar?"اسم الطفل":"Child name"}<input value={memberName} onChange={e=>setMemberName(e.target.value)} required/></label>
+              <label>{ar?"رقم هاتف ولي الأمر":"Guardian phone"}<input value={memberPhone} onChange={e=>setMemberPhone(e.target.value)} required inputMode="tel"/></label>
+              <label>{ar?"الباقة":"Package"}<select value={memberPlanId} onChange={e=>setMemberPlanId(e.target.value)} required><option value="">{ar?"اختار الباقة":"Choose a package"}</option>{membershipPlans.map(p=><option key={p.id} value={p.id}>{p.name} · {p.validity_days===7?(ar?"أسبوع":"Weekly"):(ar?"شهر":"Monthly")} · {money(p.price_minor,language)} · {formatDuration(p.included_minutes,language)}</option>)}</select></label>
+              <div className="full-width"><button className="primary-button" type="submit" disabled={!membershipPlans.length}>{ar?"تسجيل الاشتراك":"Enroll"}</button></div>
+            </form>
+            <h4>{ar?"المشتركون وحالة الباقات":"Subscribers and package status"}</h4>
+            <div className="report-table-wrap"><table className="report-table"><thead><tr><th>{ar?"الطفل":"Child"}</th><th>{ar?"الهاتف":"Phone"}</th><th>{ar?"الباقة":"Package"}</th><th>{ar?"المستخدم / الإجمالي":"Used / included"}</th><th>{ar?"الانتهاء":"Expires"}</th><th>{ar?"الحالة":"Status"}</th><th>{ar?"إجراء":"Action"}</th></tr></thead><tbody>{memberships.map(m=>{const remaining=Math.max(0,m.included_minutes-m.used_minutes);const status=new Date(m.expires_at)<=new Date()&&m.status==="active"?"expired":m.status;return <tr key={m.id}><td>{m.child_name_snapshot}</td><td>{m.guardian_phone_snapshot}</td><td>{m.plan_name}</td><td>{formatDuration(m.used_minutes,language)} / {formatDuration(m.included_minutes,language)}<br/>{ar?"متبقي":"Remaining"}: {formatDuration(remaining,language)}</td><td>{formatDate(m.expires_at,language)}</td><td>{status}</td><td><button className="primary-button" disabled={status!=="active"||remaining<=0} onClick={()=>void checkInMember(m)}>{ar?"تسجيل دخول":"Check in"}</button></td></tr>})}</tbody></table></div>
+          </section>
         </section>
       )}
 
