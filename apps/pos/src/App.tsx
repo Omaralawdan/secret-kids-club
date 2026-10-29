@@ -576,7 +576,7 @@ export default function App() {
       setGuardianPhone("");
       setGuardianRelation("Mother");
       setChildren([
-        { key: makeId(), name: "", ruleId: "", durationHours: 1 },
+        { key: makeId(), name: "", ruleId: "", durationHours: 1, hourlyRateMinor: null },
       ]);
       setMessage(
         ar
