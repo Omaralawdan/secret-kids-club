@@ -106,3 +106,20 @@ html[dir="rtl"] select {
 .settings-panel label {
   max-width: 420px;
 }
+
+
+/* Receipt settings and scalable, accessible POS typography */
+:root { --app-scale: 1; }
+html { font-size: calc(16px * var(--app-scale, 1)); }
+.app-shell { color: #182033; }
+.app-shell h1, .app-shell h2, .app-shell h3 { letter-spacing: -0.015em; }
+.app-shell h1 { font-size: clamp(1.65rem, 3vw, 2.1rem); }
+.app-shell h2 { font-size: clamp(1.25rem, 2vw, 1.55rem); }
+.app-shell button, .app-shell input, .app-shell select, .app-shell textarea { font-size: 1rem; }
+.settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 16px; }
+.settings-grid label { display: flex; flex-direction: column; gap: 7px; min-width: 0; font-weight: 650; color: #26344d; }
+.settings-grid input, .settings-grid select { width: 100%; min-width: 0; }
+.settings-grid .full-width { grid-column: 1 / -1; }
+.settings-preview { display: flex; flex-direction: column; gap: 4px; margin-top: 18px; padding: 14px 16px; border: 1px dashed #d3a0b0; border-radius: 12px; background: #fff7fa; color: #4b1e30; }
+.settings-preview strong { color: #a51e46; }
+@media (max-width: 620px) { .settings-grid { grid-template-columns: 1fr; } .settings-grid .full-width { grid-column: auto; } }
