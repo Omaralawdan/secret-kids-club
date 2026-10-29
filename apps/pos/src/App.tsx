@@ -80,7 +80,7 @@ function formatDuration(minutes: number, language: Language) {
 
 type ReceiptData = {
   visitNumber: number; guardianName: string; guardianPhone: string; childName: string;
-  checkedInAt: string; checkedOutAt?: string | null; bookedMinutes: number; actualMinutes?: number | null;
+  checkedInAt: string; checkedOutAt?: string | null; expectedCheckoutAt?: string | null; bookedMinutes: number; actualMinutes?: number | null; paymentMethod?: string;
   baseAmountMinor: number; discountAmountMinor: number; overtimeMinutes?: number | null;
   overtimeAmountMinor?: number | null; totalAmountMinor?: number | null;
   venueName: string; venueAddress: string; venuePhone: string; issuer: string;
@@ -113,10 +113,12 @@ function buildReceiptHtml(data: ReceiptData, language: Language): string {
   html += row(label("Child", "اسم الطفل"), escapeReceipt(data.childName));
   html += row(label("Check-in", "وقت الدخول"), date(data.checkedInAt));
   if (!finalReceipt && data.expectedCheckoutAt) html += row(label("Expected check-out", "وقت الخروج المتوقع"), date(data.expectedCheckoutAt));
+  if (!finalReceipt && data.expectedCheckoutAt) html += row(label("Expected check-out", "وقت الخروج المتوقع"), date(data.expectedCheckoutAt));
   if (finalReceipt) html += row(label("Check-out", "وقت الخروج"), date(data.checkedOutAt || ""));
   html += row(label("Booked duration", "المدة المحجوزة"), escapeReceipt(formatDuration(data.bookedMinutes, language)));
   if (finalReceipt) html += row(label("Actual duration", "المدة الفعلية"), escapeReceipt(formatDuration(data.actualMinutes || 0, language)));
   html += '<div class="section">' + label("Payment details", "تفاصيل الحساب") + '</div>';
+  if (data.paymentMethod) html += row(label("Payment method", "طريقة الدفع"), escapeReceipt(({cash:"Cash",instapay:"InstaPay",wallet:"E-Wallet"} as Record<string,string>)[data.paymentMethod] || data.paymentMethod));
   if (data.paymentMethod) html += row(label("Payment method", "طريقة الدفع"), escapeReceipt(({cash:"Cash",instapay:"InstaPay",wallet:"E-Wallet"} as Record<string,string>)[data.paymentMethod] || data.paymentMethod));
   html += amount(label("Base price", "السعر الأساسي"), data.baseAmountMinor);
   html += amount(label("Discount", "الخصم"), data.discountAmountMinor);
@@ -491,6 +493,7 @@ export default function App() {
               ruleName: selectedRule.name,
               pricingType: selectedRule.pricing_type,
               initialEstimate: selectedRule.pricing_type === "hourly",
+              paymentMethod,
               bookedDurationMinutes: bookedMinutes,
               hourlyRateMinor:
                 selectedRule.pricing_type === "hourly"
@@ -506,7 +509,7 @@ export default function App() {
       for (const row of childRows) {
         setReceiptQueue((current) => [...current, buildReceiptHtml({
           visitNumber, guardianName: guardianName.trim(), guardianPhone: guardianPhone.trim(),
-          childName: row.child.name, checkedInAt: timestamp,
+          childName: row.child.name, checkedInAt: timestamp, expectedCheckoutAt: new Date(new Date(timestamp).getTime() + Math.round(row.child.durationHours * 60) * 60000).toISOString(), paymentMethod,
           bookedMinutes: Math.round(row.child.durationHours * 60),
           baseAmountMinor: priceFor(row.child), discountAmountMinor: 0,
           venueName, venueAddress, venuePhone, issuer: "Cashier",
@@ -569,13 +572,13 @@ export default function App() {
         visit_number: number; guardian_name: string; guardian_phone: string; child_name: string;
         checked_in_at: string; checked_out_at: string; duration_minutes: number;
         actual_duration_minutes: number | null; base_amount_minor: number; discount_amount_minor: number;
-        overtime_minutes: number | null; overtime_amount_minor: number | null; final_amount_minor: number;
+        overtime_minutes: number | null; overtime_amount_minor: number | null; final_amount_minor: number; calculation_json: string;
       }[]>(
         `SELECT v.visit_number_local AS visit_number, v.guardian_name_snapshot AS guardian_name,
                 v.guardian_phone_snapshot AS guardian_phone, vc.child_name_snapshot AS child_name,
                 v.checked_in_at, vc.checked_out_at, p.duration_minutes, vc.actual_duration_minutes,
                 p.base_amount_minor, p.discount_amount_minor, p.overtime_minutes,
-                p.overtime_amount_minor, p.final_amount_minor
+                p.overtime_amount_minor, p.final_amount_minor, p.calculation_json
          FROM local_visits v JOIN local_visit_children vc ON vc.visit_id = v.id
          JOIN local_visit_child_pricing p ON p.visit_child_id = vc.id WHERE vc.id = ?`,
         [child.visit_child_id]
@@ -585,7 +588,7 @@ export default function App() {
         setReceiptQueue((current) => [...current, buildReceiptHtml({
           visitNumber: receipt.visit_number, guardianName: receipt.guardian_name,
           guardianPhone: receipt.guardian_phone, childName: receipt.child_name,
-          checkedInAt: receipt.checked_in_at, checkedOutAt: receipt.checked_out_at,
+          checkedInAt: receipt.checked_in_at, checkedOutAt: receipt.checked_out_at, paymentMethod: (() => { try { return JSON.parse(receipt.calculation_json).paymentMethod || "cash"; } catch { return "cash"; } })(),
           bookedMinutes: receipt.duration_minutes, actualMinutes: receipt.actual_duration_minutes || 0,
           baseAmountMinor: receipt.base_amount_minor, discountAmountMinor: receipt.discount_amount_minor,
           overtimeMinutes: receipt.overtime_minutes || 0, overtimeAmountMinor: receipt.overtime_amount_minor || 0,
