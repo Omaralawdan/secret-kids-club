@@ -4,6 +4,7 @@ import Database from "@tauri-apps/plugin-sql";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 import { t, useLanguage, type Language } from "./i18n";
+import ReportsCenter from "./ReportsCenter";
 
 type PricingRule = {
   id: string;
@@ -20,7 +21,7 @@ type ChildDraft = {
   durationHours: number;
 };
 
-type Screen = "reception" | "active" | "pricing" | "settings";
+type Screen = "reception" | "active" | "pricing" | "settings" | "reports";
 
 type ActiveChild = {
   visit_id: string;
@@ -361,14 +362,14 @@ export default function App() {
           !child.name ||
           !child.ruleId ||
           !Number.isFinite(child.durationHours) ||
-          child.durationHours < 0.5 ||
+          child.durationHours < (25 / 60) ||
           child.durationHours > 12
       )
     ) {
       setError(
         ar
-          ? "أدخل اسم كل طفل وحدد السعر ومدة حجز من نصف ساعة إلى 12 ساعة."
-          : "Enter each child's name, pricing rule, and a duration between 0.5 and 12 hours."
+          ? "أدخل اسم كل طفل وحدد السعر ومدة حجز من 25 دقيقة إلى 12 ساعة."
+          : "Enter each child's name, pricing rule, and a duration between 25 minutes and 12 hours."
       );
       return;
     }
@@ -639,6 +640,9 @@ export default function App() {
         <button className={screen === "settings" ? "active" : ""} onClick={() => setScreen("settings")}>
           {tr("Settings")}
         </button>
+        <button className={screen === "reports" ? "active" : ""} onClick={() => setScreen("reports")}>
+          {ar ? "التقارير والتصدير" : "Reports & Export"}
+        </button>
       </nav>
 
       <section className="page-heading">
@@ -650,7 +654,9 @@ export default function App() {
               ? ar ? "الزيارات النشطة" : "Active visits"
               : screen === "pricing"
                 ? tr("Pricing rules")
-                : tr("Settings")}
+                : screen === "reports"
+                  ? (ar ? "مركز التقارير والتصدير" : "Reports Center")
+                  : tr("Settings")}
         </h2>
         <p>
           {screen === "reception"
@@ -661,7 +667,9 @@ export default function App() {
                 : "Track children currently in the club and check each child out individually."
               : screen === "pricing"
                 ? tr("Configure the prices available to cashiers. No prices are preloaded.")
-                : tr("Choose the language used throughout the application.")}
+                : screen === "reports"
+                  ? (ar ? "اختار البيانات والفلاتر والأعمدة وشكل التقرير ثم صدّره." : "Choose data, filters, columns, and export format.")
+                  : tr("Choose the language used throughout the application.")}
         </p>
       </section>
 
@@ -676,7 +684,9 @@ export default function App() {
         </section>
       )}
 
-      {screen === "settings" ? (
+      {screen === "reports" ? (
+        <ReportsCenter db={db} language={language} />
+      ) : screen === "settings" ? (
         <section className="panel settings-panel">
           <div className="panel-title">
             <div><span className="step">01</span><h3>{tr("Settings")}</h3></div>
@@ -842,12 +852,12 @@ export default function App() {
                       {ar ? "مدة الحجز لكل طفل (بالساعات)" : "Booked duration per child (hours)"}
                       <input
                         type="number"
-                        min="0.5"
-                        max="12"
-                        step="0.5"
+                        min="25"
+                        max="720"
+                        step="5"
                         required
-                        value={child.durationHours}
-                        onChange={(e) => updateChild(child.key, "durationHours", Number(e.target.value))}
+                        value={Math.round(child.durationHours * 60)}
+                        onChange={(e) => updateChild(child.key, "durationHours", Number(e.target.value) / 60)}
                       />
                       <span className="muted">
                         {selected?.pricing_type === "hourly"
