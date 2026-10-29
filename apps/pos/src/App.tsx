@@ -591,13 +591,49 @@ export default function App() {
           expiresAt: nextExpiry,
         }],
       };
-      await db.execute(
-        `UPDATE local_visit_child_pricing
-         SET duration_minutes = ?, base_amount_minor = ?, final_amount_minor = ?,
-             calculation_json = ?
-         WHERE visit_child_id = ?`,
-        [newDuration, newBase, newFinal, JSON.stringify(updatedCalculation), child.visit_child_id]
-      );
+      await db.execute("BEGIN IMMEDIATE");
+      try {
+        const updateResult = await db.execute(
+          `UPDATE local_visit_child_pricing
+           SET duration_minutes = ?, base_amount_minor = ?, final_amount_minor = ?,
+               calculation_json = ?
+           WHERE visit_child_id = ?`,
+          [newDuration, newBase, newFinal, JSON.stringify(updatedCalculation), child.visit_child_id]
+        );
+        if (updateResult.rowsAffected !== 1) {
+          throw new Error("The visit pricing record changed or no longer exists.");
+        }
+        await db.execute(
+          `INSERT INTO local_audit_log
+           (actor_user_id, action, entity_type, entity_id, reason, before_json, after_json, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            "local-cashier",
+            "visit_time_extended",
+            "visit_child_pricing",
+            child.visit_child_id,
+            "Booked visit time extended after expiry alert",
+            JSON.stringify({
+              durationMinutes: child.duration_minutes,
+              baseAmountMinor: child.base_amount_minor,
+              finalAmountMinor: child.final_amount_minor,
+            }),
+            JSON.stringify({
+              durationMinutes: newDuration,
+              baseAmountMinor: newBase,
+              finalAmountMinor: newFinal,
+              extensionMinutes: minutes,
+              extensionChargeMinor: extensionCharge,
+              expiresAt: nextExpiry,
+            }),
+            extendedAt,
+          ]
+        );
+        await db.execute("COMMIT");
+      } catch (transactionError) {
+        try { await db.execute("ROLLBACK"); } catch { /* Keep original error. */ }
+        throw transactionError;
+      }
       await refreshData(db);
       setMessage(
         ar
