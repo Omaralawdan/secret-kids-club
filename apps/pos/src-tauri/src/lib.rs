@@ -333,9 +333,15 @@ fn require_role(db:&Connection,allowed:&[&str])->Result<(String,Vec<String>),Str
 #[tauri::command]
 fn auth_status(app:tauri::AppHandle)->Result<Value,String>{
  let db=auth_db(&app)?;
- db.execute("UPDATE local_session SET actor_user_id=NULL,authenticated_at=NULL WHERE singleton_id=1",[]).map_err(|e|e.to_string())?;
  let count:i64=db.query_row("SELECT COUNT(*) FROM local_users WHERE username IS NOT NULL AND password_hash IS NOT NULL",[],|r|r.get(0)).map_err(|e|e.to_string())?;
- Ok(json!({"needsSetup":count==0,"user":null}))
+ // Read the current local session without mutating it. The previous implementation
+ // silently logged the user out whenever the UI rechecked authentication status.
+ let user:Option<(String,String,String)>=db.query_row(
+  "SELECT u.id,u.display_name,u.role_codes_json FROM local_session s JOIN local_users u ON u.id=s.actor_user_id WHERE s.singleton_id=1 AND u.is_active=1",
+  [],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))
+ ).optional().map_err(|e|e.to_string())?;
+ let user_json=user.map(|(id,name,roles)|json!({"id":id,"name":name,"roles":roles}));
+ Ok(json!({"needsSetup":count==0,"user":user_json}))
 }
 #[tauri::command]
 fn setup_first_admin(app:tauri::AppHandle,username:String,display_name:String,password:String)->Result<Value,String>{
@@ -408,12 +414,7 @@ fn create_pricing_rule(
          VALUES (?, ?, ?, 'fixed', ?, 60, 0, 100, '[]', 1, ?)",
         params![id, clean_name, pricing_type, amount_minor, now],
     ).map_err(|e| e.to_string())?;
-    tx.execute(
-        "INSERT INTO local_audit_log
-         (id, actor_user_id, action, entity_type, entity_id, after_json, created_at)
-         VALUES (lower(hex(randomblob(16))), ?, 'pricing_rule_created', 'pricing_rule', ?, ?, ?)",
-        params![actor, id, json!({"name": clean_name, "pricing_type": pricing_type, "amount_minor": amount_minor}).to_string(), now],
-    ).map_err(|e| e.to_string())?;
+    // The database audit trigger records this insert exactly once.
     tx.commit().map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -481,6 +482,7 @@ pub fn run() {
         },
         Migration { version: 4, description: "auth_shifts_audit", sql: include_str!("../migrations/004_auth_shifts_audit.sql"), kind: MigrationKind::Up },
         Migration { version: 5, description: "role_write_guards", sql: include_str!("../migrations/005_role_write_guards.sql"), kind: MigrationKind::Up },
+        Migration { version: 6, description: "pricing_role_policy", sql: include_str!("../migrations/006_pricing_role_policy.sql"), kind: MigrationKind::Up },
     ];
 
     tauri::Builder::default()
