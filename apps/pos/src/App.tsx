@@ -37,6 +37,8 @@ type ActiveChild = {
   discount_amount_minor: number;
   final_amount_minor: number;
   calculation_json: string;
+  rule_amount_minor: number | null;
+  rule_duration_minutes: number | null;
 };
 
 type ExtensionChoice = Record<string, number>;
@@ -152,10 +154,13 @@ export default function App() {
          p.base_amount_minor,
          p.discount_amount_minor,
          p.final_amount_minor,
-         p.calculation_json
+         p.calculation_json,
+         r.amount_minor AS rule_amount_minor,
+         r.duration_minutes AS rule_duration_minutes
        FROM local_visits v
        JOIN local_visit_children vc ON vc.visit_id = v.id
        JOIN local_visit_child_pricing p ON p.visit_child_id = vc.id
+       LEFT JOIN local_pricing_rules r ON r.id = p.pricing_rule_id
        WHERE v.status = 'active'
          AND vc.checked_out_at IS NULL
        ORDER BY v.checked_in_at ASC, v.visit_number_local ASC`
@@ -503,11 +508,22 @@ export default function App() {
     }
   }
 
-  const expiredChildren = activeChildren.filter((child) => {
-    if (child.duration_minutes <= 0) return false;
-    const expiresAt = new Date(child.checked_in_at).getTime() + child.duration_minutes * 60000;
-    return clock >= expiresAt;
-  });
+  const expiryFor = (child: ActiveChild) => {
+    try {
+      const calculation = JSON.parse(child.calculation_json) as { expiresAt?: unknown };
+      if (typeof calculation.expiresAt === "string") {
+        const explicitExpiry = new Date(calculation.expiresAt).getTime();
+        if (Number.isFinite(explicitExpiry)) return explicitExpiry;
+      }
+    } catch {
+      // Existing records may have an empty or older calculation payload.
+    }
+    return new Date(child.checked_in_at).getTime() + child.duration_minutes * 60000;
+  };
+
+  const expiredChildren = activeChildren.filter((child) =>
+    child.duration_minutes > 0 && clock >= expiryFor(child)
+  );
 
   async function extendChildTime(child: ActiveChild) {
     if (!db || extendingId) return;
@@ -525,13 +541,30 @@ export default function App() {
       return;
     }
 
-    const hourlyRate = readHourlyRate(child.calculation_json);
-    const extensionCharge = child.pricing_type === "hourly" && hourlyRate !== null
-      ? Math.round(hourlyRate * minutes / 60)
-      : 0;
+    const savedHourlyRate = readHourlyRate(child.calculation_json);
+    const configuredDuration = child.rule_duration_minutes && child.rule_duration_minutes > 0
+      ? child.rule_duration_minutes
+      : child.duration_minutes;
+    const configuredRate = child.rule_amount_minor !== null && child.rule_amount_minor >= 0 && configuredDuration > 0
+      ? Math.round(child.rule_amount_minor * 60 / configuredDuration)
+      : null;
+    const hourlyRate = savedHourlyRate ?? configuredRate;
+    const extensionCharge = hourlyRate === null ? null : Math.round(hourlyRate * minutes / 60);
+    if (extensionCharge === null) {
+      setError(ar
+        ? "لا يمكن تمديد الزيارة لأن السعر الإضافي غير محدد في إعدادات التسعير."
+        : "Cannot extend this visit because the pricing rule has no usable duration and rate.");
+      return;
+    }
+    if (child.pricing_type === "membership") {
+      setError(ar
+        ? "تمديد وقت الباقة يحتاج ربط رصيد الباقة قبل استخدامه. لم يتم إجراء أي تغيير."
+        : "Membership extensions require package-balance integration first. No changes were made.");
+      return;
+    }
     const confirmText = ar
-      ? `تمديد وقت ${child.child_name} لمدة ${formatDuration(minutes, language)}؟ ${extensionCharge > 0 ? `التكلفة الإضافية: ${money(extensionCharge, language)}` : "لا يوجد سعر ساعة إضافية محفوظ لهذا السعر؛ لن تُضاف تكلفة."}`
-      : `Extend ${child.child_name}'s visit by ${formatDuration(minutes, language)}? ${extensionCharge > 0 ? `Additional charge: ${money(extensionCharge, language)}` : "No hourly rate is saved for this pricing rule, so no extra charge will be added."}`;
+      ? `تمديد وقت ${child.child_name} لمدة ${formatDuration(minutes, language)}؟ التكلفة الإضافية: ${money(extensionCharge, language)}`
+      : `Extend ${child.child_name}'s visit by ${formatDuration(minutes, language)}? Additional charge: ${money(extensionCharge, language)}`;
     if (!window.confirm(confirmText)) return;
 
     setExtendingId(child.visit_child_id);
@@ -544,14 +577,18 @@ export default function App() {
       const extensions = Array.isArray(calculation.extensions)
         ? calculation.extensions as Array<Record<string, unknown>>
         : [];
+      const extendedAt = now();
+      const nextExpiry = new Date(Date.now() + minutes * 60000).toISOString();
       const updatedCalculation = {
         ...calculation,
         bookedDurationMinutes: newDuration,
+        expiresAt: nextExpiry,
         extensionCount: extensions.length + 1,
         extensions: [...extensions, {
           minutes,
           chargeMinor: extensionCharge,
-          extendedAt: now(),
+          extendedAt,
+          expiresAt: nextExpiry,
         }],
       };
       await db.execute(
