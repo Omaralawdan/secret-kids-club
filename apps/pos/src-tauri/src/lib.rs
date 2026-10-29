@@ -310,12 +310,16 @@ fn checkout_transaction_with_overtime(
 
         let payment_method = calculation.get("paymentMethod").and_then(Value::as_str).unwrap_or("cash");
         let payment_method = if ["cash", "instapay", "wallet"].contains(&payment_method) { payment_method } else { "cash" };
+        let collected_total: i64 = tx.query_row(
+            "SELECT COALESCE(SUM(MAX(0, p.final_amount_minor - CASE WHEN p.overtime_collected=0 THEN p.overtime_amount_minor ELSE 0 END)),0) FROM local_visit_child_pricing p JOIN local_visit_children vc ON vc.id=p.visit_child_id WHERE vc.visit_id=?",
+            params![visit_id], |row| row.get(0)
+        )?;
         let has_session_table: i64 = tx.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='local_session'", [], |row| row.get(0))?;
-        if total > 0 && has_session_table > 0 {
+        if collected_total > 0 && has_session_table > 0 {
             let actor: String = tx.query_row("SELECT COALESCE(actor_user_id,'system') FROM local_session WHERE singleton_id=1", [], |row| row.get(0))?;
             tx.execute(
                 "INSERT INTO local_payments(id,visit_id,method,status,amount_minor,received_by,created_at) VALUES(lower(hex(randomblob(16))),? ,?,'confirmed',?,?,?)",
-                params![visit_id, payment_method, total, actor, checkout_time_string],
+                params![visit_id, payment_method, collected_total, actor, checkout_time_string],
             )?;
         }
     }
