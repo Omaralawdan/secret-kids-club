@@ -3,9 +3,8 @@ name: Build Secret Kids Club POS for Windows
 on:
   workflow_dispatch:
   push:
-    paths:
-      - "apps/pos/**"
-      - ".github/workflows/build-pos-windows.yml"
+    branches:
+      - main
 
 permissions:
   contents: read
