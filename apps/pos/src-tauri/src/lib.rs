@@ -250,6 +250,166 @@ fn checkout_transaction(
     Ok(())
 }
 
+fn extend_child_time_transaction(
+    path: &Path,
+    visit_child_id: &str,
+    extension_minutes: i64,
+) -> Result<(), Box<dyn Error>> {
+    if ![15, 30, 60, 120].contains(&extension_minutes) {
+        return Err(io::Error::other("Choose an extension of 15, 30, 60, or 120 minutes.").into());
+    }
+
+    let mut connection = Connection::open_with_flags(
+        path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
+            | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let record = tx.query_row(
+        r#"
+        SELECT v.status, vc.checked_out_at, vc.child_name_snapshot,
+               p.pricing_type, p.duration_minutes, p.base_amount_minor,
+               p.discount_amount_minor, p.calculation_json, p.membership_id,
+               r.amount_minor, r.duration_minutes
+        FROM local_visit_children vc
+        JOIN local_visits v ON v.id = vc.visit_id
+        JOIN local_visit_child_pricing p ON p.visit_child_id = vc.id
+        LEFT JOIN local_pricing_rules r ON r.id = p.pricing_rule_id
+        WHERE vc.id = ?
+        "#,
+        params![visit_child_id],
+        |row| Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, i64>(4)?,
+            row.get::<_, i64>(5)?,
+            row.get::<_, i64>(6)?,
+            row.get::<_, String>(7)?,
+            row.get::<_, Option<String>>(8)?,
+            row.get::<_, Option<i64>>(9)?,
+            row.get::<_, Option<i64>>(10)?,
+        )),
+    ).optional()?.ok_or_else(|| io::Error::new(
+        io::ErrorKind::NotFound, "The child's active visit was not found."
+    ))?;
+
+    let (status, checked_out_at, child_name, pricing_type, duration, base, discount,
+         calculation_json, membership_id, rule_amount, rule_duration) = record;
+    if status != "active" || checked_out_at.is_some() {
+        return Err(io::Error::other("This child is no longer on an active visit.").into());
+    }
+    if pricing_type == "membership" || membership_id.is_some() {
+        return Err(io::Error::other(
+            "Membership time extensions are blocked until package balance deduction is enabled. No changes were saved."
+        ).into());
+    }
+
+    let mut calculation: Value = serde_json::from_str(&calculation_json)?;
+    if !calculation.is_object() {
+        return Err(io::Error::other("The saved pricing calculation is invalid.").into());
+    }
+
+    let saved_rate = calculation.get("hourlyRateMinor").and_then(Value::as_i64)
+        .filter(|rate| *rate >= 0);
+    let configured_duration = rule_duration.filter(|value| *value > 0).unwrap_or(duration);
+    let configured_rate = match (rule_amount, configured_duration) {
+        (Some(amount), d) if amount >= 0 && d > 0 => {
+            amount.checked_mul(60).map(|value| (value + d / 2) / d)
+        }
+        _ => None,
+    }.flatten();
+    let rate = saved_rate.or(configured_rate).ok_or_else(|| io::Error::other(
+        "Cannot extend this visit because its pricing rule has no usable rate or duration."
+    ))?;
+
+    let charge = rate.checked_mul(extension_minutes)
+        .and_then(|value| value.checked_add(30))
+        .ok_or_else(|| io::Error::other("Extension price overflowed."))? / 60;
+    let new_duration = duration.checked_add(extension_minutes)
+        .ok_or_else(|| io::Error::other("Visit duration overflowed."))?;
+    let new_base = base.checked_add(charge)
+        .ok_or_else(|| io::Error::other("Visit price overflowed."))?;
+    let new_final = new_base.checked_sub(discount)
+        .ok_or_else(|| io::Error::other("Visit discount calculation overflowed."))?
+        .max(0);
+
+    let extended_at = Utc::now();
+    let extended_at_string = extended_at.to_rfc3339_opts(SecondsFormat::Millis, true);
+    let next_expiry = (extended_at + chrono::Duration::minutes(extension_minutes))
+        .to_rfc3339_opts(SecondsFormat::Millis, true);
+    let mut extensions = calculation.get("extensions")
+        .and_then(Value::as_array).cloned().unwrap_or_default();
+    extensions.push(json!({
+        "minutes": extension_minutes,
+        "chargeMinor": charge,
+        "extendedAt": extended_at_string,
+        "expiresAt": next_expiry,
+    }));
+    calculation["bookedDurationMinutes"] = json!(new_duration);
+    calculation["expiresAt"] = json!(next_expiry);
+    calculation["extensionCount"] = json!(extensions.len());
+    calculation["extensions"] = json!(extensions);
+
+    let updated = tx.execute(
+        r#"UPDATE local_visit_child_pricing
+           SET duration_minutes = ?, base_amount_minor = ?, final_amount_minor = ?,
+               calculation_json = ?
+           WHERE visit_child_id = ?"#,
+        params![new_duration, new_base, new_final, serde_json::to_string(&calculation)?, visit_child_id],
+    )?;
+    if updated != 1 {
+        return Err(io::Error::other("Could not update the visit pricing.").into());
+    }
+
+    tx.execute(
+        r#"INSERT INTO local_audit_log
+           (actor_user_id, action, entity_type, entity_id, reason, before_json, after_json, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)"#,
+        params![
+            "local-cashier",
+            "visit_time_extended",
+            "visit_child_pricing",
+            visit_child_id,
+            "Booked visit time extended after expiry alert",
+            serde_json::to_string(&json!({
+                "childName": child_name,
+                "durationMinutes": duration,
+                "baseAmountMinor": base,
+            }))?,
+            serde_json::to_string(&json!({
+                "childName": child_name,
+                "durationMinutes": new_duration,
+                "baseAmountMinor": new_base,
+                "finalAmountMinor": new_final,
+                "extensionMinutes": extension_minutes,
+                "extensionChargeMinor": charge,
+                "expiresAt": next_expiry,
+            }))?,
+            extended_at_string,
+        ],
+    )?;
+
+    tx.commit()?;
+    Ok(())
+}
+
+#[tauri::command]
+fn extend_child_time(
+    app: tauri::AppHandle,
+    visit_child_id: String,
+    extension_minutes: i64,
+) -> Result<(), String> {
+    if visit_child_id.trim().is_empty() {
+        return Err("Missing child visit ID.".to_string());
+    }
+    let path = database_path(&app).map_err(|error| error.to_string())?;
+    extend_child_time_transaction(&path, &visit_child_id, extension_minutes)
+        .map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 fn checkout_child(
     app: tauri::AppHandle,
@@ -298,7 +458,7 @@ pub fn run() {
                 .add_migrations("sqlite:secret-kids-club.db", migrations)
                 .build(),
         )
-        .invoke_handler(tauri::generate_handler![greet, checkout_child])
+        .invoke_handler(tauri::generate_handler![greet, checkout_child, extend_child_time])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
