@@ -529,18 +529,6 @@ export default function App() {
     if (!db || extendingId) return;
     const minutes = extensionChoices[child.visit_child_id] ?? 30;
     if (![15, 30, 60, 120].includes(minutes)) return;
-    let calculation: Record<string, unknown>;
-    try {
-      const parsed: unknown = JSON.parse(child.calculation_json);
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-        throw new Error("Saved pricing calculation is invalid.");
-      }
-      calculation = parsed as Record<string, unknown>;
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      return;
-    }
-
     const savedHourlyRate = readHourlyRate(child.calculation_json);
     const configuredDuration = child.rule_duration_minutes && child.rule_duration_minutes > 0
       ? child.rule_duration_minutes
@@ -571,69 +559,10 @@ export default function App() {
     setError("");
     setMessage("");
     try {
-      const newDuration = child.duration_minutes + minutes;
-      const newBase = child.base_amount_minor + extensionCharge;
-      const newFinal = Math.max(0, newBase - child.discount_amount_minor);
-      const extensions = Array.isArray(calculation.extensions)
-        ? calculation.extensions as Array<Record<string, unknown>>
-        : [];
-      const extendedAt = now();
-      const nextExpiry = new Date(Date.now() + minutes * 60000).toISOString();
-      const updatedCalculation = {
-        ...calculation,
-        bookedDurationMinutes: newDuration,
-        expiresAt: nextExpiry,
-        extensionCount: extensions.length + 1,
-        extensions: [...extensions, {
-          minutes,
-          chargeMinor: extensionCharge,
-          extendedAt,
-          expiresAt: nextExpiry,
-        }],
-      };
-      await db.execute("BEGIN IMMEDIATE");
-      try {
-        const updateResult = await db.execute(
-          `UPDATE local_visit_child_pricing
-           SET duration_minutes = ?, base_amount_minor = ?, final_amount_minor = ?,
-               calculation_json = ?
-           WHERE visit_child_id = ?`,
-          [newDuration, newBase, newFinal, JSON.stringify(updatedCalculation), child.visit_child_id]
-        );
-        if (updateResult.rowsAffected !== 1) {
-          throw new Error("The visit pricing record changed or no longer exists.");
-        }
-        await db.execute(
-          `INSERT INTO local_audit_log
-           (actor_user_id, action, entity_type, entity_id, reason, before_json, after_json, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            "local-cashier",
-            "visit_time_extended",
-            "visit_child_pricing",
-            child.visit_child_id,
-            "Booked visit time extended after expiry alert",
-            JSON.stringify({
-              durationMinutes: child.duration_minutes,
-              baseAmountMinor: child.base_amount_minor,
-              finalAmountMinor: child.final_amount_minor,
-            }),
-            JSON.stringify({
-              durationMinutes: newDuration,
-              baseAmountMinor: newBase,
-              finalAmountMinor: newFinal,
-              extensionMinutes: minutes,
-              extensionChargeMinor: extensionCharge,
-              expiresAt: nextExpiry,
-            }),
-            extendedAt,
-          ]
-        );
-        await db.execute("COMMIT");
-      } catch (transactionError) {
-        try { await db.execute("ROLLBACK"); } catch { /* Keep original error. */ }
-        throw transactionError;
-      }
+      await invoke<void>("extend_child_time", {
+        visitChildId: child.visit_child_id,
+        extensionMinutes: minutes,
+      });
       await refreshData(db);
       setMessage(
         ar
