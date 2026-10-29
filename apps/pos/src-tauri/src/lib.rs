@@ -133,28 +133,12 @@ fn checkout_transaction_with_overtime(
         .into());
     }
 
-    // Older visits can lack the hourly rate in their saved calculation snapshot.
-    // Recover it from the linked pricing rule without changing the original visit.
-    let saved_hourly_rate = calculation
+    // The manually entered hourly rate is part of the immutable visit snapshot.
+    // Never replace a missing/invalid child rate with a generic pricing-rule value.
+    let hourly_rate = calculation
         .get("hourlyRateMinor")
         .and_then(Value::as_i64)
-        .filter(|rate| *rate >= 0);
-    let recovered_hourly_rate = if pricing_type == "hourly" && saved_hourly_rate.is_none() {
-        pricing_rule_id.as_deref().and_then(|rule_id| {
-            tx.query_row(
-                "SELECT amount_minor FROM local_pricing_rules WHERE id = ? AND pricing_type = 'hourly'",
-                params![rule_id],
-                |row| row.get::<_, i64>(0),
-            )
-            .optional()
-            .ok()
-            .flatten()
-            .filter(|rate| *rate >= 0)
-        })
-    } else {
-        None
-    };
-    let hourly_rate = saved_hourly_rate.or(recovered_hourly_rate);
+        .filter(|rate| *rate > 0);
     if let Some(rate) = hourly_rate {
         calculation["hourlyRateMinor"] = json!(rate);
     }
@@ -212,8 +196,9 @@ fn checkout_transaction_with_overtime(
         .checked_sub(discount_amount)
         .ok_or_else(|| io::Error::other("Base price calculation overflowed."))?
         .max(0);
+    let charged_overtime = if overtime_collected { overtime_amount } else { 0 };
     let final_child_amount = base_final_amount
-        .checked_add(overtime_amount)
+        .checked_add(charged_overtime)
         .ok_or_else(|| io::Error::other("Final child price overflowed."))?;
     let checkout_time_string =
         checkout_time.to_rfc3339_opts(SecondsFormat::Millis, true);
@@ -221,6 +206,8 @@ fn checkout_transaction_with_overtime(
     calculation["actualDurationMinutes"] = json!(actual_minutes);
     calculation["overtimeMinutes"] = json!(overtime_minutes);
     calculation["overtimeAmountMinor"] = json!(overtime_amount);
+    calculation["overtimeCollected"] = json!(overtime_amount == 0 || overtime_collected);
+    calculation["overtimeCollectionNote"] = json!(if overtime_amount > 0 && !overtime_collected { overtime_collection_note.as_deref().unwrap_or("").trim() } else { "" });
     calculation["checkoutCalculatedAt"] = json!(checkout_time_string);
 
     let child_update = tx.execute(
@@ -281,7 +268,7 @@ fn checkout_transaction_with_overtime(
     if remaining == 0 {
         let total: i64 = tx.query_row(
             r#"
-            SELECT COALESCE(SUM(p.final_amount_minor), 0)
+            SELECT COALESCE(SUM(MAX(0, p.final_amount_minor)), 0)
             FROM local_visit_child_pricing p
             JOIN local_visit_children vc ON vc.id = p.visit_child_id
             WHERE vc.visit_id = ?
@@ -311,7 +298,7 @@ fn checkout_transaction_with_overtime(
         let payment_method = calculation.get("paymentMethod").and_then(Value::as_str).unwrap_or("cash");
         let payment_method = if ["cash", "instapay", "wallet"].contains(&payment_method) { payment_method } else { "cash" };
         let collected_total: i64 = tx.query_row(
-            "SELECT COALESCE(SUM(MAX(0, p.final_amount_minor - CASE WHEN p.overtime_collected=0 THEN p.overtime_amount_minor ELSE 0 END)),0) FROM local_visit_child_pricing p JOIN local_visit_children vc ON vc.id=p.visit_child_id WHERE vc.visit_id=?",
+            "SELECT COALESCE(SUM(MAX(0, p.final_amount_minor)),0) FROM local_visit_child_pricing p JOIN local_visit_children vc ON vc.id=p.visit_child_id WHERE vc.visit_id=?",
             params![visit_id], |row| row.get(0)
         )?;
         let has_session_table: i64 = tx.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='local_session'", [], |row| row.get(0))?;
@@ -340,10 +327,16 @@ fn checkout_child(
         return Err("Missing child visit ID.".to_string());
     }
 
-    if !overtime_collected && overtime_collection_note.as_deref().unwrap_or("").trim().is_empty() { return Err("يجب تسجيل سبب عدم تحصيل الوقت الإضافي.".into()); }
-    // Authorize the operation in the command layer as well as through database guards.
+    if !overtime_collected {
+        let reason = overtime_collection_note.as_deref().unwrap_or("").trim();
+        if reason.is_empty() || reason.chars().count() > 500 { return Err("يجب تسجيل سبب إعفاء واضح لا يتجاوز 500 حرف.".into()); }
+    }
+    // Cashiers can check out and collect; only admins/managers can authorize waivers.
     let db = auth_db(&app)?;
-    require_role(&db, &["admin", "manager", "cashier"])?;
+    let (_, roles) = require_role(&db, &["admin", "manager", "cashier"])?;
+    if !overtime_collected && !roles.iter().any(|role| role == "admin" || role == "manager") {
+        return Err("ليس لديك صلاحية إعفاء الوقت الإضافي. اطلب اعتماد المدير.".into());
+    }
     drop(db);
 
     let path = database_path(&app).map_err(|error| error.to_string())?;
@@ -495,7 +488,7 @@ fn create_pricing_rule(
     if amount_minor < 0 {
         return Err("السعر لا يمكن أن يكون سالبًا.".into());
     }
-    if duration_minutes < 25 || duration_minutes > 720 { return Err("مدة الحجز يجب أن تكون من 25 دقيقة إلى 12 ساعة.".into()); }
+    if duration_minutes < 15 || duration_minutes > 720 || duration_minutes % 15 != 0 { return Err("مدة الحجز يجب أن تكون بزيادات 15 دقيقة من 15 دقيقة إلى 12 ساعة.".into()); }
 
     let mut db = auth_db(&app)?;
     let (actor, _) = require_role(&db, &["admin", "manager"])?;
