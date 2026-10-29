@@ -384,11 +384,62 @@ fn admin_set_user_active(app:tauri::AppHandle,user_id:String,is_active:bool)->Re
  let now=Utc::now().to_rfc3339();let tx=db.transaction().map_err(|e|e.to_string())?;let before:i64=tx.query_row("SELECT is_active FROM local_users WHERE id=?",params![user_id],|r|r.get(0)).map_err(|e|e.to_string())?;tx.execute("UPDATE local_users SET is_active=? WHERE id=?",params![if is_active{1}else{0},user_id]).map_err(|e|e.to_string())?;tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,before_json,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'user_status_changed','user',?,?,?,?)",params![actor,user_id,json!({"is_active":before}).to_string(),json!({"is_active":is_active}).to_string(),now]).map_err(|e|e.to_string())?;tx.commit().map_err(|e|e.to_string())?;Ok(())
 }
 #[tauri::command]
+fn admin_reset_user_password(app: tauri::AppHandle, user_id: String, new_password: String) -> Result<(), String> {
+    if new_password.chars().count() < 12 { return Err("كلمة المرور يجب أن تكون 12 حرفًا على الأقل.".into()); }
+    let mut db=auth_db(&app)?; let (actor,_)=require_role(&db,&["admin"])?;
+    let mut salt=[0u8;16]; rand::thread_rng().fill_bytes(&mut salt);
+    let tx=db.transaction().map_err(|e|e.to_string())?;
+    let exists:i64=tx.query_row("SELECT COUNT(*) FROM local_users WHERE id=?",params![user_id],|r|r.get(0)).map_err(|e|e.to_string())?;
+    if exists!=1 { return Err("حساب الموظف غير موجود.".into()); }
+    tx.execute("UPDATE local_users SET password_salt=?,password_hash=? WHERE id=?",params![hex::encode(salt),hash_password(&new_password,&salt),user_id]).map_err(|e|e.to_string())?;
+    tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,created_at) VALUES(lower(hex(randomblob(16))),?,'admin_password_reset','user',?,?)",params![actor,user_id,Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
+    tx.commit().map_err(|e|e.to_string())?; Ok(())
+}
+#[tauri::command]
+fn admin_update_user_role(app: tauri::AppHandle, user_id: String, role: String) -> Result<(), String> {
+    if !["admin","manager","cashier","viewer"].contains(&role.as_str()) { return Err("الدور غير صالح.".into()); }
+    let mut db=auth_db(&app)?; let (actor,_)=require_role(&db,&["admin"])?; let (current,_)=active_user(&db)?;
+    if current==user_id && role!="admin" { return Err("لا يمكنك إزالة صلاحية مدير النظام من حسابك الحالي.".into()); }
+    let tx=db.transaction().map_err(|e|e.to_string())?;
+    let before:String=tx.query_row("SELECT role_codes_json FROM local_users WHERE id=?",params![user_id],|r|r.get(0)).map_err(|e|e.to_string())?;
+    tx.execute("UPDATE local_users SET role_codes_json=?,permissions_json=? WHERE id=?",params![json!([role]).to_string(),if role=="admin"{"[\"all\"]"}else{"[]"},user_id]).map_err(|e|e.to_string())?;
+    tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,before_json,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'user_role_changed','user',?,?,?,?)",params![actor,user_id,json!({"roles":before}).to_string(),json!({"role":role}).to_string(),Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
+    tx.commit().map_err(|e|e.to_string())?; Ok(())
+}
+#[tauri::command]
+fn admin_delete_user(app: tauri::AppHandle, user_id: String) -> Result<(), String> {
+    let mut db=auth_db(&app)?; let (actor,_)=require_role(&db,&["admin"])?; let (current,_)=active_user(&db)?;
+    if current==user_id { return Err("لا يمكنك حذف الحساب الذي تستخدمه حاليًا.".into()); }
+    let tx=db.transaction().map_err(|e|e.to_string())?;
+    let active_shift:i64=tx.query_row("SELECT COUNT(*) FROM local_cash_sessions WHERE closed_at IS NULL AND opened_by=?",params![user_id],|r|r.get(0)).map_err(|e|e.to_string())?;
+    if active_shift>0 { return Err("لا يمكن حذف مستخدم فتح وردية ما زالت مفتوحة؛ أغلق الوردية أولًا.".into()); }
+    let before:String=tx.query_row("SELECT json_object('username',COALESCE(username,''),'name',display_name,'roles',role_codes_json) FROM local_users WHERE id=?",params![user_id],|r|r.get(0)).map_err(|e|e.to_string())?;
+    tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,before_json,created_at) VALUES(lower(hex(randomblob(16))),?,'user_deleted','user',?,?,?)",params![actor,user_id,before,Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
+    tx.execute("DELETE FROM local_users WHERE id=?",params![user_id]).map_err(|e|e.to_string())?;
+    tx.commit().map_err(|e|e.to_string())?; Ok(())
+}
+#[tauri::command]
+fn delete_pricing_rule(app: tauri::AppHandle, rule_id: String) -> Result<(), String> {
+    let mut db=auth_db(&app)?; let (actor,_)=require_role(&db,&["admin"])?;
+    let tx=db.transaction().map_err(|e|e.to_string())?;
+    let name:String=tx.query_row("SELECT name FROM local_pricing_rules WHERE id=?",params![rule_id],|r|r.get(0)).map_err(|e|e.to_string())?;
+    let used:i64=tx.query_row("SELECT COUNT(*) FROM local_visit_child_pricing WHERE pricing_rule_id=?",params![rule_id],|r|r.get(0)).map_err(|e|e.to_string())?;
+    if used>0 {
+      tx.execute("UPDATE local_pricing_rules SET is_active=0 WHERE id=?",params![rule_id]).map_err(|e|e.to_string())?;
+    } else {
+      tx.execute("DELETE FROM local_pricing_rules WHERE id=?",params![rule_id]).map_err(|e|e.to_string())?;
+    }
+    tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'pricing_rule_removed','pricing_rule',?,?,?)",params![actor,rule_id,json!({"name":name,"usedHistorically":used>0,"active":false}).to_string(),Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
+    tx.commit().map_err(|e|e.to_string())?; Ok(())
+}
+
+#[tauri::command]
 fn create_pricing_rule(
     app: tauri::AppHandle,
     name: String,
     pricing_type: String,
     amount_minor: i64,
+    duration_minutes: i64,
 ) -> Result<(), String> {
     let clean_name = name.trim();
     if clean_name.is_empty() || clean_name.chars().count() > 100 {
@@ -400,6 +451,7 @@ fn create_pricing_rule(
     if amount_minor < 0 {
         return Err("السعر لا يمكن أن يكون سالبًا.".into());
     }
+    if duration_minutes < 25 || duration_minutes > 720 { return Err("مدة الحجز يجب أن تكون من 25 دقيقة إلى 12 ساعة.".into()); }
 
     let mut db = auth_db(&app)?;
     let (actor, _) = require_role(&db, &["admin", "manager"])?;
@@ -411,8 +463,8 @@ fn create_pricing_rule(
          (id, name, pricing_type, calculation_type, amount_minor,
           duration_minutes, free_minutes, priority, weekdays_json,
           is_active, created_at)
-         VALUES (?, ?, ?, 'fixed', ?, 60, 0, 100, '[]', 1, ?)",
-        params![id, clean_name, pricing_type, amount_minor, now],
+         VALUES (?, ?, ?, 'fixed', ?, ?, 0, 100, '[]', 1, ?)",
+        params![id, clean_name, pricing_type, amount_minor, duration_minutes, now],
     ).map_err(|e| e.to_string())?;
     // The database audit trigger records this insert exactly once.
     tx.commit().map_err(|e| e.to_string())?;
@@ -503,7 +555,7 @@ pub fn run() {
                 .add_migrations("sqlite:secret-kids-club.db", migrations)
                 .build(),
         )
-        .invoke_handler(tauri::generate_handler![greet, checkout_child, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_create_user, admin_set_user_active, create_pricing_rule, get_active_cash_shift, open_cash_shift, close_cash_shift, admin_audit_log])
+        .invoke_handler(tauri::generate_handler![greet, checkout_child, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_create_user, admin_set_user_active, admin_reset_user_password, admin_update_user_role, admin_delete_user, delete_pricing_rule, create_pricing_rule, get_active_cash_shift, open_cash_shift, close_cash_shift, admin_audit_log])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
