@@ -317,10 +317,12 @@ fn extend_child_time_transaction(
     let configured_duration = rule_duration.filter(|value| *value > 0).unwrap_or(duration);
     let configured_rate = match (rule_amount, configured_duration) {
         (Some(amount), d) if amount >= 0 && d > 0 => {
-            amount.checked_mul(60).map(|value| (value + d / 2) / d)
+            amount.checked_mul(60)
+                .and_then(|value| value.checked_add(d / 2))
+                .map(|value| value / d)
         }
         _ => None,
-    }.flatten();
+    };
     let rate = saved_rate.or(configured_rate).ok_or_else(|| io::Error::other(
         "Cannot extend this visit because its pricing rule has no usable rate or duration."
     ))?;
