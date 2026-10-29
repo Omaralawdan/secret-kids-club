@@ -12,7 +12,7 @@ const reports: { key: ReportKey; label: string; description: string; fields: Fie
   { key: "customers", label: "العملاء والأطفال", description: "بيانات العملاء وعدد الزيارات وآخر زيارة.", fields: [
     {key:"guardian_name",label:"اسم ولي الأمر"},{key:"phone",label:"رقم التليفون"},{key:"child_name",label:"اسم الطفل"},{key:"visit_count",label:"عدد الزيارات"},{key:"last_visit",label:"آخر زيارة"}]},
   { key: "payments", label: "التحصيلات وطرق الدفع", description: "المدفوعات المسجلة في قاعدة البيانات.", fields: [
-    {key:"created_at",label:"التاريخ"},{key:"visit_number",label:"رقم الزيارة"},{key:"guardian_name",label:"اسم ولي الأمر"},{key:"phone",label:"رقم التليفون"},{key:"method",label:"طريقة الدفع"},{key:"amount",label:"المبلغ"},{key:"status",label:"حالة الدفع"},{key:"received_by",label:"المستلم"},{key:"external_reference",label:"رقم مرجعي"}]},
+    {key:"created_at",label:"التاريخ"},{key:"visit_number",label:"رقم الزيارة"},{key:"sale_number",label:"رقم عملية البيع"},{key:"sale_description",label:"تفاصيل البيع / الباقة"},{key:"guardian_name",label:"اسم ولي الأمر"},{key:"phone",label:"رقم التليفون"},{key:"method",label:"طريقة الدفع"},{key:"amount",label:"المبلغ"},{key:"status",label:"حالة الدفع"},{key:"received_by",label:"المستلم"},{key:"external_reference",label:"رقم مرجعي"}]},
   { key: "shifts", label: "الورديات والصندوق", description: "جلسات فتح وإغلاق الصندوق والعجز أو الزيادة.", fields: [
     {key:"opened_at",label:"بداية الوردية"},{key:"closed_at",label:"نهاية الوردية"},{key:"opened_by",label:"فتح بواسطة"},{key:"closed_by",label:"إغلاق بواسطة"},{key:"opening_float",label:"رصيد بداية الوردية"},{key:"expected_cash",label:"النقدية المتوقعة"},{key:"counted_cash",label:"النقدية الفعلية"},{key:"variance",label:"العجز / الزيادة"}]},
   { key: "audit", label: "سجل العمليات", description: "تغييرات البيانات والعمليات المسجلة في سجل المراجعة.", fields: [
@@ -137,9 +137,9 @@ export default function ReportsCenter({ db, language, isAdmin = false, canManage
           [startDate,startDate,endDate,endDate]);
       } else if (reportKey === "payments") {
         result = await db.select<ReportRow[]>(`SELECT p.created_at, v.visit_number_local AS visit_number,
-          v.guardian_name_snapshot AS guardian_name, v.guardian_phone_snapshot AS phone, p.method,
+          v.guardian_name_snapshot AS guardian_name, v.guardian_phone_snapshot AS phone, s.sale_number_local AS sale_number, si.description_snapshot AS sale_description, p.method,
           p.amount_minor/100.0 AS amount, p.status, p.received_by, p.external_reference
-          FROM local_payments p LEFT JOIN local_visits v ON v.id=p.visit_id
+          FROM local_payments p LEFT JOIN local_visits v ON v.id=p.visit_id LEFT JOIN local_sales s ON s.id=p.sale_id LEFT JOIN local_sale_items si ON si.sale_id=s.id
           WHERE (?='' OR date(p.created_at)>=date(?)) AND (?='' OR date(p.created_at)<=date(?))
           ORDER BY p.created_at DESC`, [startDate,startDate,endDate,endDate]);
       } else if (reportKey === "shifts") {
