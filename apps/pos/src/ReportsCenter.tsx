@@ -18,7 +18,7 @@ const reports: { key: ReportKey; label: string; description: string; fields: Fie
   { key: "audit", label: "سجل العمليات", description: "تغييرات البيانات والعمليات المسجلة في سجل المراجعة.", fields: [
     {key:"created_at",label:"التاريخ والوقت"},{key:"actor",label:"المستخدم"},{key:"action",label:"العملية"},{key:"entity_type",label:"نوع البيانات"},{key:"entity_id",label:"رقم السجل"},{key:"reason",label:"السبب"},{key:"before_json",label:"قبل التعديل"},{key:"after_json",label:"بعد التعديل"}]},
   { key: "users", label: "المستخدمون والصلاحيات", description: "حسابات المستخدمين والأدوار والحالة.", fields: [
-    {key:"display_name",label:"اسم الموظف"},{key:"role_codes_json",label:"الأدوار"},{key:"permissions_json",label:"الصلاحيات"},{key:"is_active",label:"الحساب نشط"},{key:"last_authenticated_at",label:"آخر تسجيل دخول"}]},
+    {key:"display_name",label:"اسم الموظف"},{key:"username",label:"اسم المستخدم"},{key:"role_codes_json",label:"الأدوار"},{key:"permissions_json",label:"الصلاحيات"},{key:"is_active",label:"الحساب نشط"},{key:"last_authenticated_at",label:"آخر تسجيل دخول"}]},
 ];
 
 const defaultFields: Record<ReportKey, string[]> = {
@@ -27,7 +27,7 @@ const defaultFields: Record<ReportKey, string[]> = {
   payments:["created_at","visit_number","guardian_name","method","amount","status","received_by"],
   shifts:["opened_at","closed_at","opened_by","closed_by","expected_cash","counted_cash","variance"],
   audit:["created_at","actor","action","entity_type","entity_id"],
-  users:["display_name","role_codes_json","is_active","last_authenticated_at"],
+  users:["display_name","username","role_codes_json","is_active","last_authenticated_at"],
 };
 
 
