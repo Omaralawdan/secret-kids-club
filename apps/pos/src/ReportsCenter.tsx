@@ -191,7 +191,7 @@ export default function ReportsCenter({ db, language, isAdmin = false, canManage
     const blob = new Blob(["\uFEFF", data], {type:"text/csv;charset=utf-8;"});
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a"); anchor.href=url; anchor.download=`secret-kids-club-${reportKey}-${new Date().toISOString().slice(0,10)}.csv`;
-    anchor.click(); window.setTimeout(()=>URL.revokeObjectURL(url),1000);
+    document.body.appendChild(anchor); anchor.click(); anchor.remove(); window.setTimeout(()=>URL.revokeObjectURL(url),1500);
   }
   function exportXlsx() {
     if (!loaded) { setError("اعرض التقرير أولًا قبل التصدير."); return; }
@@ -201,7 +201,7 @@ export default function ReportsCenter({ db, language, isAdmin = false, canManage
     const blob = makeXlsx(columns.map(field=>field.label), values);
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a"); anchor.href=url; anchor.download=`secret-kids-club-${reportKey}-${new Date().toISOString().slice(0,10)}.xlsx`;
-    anchor.click(); window.setTimeout(()=>URL.revokeObjectURL(url),1000);
+    document.body.appendChild(anchor); anchor.click(); anchor.remove(); window.setTimeout(()=>URL.revokeObjectURL(url),1500);
   }
   function exportPdf() {
     if (!loaded) { setError("اعرض التقرير أولًا قبل التصدير."); return; }
@@ -219,7 +219,7 @@ export default function ReportsCenter({ db, language, isAdmin = false, canManage
 
   return <section className="panel report-center" dir={language==="ar"?"rtl":"ltr"}>
     <div className="panel-title"><div><span className="step">05</span><h3>مركز التقارير والتصدير</h3></div><span className="muted">تقارير قابلة للتخصيص</span></div>
-    <p className="muted intro">اختار نوع التقرير والفترة والأعمدة والفلاتر، واعرض معاينة قبل التصدير. التقارير تعرض البيانات المحفوظة فعليًا فقط.</p>
+    <p className="muted intro">طريقة الاستخدام: ١) اختار نوع التقرير. ٢) حدد الفترة والأعمدة المطلوبة. ٣) اضغط «عرض التقرير» وانتظر ظهور الجدول. ٤) بعد ظهور النتائج اضغط «تصدير Excel (.xlsx)» لحفظ ملف Excel، أو CSV. لو لم تظهر النتائج ستجد رسالة الخطأ هنا. التقارير تعرض البيانات المحفوظة فعليًا فقط.</p>
     <div className="report-controls">
       <label>نوع التقرير<select value={reportKey} onChange={e=>setReportKey(e.target.value as ReportKey)}>{availableReports.map(r=><option key={r.key} value={r.key}>{r.label}</option>)}</select></label>
       <label>من تاريخ<input type="date" value={startDate} onChange={e=>setStartDate(e.target.value)}/></label>
