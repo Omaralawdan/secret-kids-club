@@ -360,11 +360,33 @@ fn admin_set_user_active(app:tauri::AppHandle,user_id:String,is_active:bool)->Re
 }
 #[tauri::command]
 fn open_cash_shift(app:tauri::AppHandle,opening_float_minor:i64)->Result<Value,String>{
- if opening_float_minor<0{return Err("رصيد بداية الوردية غير صحيح.".into())}let mut db=auth_db(&app)?;let(actor,_)=require_role(&db,&["admin","manager","cashier"])?;let count:i64=db.query_row("SELECT COUNT(*) FROM local_cash_sessions WHERE closed_at IS NULL",[],|r|r.get(0)).map_err(|e|e.to_string())?;if count>0{return Err("هناك وردية مفتوحة بالفعل.".into())}let id=uuid::Uuid::new_v4().to_string();let now=Utc::now().to_rfc3339();db.execute("INSERT INTO local_cash_sessions(id,opening_float_minor,opened_by,opened_at) VALUES(?,?,?,?)",params![id,opening_float_minor,actor,now]).map_err(|e|e.to_string())?;Ok(json!({"id":id,"openedAt":now}))
+ if opening_float_minor<0{return Err("رصيد بداية الوردية غير صحيح.".into())}
+ let mut db=auth_db(&app)?;
+ let(actor,_)=require_role(&db,&["admin","manager","cashier"])?;
+ let tx=db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
+ let count:i64=tx.query_row("SELECT COUNT(*) FROM local_cash_sessions WHERE closed_at IS NULL",[],|r|r.get(0)).map_err(|e|e.to_string())?;
+ if count>0{return Err("هناك وردية مفتوحة بالفعل.".into())}
+ let id=uuid::Uuid::new_v4().to_string();let now=Utc::now().to_rfc3339();
+ tx.execute("INSERT INTO local_cash_sessions(id,opening_float_minor,opened_by,opened_at) VALUES(?,?,?,?)",params![id,opening_float_minor,actor,now]).map_err(|e|e.to_string())?;
+ tx.commit().map_err(|e|e.to_string())?;
+ Ok(json!({"id":id,"openedAt":now}))
 }
 #[tauri::command]
 fn close_cash_shift(app:tauri::AppHandle,counted_cash_minor:i64)->Result<Value,String>{
- if counted_cash_minor<0{return Err("النقدية المعدودة غير صحيحة.".into())}let mut db=auth_db(&app)?;let(actor,_)=require_role(&db,&["admin","manager","cashier"])?;let shift:Option<(String,i64,String)>=db.query_row("SELECT id,opening_float_minor,opened_at FROM local_cash_sessions WHERE closed_at IS NULL ORDER BY opened_at DESC LIMIT 1",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(|e|e.to_string())?;let(id,float,opened)=shift.ok_or("لا توجد وردية مفتوحة.")?;let sales:i64=db.query_row("SELECT COALESCE(SUM(amount_minor),0) FROM local_payments WHERE method='cash' AND status='confirmed' AND created_at>=?",params![opened],|r|r.get(0)).map_err(|e|e.to_string())?;let expected=float+sales;let variance=counted_cash_minor-expected;let now=Utc::now().to_rfc3339();db.execute("UPDATE local_cash_sessions SET closed_by=?,closed_at=?,counted_cash_minor=?,expected_cash_minor=?,variance_minor=? WHERE id=? AND closed_at IS NULL",params![actor,now,counted_cash_minor,expected,variance,id]).map_err(|e|e.to_string())?;Ok(json!({"id":id,"expectedCashMinor":expected,"countedCashMinor":counted_cash_minor,"varianceMinor":variance,"closedAt":now}))
+ if counted_cash_minor<0{return Err("النقدية المعدودة غير صحيحة.".into())}
+ let mut db=auth_db(&app)?;
+ let(actor,_)=require_role(&db,&["admin","manager","cashier"])?;
+ let tx=db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
+ let shift:Option<(String,i64,String)>=tx.query_row("SELECT id,opening_float_minor,opened_at FROM local_cash_sessions WHERE closed_at IS NULL ORDER BY opened_at DESC LIMIT 1",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(|e|e.to_string())?;
+ let(id,float,opened)=shift.ok_or("لا توجد وردية مفتوحة.")?;
+ let now=Utc::now().to_rfc3339();
+ let sales:i64=tx.query_row("SELECT COALESCE(SUM(amount_minor),0) FROM local_payments WHERE method='cash' AND status='confirmed' AND created_at>=? AND created_at<=?",params![opened,now],|r|r.get(0)).map_err(|e|e.to_string())?;
+ let expected=float.checked_add(sales).ok_or("قيمة النقدية المتوقعة تجاوزت الحد المسموح.")?;
+ let variance=counted_cash_minor.checked_sub(expected).ok_or("فرق النقدية تجاوز الحد المسموح.")?;
+ let changed=tx.execute("UPDATE local_cash_sessions SET closed_by=?,closed_at=?,counted_cash_minor=?,expected_cash_minor=?,variance_minor=? WHERE id=? AND closed_at IS NULL",params![actor,now,counted_cash_minor,expected,variance,id]).map_err(|e|e.to_string())?;
+ if changed!=1{return Err("تم إغلاق الوردية بالفعل أو تغيرت حالتها.".into())}
+ tx.commit().map_err(|e|e.to_string())?;
+ Ok(json!({"id":id,"expectedCashMinor":expected,"countedCashMinor":counted_cash_minor,"varianceMinor":variance,"closedAt":now}))
 }
 #[tauri::command]
 fn admin_audit_log(app:tauri::AppHandle,limit:i64)->Result<Vec<Value>,String>{
