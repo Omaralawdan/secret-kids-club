@@ -328,7 +328,7 @@ export default function App() {
   const ready = databaseStatus === "Connected" && db !== null;
   const authRoles: string[] = (() => { try { return authUser ? JSON.parse(authUser.roles) : []; } catch { return []; } })();
   const isAdmin = authRoles.includes("admin");
-  const canWaiveOvertime = isAdmin || (() => { try { const permissions = JSON.parse(authUser?.permissions || "[]") as string[]; return permissions.includes("all") || permissions.includes("overtime_waive"); } catch { return false; } })();
+  const canWaiveOvertime = isAdmin || authRoles.includes("manager");
   const canManage = isAdmin || authRoles.includes("manager");
   const canOperate = canManage || authRoles.includes("cashier");
   const reportAccess = canManage || authRoles.includes("viewer");
