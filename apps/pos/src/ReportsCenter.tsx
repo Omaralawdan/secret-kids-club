@@ -8,7 +8,7 @@ type Field = { key: string; label: string };
 
 const reports: { key: ReportKey; label: string; description: string; fields: Field[] }[] = [
   { key: "visits", label: "الزيارات والحجوزات", description: "بيانات الدخول والخروج والمدة والأسعار.", fields: [
-    {key:"visit_number",label:"رقم الزيارة"},{key:"payment_method",label:"طريقة الدفع"},{key:"child_name",label:"اسم الطفل"},{key:"guardian_name",label:"اسم ولي الأمر"},{key:"phone",label:"رقم التليفون"},{key:"checked_in_at",label:"وقت الدخول"},{key:"expected_checkout",label:"وقت الخروج المتوقع"},{key:"checked_out_at",label:"وقت الخروج الفعلي"},{key:"duration_minutes",label:"المدة المحجوزة بالدقائق"},{key:"actual_duration_minutes",label:"المدة الفعلية بالدقائق"},{key:"base_amount",label:"السعر الأساسي"},{key:"discount_amount",label:"الخصم"},{key:"overtime_amount",label:"الإضافي"},{key:"total_amount",label:"الإجمالي"},{key:"status",label:"الحالة"}]},
+    {key:"visit_number",label:"رقم الزيارة"},{key:"payment_method",label:"طريقة الدفع"},{key:"child_name",label:"اسم الطفل"},{key:"guardian_name",label:"اسم ولي الأمر"},{key:"phone",label:"رقم التليفون"},{key:"checked_in_at",label:"وقت الدخول"},{key:"expected_checkout",label:"وقت الخروج المتوقع"},{key:"checked_out_at",label:"وقت الخروج الفعلي"},{key:"duration_minutes",label:"المدة المحجوزة بالدقائق"},{key:"actual_duration_minutes",label:"المدة الفعلية بالدقائق"},{key:"base_amount",label:"السعر الأساسي"},{key:"discount_amount",label:"الخصم"},{key:"overtime_amount",label:"الإضافي المستحق"},{key:"overtime_collected",label:"تم تحصيل الإضافي؟"},{key:"overtime_collection_note",label:"سبب عدم التحصيل"},{key:"total_amount",label:"الإجمالي المستحق"},{key:"status",label:"الحالة"}]},
   { key: "customers", label: "العملاء والأطفال", description: "بيانات العملاء وعدد الزيارات وآخر زيارة.", fields: [
     {key:"guardian_name",label:"اسم ولي الأمر"},{key:"phone",label:"رقم التليفون"},{key:"child_name",label:"اسم الطفل"},{key:"visit_count",label:"عدد الزيارات"},{key:"last_visit",label:"آخر زيارة"}]},
   { key: "payments", label: "التحصيلات وطرق الدفع", description: "المدفوعات المسجلة في قاعدة البيانات.", fields: [
@@ -122,7 +122,7 @@ export default function ReportsCenter({ db, language, isAdmin = false, canManage
           CASE WHEN p.duration_minutes > 0 THEN strftime('%Y-%m-%dT%H:%M:%fZ', v.checked_in_at, '+' || p.duration_minutes || ' minutes') ELSE NULL END AS expected_checkout,
           vc.checked_out_at, p.duration_minutes, vc.actual_duration_minutes,
           p.base_amount_minor / 100.0 AS base_amount, p.discount_amount_minor / 100.0 AS discount_amount,
-          p.overtime_amount_minor / 100.0 AS overtime_amount, p.final_amount_minor / 100.0 AS total_amount, v.status
+          p.overtime_amount_minor / 100.0 AS overtime_amount, p.overtime_collected, p.overtime_collection_note, p.final_amount_minor / 100.0 AS total_amount, v.status
           FROM local_visits v JOIN local_visit_children vc ON vc.visit_id=v.id
           JOIN local_visit_child_pricing p ON p.visit_child_id=vc.id
           WHERE (?='' OR date(v.checked_in_at)>=date(?)) AND (?='' OR date(v.checked_in_at)<=date(?))
@@ -211,6 +211,7 @@ export default function ReportsCenter({ db, language, isAdmin = false, canManage
   const display = (key: string, value: unknown) => {
     if (key.endsWith("_at") || key === "last_visit" || key === "expected_checkout") return dateValue(value == null ? "" : String(value));
     if (key === "is_active") return Number(value) === 1 ? "نشط" : "متوقف";
+    if (key === "overtime_collected") return Number(value) === 1 ? "تم التحصيل" : "لم يتم التحصيل";
     if (["base_amount","discount_amount","overtime_amount","total_amount","amount","opening_float","expected_cash","counted_cash","variance"].includes(key) && value !== null && value !== undefined) return Number(value).toLocaleString("ar-EG",{style:"currency",currency:"EGP"});
     if (key === "method" || key === "payment_method") return ({cash:"كاش",instapay:"إنستاباي",wallet:"محفظة إلكترونية"} as Record<string,string>)[String(value)] ?? String(value ?? "");
     if (key === "status") return ({active:"نشطة",completed:"مكتملة",cancelled:"ملغاة",confirmed:"تم التحصيل",pending:"معلقة",failed:"فشلت",refunded:"مستردة"} as Record<string,string>)[String(value)] ?? String(value ?? "");
