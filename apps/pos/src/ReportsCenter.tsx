@@ -8,7 +8,7 @@ type Field = { key: string; label: string };
 
 const reports: { key: ReportKey; label: string; description: string; fields: Field[] }[] = [
   { key: "visits", label: "الزيارات والحجوزات", description: "بيانات الدخول والخروج والمدة والأسعار.", fields: [
-    {key:"visit_number",label:"رقم الزيارة"},{key:"child_name",label:"اسم الطفل"},{key:"guardian_name",label:"اسم ولي الأمر"},{key:"phone",label:"رقم التليفون"},{key:"checked_in_at",label:"وقت الدخول"},{key:"expected_checkout",label:"وقت الخروج المتوقع"},{key:"checked_out_at",label:"وقت الخروج الفعلي"},{key:"duration_minutes",label:"المدة المحجوزة بالدقائق"},{key:"actual_duration_minutes",label:"المدة الفعلية بالدقائق"},{key:"base_amount",label:"السعر الأساسي"},{key:"discount_amount",label:"الخصم"},{key:"overtime_amount",label:"الإضافي"},{key:"total_amount",label:"الإجمالي"},{key:"status",label:"الحالة"}]},
+    {key:"visit_number",label:"رقم الزيارة"},{key:"payment_method",label:"طريقة الدفع"},{key:"child_name",label:"اسم الطفل"},{key:"guardian_name",label:"اسم ولي الأمر"},{key:"phone",label:"رقم التليفون"},{key:"checked_in_at",label:"وقت الدخول"},{key:"expected_checkout",label:"وقت الخروج المتوقع"},{key:"checked_out_at",label:"وقت الخروج الفعلي"},{key:"duration_minutes",label:"المدة المحجوزة بالدقائق"},{key:"actual_duration_minutes",label:"المدة الفعلية بالدقائق"},{key:"base_amount",label:"السعر الأساسي"},{key:"discount_amount",label:"الخصم"},{key:"overtime_amount",label:"الإضافي"},{key:"total_amount",label:"الإجمالي"},{key:"status",label:"الحالة"}]},
   { key: "customers", label: "العملاء والأطفال", description: "بيانات العملاء وعدد الزيارات وآخر زيارة.", fields: [
     {key:"guardian_name",label:"اسم ولي الأمر"},{key:"phone",label:"رقم التليفون"},{key:"child_name",label:"اسم الطفل"},{key:"visit_count",label:"عدد الزيارات"},{key:"last_visit",label:"آخر زيارة"}]},
   { key: "payments", label: "التحصيلات وطرق الدفع", description: "المدفوعات المسجلة في قاعدة البيانات.", fields: [
@@ -116,7 +116,7 @@ export default function ReportsCenter({ db, language }: { db: Database | null; l
       let result: ReportRow[] = [];
       if (reportKey === "visits") {
         result = await db.select<ReportRow[]>(`SELECT v.visit_number_local AS visit_number, vc.child_name_snapshot AS child_name,
-          v.guardian_name_snapshot AS guardian_name, v.guardian_phone_snapshot AS phone, v.checked_in_at,
+          v.guardian_name_snapshot AS guardian_name, v.guardian_phone_snapshot AS phone, v.checked_in_at, json_extract(p.calculation_json, '$.paymentMethod') AS payment_method,
           CASE WHEN p.duration_minutes > 0 THEN strftime('%Y-%m-%dT%H:%M:%fZ', v.checked_in_at, '+' || p.duration_minutes || ' minutes') ELSE NULL END AS expected_checkout,
           vc.checked_out_at, p.duration_minutes, vc.actual_duration_minutes,
           p.base_amount_minor / 100.0 AS base_amount, p.discount_amount_minor / 100.0 AS discount_amount,
@@ -208,7 +208,7 @@ export default function ReportsCenter({ db, language }: { db: Database | null; l
     if (key.endsWith("_at") || key === "last_visit" || key === "expected_checkout") return dateValue(value == null ? "" : String(value));
     if (key === "is_active") return Number(value) === 1 ? "نشط" : "متوقف";
     if (["base_amount","discount_amount","overtime_amount","total_amount","amount","opening_float","expected_cash","counted_cash","variance"].includes(key) && value !== null && value !== undefined) return Number(value).toLocaleString("ar-EG",{style:"currency",currency:"EGP"});
-    if (key === "method") return ({cash:"كاش",instapay:"إنستاباي",wallet:"محفظة إلكترونية"} as Record<string,string>)[String(value)] ?? String(value ?? "");
+    if (key === "method" || key === "payment_method") return ({cash:"كاش",instapay:"إنستاباي",wallet:"محفظة إلكترونية"} as Record<string,string>)[String(value)] ?? String(value ?? "");
     if (key === "status") return ({active:"نشطة",completed:"مكتملة",cancelled:"ملغاة",confirmed:"تم التحصيل",pending:"معلقة",failed:"فشلت",refunded:"مستردة"} as Record<string,string>)[String(value)] ?? String(value ?? "");
     return String(value ?? "—");
   };
