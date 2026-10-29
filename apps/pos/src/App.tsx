@@ -319,7 +319,7 @@ export default function App() {
   const authRoles: string[] = (() => { try { return authUser ? JSON.parse(authUser.roles) : []; } catch { return []; } })();
   const isAdmin = authRoles.includes("admin");
   const canManage = isAdmin || authRoles.includes("manager");
-  if (!authUser) return <AuthGate onAuthenticated={setAuthUser} />;
+  if (!authUser) return <AuthGate onAuthenticated={setAuthUser} databaseReady={ready} />;
 
   async function createRule(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
