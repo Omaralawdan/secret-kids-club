@@ -319,7 +319,9 @@ export default function App() {
   const authRoles: string[] = (() => { try { return authUser ? JSON.parse(authUser.roles) : []; } catch { return []; } })();
   const isAdmin = authRoles.includes("admin");
   const canManage = isAdmin || authRoles.includes("manager");
-  if (!authUser) return <AuthGate onAuthenticated={setAuthUser} databaseReady={ready} />;
+  const canOperate = canManage || authRoles.includes("cashier");
+  const reportAccess = canManage || authRoles.includes("viewer");
+  if (!authUser) return <AuthGate onAuthenticated={(user) => { setAuthUser(user); try { if (JSON.parse(user.roles).includes("viewer")) setScreen("reports"); } catch {} }} databaseReady={ready} />;
 
   async function createRule(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -639,23 +641,23 @@ export default function App() {
       </header>
 
       <nav className="nav-tabs">
-        <button className={screen === "reception" ? "active" : ""} onClick={() => setScreen("reception")}>
+        {authRoles.some(role => ["admin","manager","cashier"].includes(role)) && <button className={screen === "reception" ? "active" : ""} onClick={() => setScreen("reception")}>
           {tr("Reception")}
-        </button>
-        <button className={screen === "active" ? "active" : ""} onClick={() => setScreen("active")}>
+        </button>}
+        {authRoles.some(role => ["admin","manager","cashier"].includes(role)) && <button className={screen === "active" ? "active" : ""} onClick={() => setScreen("active")}>
           {ar ? "الزيارات النشطة" : "Active visits"}
           {activeChildren.length > 0 ? ` (${activeChildren.length})` : ""}
-        </button>
+        </button>}
         {isAdmin && <button className={screen === "pricing" ? "active" : ""} onClick={() => setScreen("pricing")}>
           {tr("Pricing setup")}
         </button>}
         {isAdmin && <button className={screen === "settings" ? "active" : ""} onClick={() => setScreen("settings")}>
           {tr("Settings")}
         </button>}
-        {(isAdmin || canManage) && <button className={screen === "reports" ? "active" : ""} onClick={() => setScreen("reports")}>
+        {reportAccess && <button className={screen === "reports" ? "active" : ""} onClick={() => setScreen("reports")}>
           {ar ? "التقارير والتصدير" : "Reports & Export"}
         </button>}
-        {(isAdmin || canManage) && <button className={screen === "admin" ? "active" : ""} onClick={() => setScreen("admin")}>
+        {canOperate && <button className={screen === "admin" ? "active" : ""} onClick={() => setScreen("admin")}>
           {ar ? "الموظفون والورديات" : "Staff & Shifts"}
         </button>
       </nav>
