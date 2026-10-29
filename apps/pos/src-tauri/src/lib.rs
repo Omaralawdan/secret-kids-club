@@ -10,6 +10,10 @@ use pbkdf2::pbkdf2_hmac;
 use sha2::Sha256;
 use rand::RngCore;
 
+fn is_valid_booking_duration(duration_minutes: i64) -> bool {
+    (15..=720).contains(&duration_minutes) && duration_minutes % 15 == 0
+}
+
 fn database_path(app: &tauri::AppHandle) -> Result<PathBuf, Box<dyn Error>> {
     // Must match tauri-plugin-sql's app_config_dir() + database filename.
     let path = app
@@ -507,7 +511,7 @@ fn create_pricing_rule(
     if amount_minor < 0 {
         return Err("السعر لا يمكن أن يكون سالبًا.".into());
     }
-    if duration_minutes < 15 || duration_minutes > 720 || duration_minutes % 15 != 0 { return Err("مدة الحجز يجب أن تكون بزيادات 15 دقيقة من 15 دقيقة إلى 12 ساعة.".into()); }
+    if !is_valid_booking_duration(duration_minutes) { return Err("مدة الحجز يجب أن تكون بزيادات 15 دقيقة من 15 دقيقة إلى 12 ساعة.".into()); }
 
     let mut db = auth_db(&app)?;
     let (actor, _) = require_role(&db, &["admin", "manager"])?;
@@ -726,6 +730,19 @@ mod checkout_tests {
     }
 
     #[test]
+    fn booking_duration_accepts_quarter_hours_from_15_minutes_to_12_hours() {
+        assert!(super::is_valid_booking_duration(15));
+        assert!(super::is_valid_booking_duration(30));
+        assert!(super::is_valid_booking_duration(45));
+        assert!(super::is_valid_booking_duration(75));
+        assert!(super::is_valid_booking_duration(720));
+        assert!(!super::is_valid_booking_duration(0));
+        assert!(!super::is_valid_booking_duration(14));
+        assert!(!super::is_valid_booking_duration(25));
+        assert!(!super::is_valid_booking_duration(721));
+    }
+
+    #[test]
     fn hourly_checkout_saves_overtime_discount_and_total() {
         let path = setup_db(3690);
         add_child(
@@ -761,6 +778,10 @@ mod checkout_tests {
         assert_eq!(visit.0, "completed");
         assert!(visit.1.is_some());
         assert_eq!(visit.2, 10200);
+        let payment: i64 = db.query_row(
+            "SELECT amount_minor FROM local_payments WHERE visit_id='visit-1'", [], |r| r.get(0)
+        ).unwrap();
+        assert_eq!(payment, 10200);
 
         drop(db);
         let _ = std::fs::remove_file(path);
@@ -799,6 +820,10 @@ mod checkout_tests {
         assert_eq!(audit.0, "overtime_waived");
         assert_eq!(audit.1, "Manager approved 5-minute grace");
         assert_eq!(audit.2, "test-cashier");
+        let payment: i64 = db.query_row(
+            "SELECT amount_minor FROM local_payments WHERE visit_id='visit-1'", [], |r| r.get(0)
+        ).unwrap();
+        assert_eq!(payment, 10000, "Waived overtime must not be collected");
         drop(db);
         let _ = std::fs::remove_file(path);
     }
