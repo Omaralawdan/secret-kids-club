@@ -653,6 +653,10 @@ mod checkout_tests {
             );
             CREATE TABLE local_session (singleton_id INTEGER PRIMARY KEY, actor_user_id TEXT);
             INSERT INTO local_session(singleton_id, actor_user_id) VALUES (1, 'test-cashier');
+            CREATE TABLE local_payments (
+                id TEXT PRIMARY KEY, visit_id TEXT, method TEXT, status TEXT,
+                amount_minor INTEGER, received_by TEXT, created_at TEXT
+            );
             CREATE TABLE local_audit_log (
                 id TEXT PRIMARY KEY, actor_user_id TEXT NOT NULL, action TEXT NOT NULL,
                 entity_type TEXT NOT NULL, entity_id TEXT, reason TEXT, before_json TEXT,
