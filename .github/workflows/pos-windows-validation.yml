@@ -55,6 +55,28 @@ jobs:
       - name: Build Windows installer
         run: npm run tauri -- build --bundles nsis
 
+      - name: Smoke-test the built Windows application
+        shell: pwsh
+        run: |
+          $app = Join-Path $PWD "src-tauri/target/release/pos-starter.exe"
+          if (!(Test-Path $app)) {
+            Write-Error "Built application executable was not found at $app"
+            exit 1
+          }
+          $stdout = Join-Path $env:TEMP "skc-pos-startup-stdout.log"
+          $stderr = Join-Path $env:TEMP "skc-pos-startup-stderr.log"
+          $process = Start-Process -FilePath $app -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          Start-Sleep -Seconds 8
+          $process.Refresh()
+          if ($process.HasExited) {
+            Write-Host "POS application exited during startup with code $($process.ExitCode)."
+            if (Test-Path $stdout) { Get-Content $stdout }
+            if (Test-Path $stderr) { Get-Content $stderr }
+            exit 1
+          }
+          Stop-Process -Id $process.Id -Force
+          Write-Host "POS application remained running for the 8-second startup smoke test."
+
       - name: Upload Windows installer
         uses: actions/upload-artifact@v4
         with:
