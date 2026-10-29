@@ -816,7 +816,11 @@ export default function App() {
                 </select>
               </label>
               <label className="full-width">{tr("Phone number")}
-                <input value={guardianPhone} onChange={(e) => setGuardianPhone(e.target.value)} required inputMode="tel" placeholder={tr("Guardian phone")} />
+                <input value={guardianPhone} onChange={(e) => { setGuardianPhone(e.target.value); setCustomerLookupMessage(""); }} onBlur={() => { if (!db || !guardianPhone.trim()) return; void db.select<{full_name:string}[]>("SELECT full_name FROM local_guardians WHERE phone = ? ORDER BY created_at DESC LIMIT 1", [guardianPhone.trim()]).then(found => { if (found[0]) { setGuardianName(found[0].full_name); setCustomerLookupMessage(ar ? "تم العثور على العميل السابق وملء الاسم تلقائيًا." : "Existing customer found; name filled automatically."); } }).catch(() => {}); }} required inputMode="tel" placeholder={tr("Guardian phone")} />
+                {customerLookupMessage && <span className="muted">{customerLookupMessage}</span>}
+              </label>
+              <label className="full-width">{ar ? "طريقة الدفع" : "Payment method"}
+                <select value={paymentMethod} onChange={e => setPaymentMethod(e.target.value as "cash"|"instapay"|"wallet")}><option value="cash">{ar ? "كاش" : "Cash"}</option><option value="instapay">InstaPay</option><option value="wallet">{ar ? "محفظة إلكترونية" : "E-Wallet"}</option></select>
               </label>
             </div>
           </section>
