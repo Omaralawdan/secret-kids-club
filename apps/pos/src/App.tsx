@@ -121,7 +121,7 @@ function buildReceiptHtml(data: ReceiptData, language: Language): string {
   if (finalReceipt) { html += row(label("Overtime duration", "مدة الوقت الإضافي"), escapeReceipt(formatDuration(data.overtimeMinutes || 0, language))); html += amount(label("Overtime amount", "قيمة الوقت الإضافي"), data.overtimeAmountMinor || 0); }
   html += '<div class="row total"><span>' + label(finalReceipt ? "FINAL TOTAL" : "INITIAL ESTIMATE", finalReceipt ? "الإجمالي النهائي" : "السعر المبدئي") + '</span><strong>' + escapeReceipt(money(finalReceipt ? (data.totalAmountMinor || 0) : (data.baseAmountMinor - data.discountAmountMinor), language)) + '</strong></div>';
   html += '<div class="section">' + label("Receipt details", "بيانات الإيصال") + '</div>' + row(label("Issued by", "مُصدر الإيصال"), escapeReceipt(data.issuer || label("Cashier", "الكاشير")));
-  html += '<footer class="foot">' + label("Thank you for visiting! ❤️", "شكرًا لزيارتكم ❤️") + '</footer></main></body></html>';
+  html += '<footer class="foot">' + label("Thank you for visiting! ❤️", "نورتونا في Secret Kids Club ❤️") + '<br>' + label("We loved having you. See you again soon! 🎈", "اتبسطنا بوجودكم، ومستنيينكم تنورونا تاني قريب! 🎈") + '</footer></main></body></html>';
   return html;
 }
 function readHourlyRate(json: string): number | null {
