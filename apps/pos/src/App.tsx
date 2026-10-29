@@ -905,9 +905,8 @@ export default function App() {
                       {ar ? "مدة الحجز (بالساعات أو الدقائق)" : "Booked duration (hours or minutes)"}
                       <input
                         type="number"
-                        min="25"
-                        max="720"
-                        step="5"
+                        min="0.42"
+                        max="12"
                         required
                         value={Number(child.durationHours.toFixed(2))}
                         step="0.25"
