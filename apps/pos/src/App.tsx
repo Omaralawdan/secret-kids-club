@@ -1,5 +1,5 @@
 
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import Database from "@tauri-apps/plugin-sql";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
@@ -91,14 +91,12 @@ function escapeReceipt(value: unknown): string {
   })[char] ?? char);
 }
 
-function printReceipt(data: ReceiptData, language: Language) {
+function buildReceiptHtml(data: ReceiptData, language: Language): string {
   const ar = language === "ar";
   const finalReceipt = Boolean(data.checkedOutAt);
   const label = (en: string, arabic: string) => ar ? arabic : en;
   const row = (name: string, value: string) => '<div class="row"><span>' + name + '</span><strong>' + value + '</strong></div>';
   const amount = (name: string, value: number) => row(name, escapeReceipt(money(value, language)));
-  const popup = window.open("", "_blank", "width=420,height=720");
-  if (!popup) { window.alert(label("Allow pop-ups to print the receipt.", "اسمح بالنوافذ المنبثقة لطباعة الإيصال.")); return; }
   const date = (value: string) => escapeReceipt(new Date(value).toLocaleString(ar ? "ar-EG" : "en-EG"));
   let html = '<!doctype html><html lang="' + (ar ? "ar" : "en") + '" dir="' + (ar ? "rtl" : "ltr") + '"><head><meta charset="utf-8"><title>Secret Kids Club Receipt</title>';
   html += '<style>@page{size:80mm auto;margin:3mm}*{box-sizing:border-box}body{margin:0;font:12px/1.45 Arial,Tahoma,sans-serif;color:#171717}.receipt{width:74mm;margin:auto;padding:2mm}.head{text-align:center;border-bottom:2px dashed #555;padding-bottom:10px;margin-bottom:8px}h1{font-size:18px;margin:0 0 3px;color:#b91c45}h2{font-size:14px;margin:5px 0}.sub{font-size:10px;color:#444}.row{display:flex;justify-content:space-between;gap:8px;padding:4px 0;border-bottom:1px dotted #ddd;align-items:flex-start}.row span{color:#444;max-width:48%}.row strong{text-align:end;max-width:58%;overflow-wrap:anywhere}.section{font-weight:700;margin:10px 0 3px;color:#b91c45}.total{margin-top:7px;padding:8px;background:#fff0f4;border:1px solid #f2b8c8;border-radius:6px;font-size:14px}.foot{text-align:center;border-top:2px dashed #555;margin-top:12px;padding-top:8px;font-size:10px}@media screen{body{background:#eee;padding:12px}.receipt{background:white;padding:10px;box-shadow:0 2px 14px #0002}}</style></head><body><main class="receipt">';
@@ -122,8 +120,8 @@ function printReceipt(data: ReceiptData, language: Language) {
   if (finalReceipt) { html += row(label("Overtime duration", "مدة الوقت الإضافي"), escapeReceipt(formatDuration(data.overtimeMinutes || 0, language))); html += amount(label("Overtime amount", "قيمة الوقت الإضافي"), data.overtimeAmountMinor || 0); }
   html += '<div class="row total"><span>' + label(finalReceipt ? "FINAL TOTAL" : "INITIAL ESTIMATE", finalReceipt ? "الإجمالي النهائي" : "السعر المبدئي") + '</span><strong>' + escapeReceipt(money(finalReceipt ? (data.totalAmountMinor || 0) : (data.baseAmountMinor - data.discountAmountMinor), language)) + '</strong></div>';
   html += '<div class="section">' + label("Receipt details", "بيانات الإيصال") + '</div>' + row(label("Issued by", "مُصدر الإيصال"), escapeReceipt(data.issuer || label("Cashier", "الكاشير")));
-  html += '<footer class="foot">' + label("Thank you for visiting! ❤️", "شكرًا لزيارتكم ❤️") + '</footer></main><script>window.addEventListener("load",()=>setTimeout(()=>window.print(),250));window.addEventListener("afterprint",()=>setTimeout(()=>window.close(),300));</script></body></html>';
-  popup.document.open(); popup.document.write(html); popup.document.close();
+  html += '<footer class="foot">' + label("Thank you for visiting! ❤️", "شكرًا لزيارتكم ❤️") + '</footer></main></body></html>';
+  return html;
 }
 function readHourlyRate(json: string): number | null {
   try {
@@ -158,6 +156,9 @@ export default function App() {
   const [venueAddress, setVenueAddress] = useState("");
   const [venuePhone, setVenuePhone] = useState("01122799113");
   const [fontScale, setFontScale] = useState("1");
+  const [receiptQueue, setReceiptQueue] = useState<string[]>([]);
+  const [receiptPreviewHtml, setReceiptPreviewHtml] = useState("");
+  const receiptFrameRef = useRef<HTMLIFrameElement>(null);
 
   const [guardianName, setGuardianName] = useState("");
   const [guardianRelation, setGuardianRelation] = useState("Mother");
@@ -245,6 +246,10 @@ export default function App() {
       setFontScale(localStorage.getItem("skc.fontScale") || "1");
     } catch { /* Use in-memory defaults if storage is unavailable. */ }
   }, []);
+
+  useEffect(() => {
+    setReceiptPreviewHtml(receiptQueue[0] || "");
+  }, [receiptQueue]);
 
   useEffect(() => {
     document.documentElement.style.setProperty("--app-scale", fontScale);
@@ -494,13 +499,13 @@ export default function App() {
 
       await refreshData(db);
       for (const row of childRows) {
-        printReceipt({
+        setReceiptQueue((current) => [...current, buildReceiptHtml({
           visitNumber, guardianName: guardianName.trim(), guardianPhone: guardianPhone.trim(),
           childName: row.child.name, checkedInAt: timestamp,
           bookedMinutes: Math.round(row.child.durationHours * 60),
           baseAmountMinor: priceFor(row.child), discountAmountMinor: 0,
           venueName, venueAddress, venuePhone, issuer: "Cashier",
-        }, language);
+        }, language)]);
       }
       setGuardianName("");
       setGuardianPhone("");
@@ -572,7 +577,7 @@ export default function App() {
       );
       const receipt = receiptRows[0];
       if (receipt && receipt.checked_out_at) {
-        printReceipt({
+        setReceiptQueue((current) => [...current, buildReceiptHtml({
           visitNumber: receipt.visit_number, guardianName: receipt.guardian_name,
           guardianPhone: receipt.guardian_phone, childName: receipt.child_name,
           checkedInAt: receipt.checked_in_at, checkedOutAt: receipt.checked_out_at,
@@ -580,7 +585,7 @@ export default function App() {
           baseAmountMinor: receipt.base_amount_minor, discountAmountMinor: receipt.discount_amount_minor,
           overtimeMinutes: receipt.overtime_minutes || 0, overtimeAmountMinor: receipt.overtime_amount_minor || 0,
           totalAmountMinor: receipt.final_amount_minor, venueName, venueAddress, venuePhone, issuer: "Cashier",
-        }, language);
+        }, language)]);
       }
 
       await refreshData(db);
@@ -742,10 +747,9 @@ export default function App() {
                     <div className="child-number">#{child.visit_number}</div>
                     <div className="child-name">
                       <strong>{child.child_name}</strong>
-                      <span className="muted">{child.guardian_name} · {child.guardian_phone}</span>
-                      <span className="muted">
-                        {ar ? "الدخول: " : "Checked in: "}{formatDate(child.checked_in_at, language)}
-                      </span>
+                      <span className="muted active-visit-detail">{ar ? "اسم المرافق: " : "Guardian: "}{child.guardian_name}</span>
+                      <span className="muted active-visit-detail">{ar ? "رقم التليفون: " : "Phone: "}{child.guardian_phone}</span>
+                      <span className="muted active-visit-detail">{ar ? "تاريخ ووقت الدخول: " : "Check-in date & time: "}{formatDate(child.checked_in_at, language)}</span>
                     </div>
                     <div className="child-price">
                       <span>{ar ? "المدة المحجوزة" : "Booked duration"}</span>
@@ -914,6 +918,25 @@ export default function App() {
         <span>Secret Kids Club POS</span>
         <span>{visits} {tr(visits === 1 ? "saved visit" : "saved visits")} · {tr("Local SQLite")}</span>
       </footer>
+      {receiptPreviewHtml && (
+        <div className="receipt-modal-backdrop" role="dialog" aria-modal="true" aria-label={ar ? "معاينة الإيصال" : "Receipt preview"}>
+          <section className="receipt-modal">
+            <header className="receipt-modal-header">
+              <div>
+                <h3>{ar ? "معاينة الإيصال" : "Receipt preview"}</h3>
+                <p className="muted">{ar ? "راجع الإيصال، ثم اختار الطباعة أو الإلغاء." : "Review the receipt, then choose Print or Cancel."}</p>
+              </div>
+              <button type="button" className="secondary-button" onClick={() => setReceiptQueue((current) => current.slice(1))} aria-label={ar ? "إغلاق المعاينة" : "Close preview"}>×</button>
+            </header>
+            <iframe ref={receiptFrameRef} className="receipt-preview-frame" title={ar ? "معاينة الإيصال" : "Receipt preview"} srcDoc={receiptPreviewHtml} />
+            <footer className="receipt-modal-actions">
+              <button type="button" className="secondary-button" onClick={() => setReceiptQueue((current) => current.slice(1))}>{ar ? "إلغاء / بدون طباعة" : "Cancel / Don't print"}</button>
+              <button type="button" className="primary-button" onClick={() => receiptFrameRef.current?.contentWindow?.print()}>{ar ? "طباعة الإيصال" : "Print receipt"}</button>
+            </footer>
+          </section>
+        </div>
+      )}
+
     </main>
   );
 }
