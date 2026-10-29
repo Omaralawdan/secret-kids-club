@@ -708,7 +708,7 @@ export default function App() {
       {screen === "admin" ? (
         <AdminTools user={authUser} onLogout={() => { void invoke("logout_user").finally(() => setAuthUser(null)); }}  />
       ) : screen === "reports" ? (
-        <ReportsCenter db={db} language={language} />
+        <ReportsCenter db={db} language={language} isAdmin={isAdmin} canManage={canManage} />
       ) : screen === "settings" && isAdmin ? (
         <section className="panel settings-panel">
           <div className="panel-title">
