@@ -573,6 +573,20 @@ export default function App() {
       : `Confirm checkout for ${child.child_name}?`;
 
     if (!window.confirm(confirmMessage)) return;
+    const elapsedMinutes = Math.max(0, Math.ceil((Date.now() - new Date(child.checked_in_at).getTime()) / 60000));
+    const hourlyRate = readHourlyRate(child.calculation_json);
+    const estimatedOvertimeMinutes = child.pricing_type === "hourly" ? Math.max(0, elapsedMinutes - child.duration_minutes) : 0;
+    let overtimeCollected = true;
+    let overtimeCollectionNote: string | null = null;
+    if (estimatedOvertimeMinutes > 0 && hourlyRate !== null) {
+      overtimeCollected = window.confirm(ar
+        ? "هل تم تحصيل قيمة الوقت الإضافي؟ اضغط موافق لو تم التحصيل، أو إلغاء لو لم يتم التحصيل."
+        : "Was the overtime amount collected? Choose OK for collected, Cancel for not collected.");
+      if (!overtimeCollected) {
+        overtimeCollectionNote = window.prompt(ar ? "اكتب سبب عدم تحصيل الوقت الإضافي (إجباري):" : "Enter the reason overtime was not collected (required):", "")?.trim() || null;
+        if (!overtimeCollectionNote) { setError(ar ? "لازم تكتب سبب عدم التحصيل قبل تسجيل الخروج." : "A reason is required when overtime is not collected."); return; }
+      }
+    }
 
     setCheckoutId(child.visit_child_id);
     setError("");
@@ -581,6 +595,8 @@ export default function App() {
     try {
       await invoke<void>("checkout_child", {
         visitChildId: child.visit_child_id,
+        overtimeCollected,
+        overtimeCollectionNote,
       });
 
       const receiptRows = await db.select<{
