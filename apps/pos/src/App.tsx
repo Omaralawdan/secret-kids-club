@@ -888,7 +888,7 @@ export default function App() {
               <p>{ar ? "قبل الخصومات؛ يتم حساب الوقت الإضافي عند الخروج بالدقيقة." : "Before discounts; applicable overtime is calculated per minute at checkout."}</p>
             </div>
             <button className="primary-button" type="submit" disabled={!ready || saving || rules.length === 0}>
-              {saving ? tr("Saving visit…") : tr("Confirm check-in")}
+              {saving ? tr("Saving visit…") : (ar ? "حفظ ودخول" : "Save & Check In")}
             </button>
           </section>
         </form>
