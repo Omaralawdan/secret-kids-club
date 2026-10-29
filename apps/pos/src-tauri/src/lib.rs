@@ -398,6 +398,7 @@ pub fn run() {
             kind: MigrationKind::Up,
         },
         Migration { version: 4, description: "auth_shifts_audit", sql: include_str!("../migrations/004_auth_shifts_audit.sql"), kind: MigrationKind::Up },
+        Migration { version: 5, description: "role_write_guards", sql: include_str!("../migrations/005_role_write_guards.sql"), kind: MigrationKind::Up },
     ];
 
     tauri::Builder::default()
