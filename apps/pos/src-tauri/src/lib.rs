@@ -270,6 +270,16 @@ fn checkout_transaction(
             )
             .into());
         }
+
+        let payment_method = calculation.get("paymentMethod").and_then(Value::as_str).unwrap_or("cash");
+        let payment_method = if ["cash", "instapay", "wallet"].contains(&payment_method) { payment_method } else { "cash" };
+        if total > 0 {
+            let actor: String = tx.query_row("SELECT COALESCE(actor_user_id,'system') FROM local_session WHERE singleton_id=1", [], |row| row.get(0))?;
+            tx.execute(
+                "INSERT INTO local_payments(id,visit_id,method,status,amount_minor,received_by,created_at) VALUES(lower(hex(randomblob(16))),? ,?,'confirmed',?,?,?)",
+                params![visit_id, payment_method, total, actor, checkout_time_string],
+            )?;
+        }
     }
 
     // All child, pricing, and final-visit updates commit together.
