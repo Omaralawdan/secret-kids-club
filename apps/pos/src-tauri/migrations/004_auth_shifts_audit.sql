@@ -98,3 +98,24 @@ BEGIN
  VALUES(lower(hex(randomblob(16))),COALESCE((SELECT actor_user_id FROM local_session WHERE singleton_id=1),'system'),'discount_applied','discount',NEW.id,
  json_object('visit_id',NEW.visit_id,'discount_name',NEW.discount_name_snapshot,'amount_minor',NEW.amount_minor,'applied_by',NEW.applied_by),strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 END;
+
+CREATE TRIGGER IF NOT EXISTS audit_pricing_rule_insert AFTER INSERT ON local_pricing_rules
+BEGIN
+ INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,after_json,created_at)
+ VALUES(lower(hex(randomblob(16))),COALESCE((SELECT actor_user_id FROM local_session WHERE singleton_id=1),'system'),'pricing_rule_created','pricing_rule',NEW.id,
+ json_object('name',NEW.name,'pricing_type',NEW.pricing_type,'amount_minor',NEW.amount_minor,'is_active',NEW.is_active),strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+END;
+CREATE TRIGGER IF NOT EXISTS audit_pricing_rule_update AFTER UPDATE ON local_pricing_rules
+WHEN OLD.name<>NEW.name OR OLD.amount_minor<>NEW.amount_minor OR OLD.pricing_type<>NEW.pricing_type OR OLD.is_active<>NEW.is_active
+BEGIN
+ INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,before_json,after_json,created_at)
+ VALUES(lower(hex(randomblob(16))),COALESCE((SELECT actor_user_id FROM local_session WHERE singleton_id=1),'system'),'pricing_rule_changed','pricing_rule',NEW.id,
+ json_object('name',OLD.name,'pricing_type',OLD.pricing_type,'amount_minor',OLD.amount_minor,'is_active',OLD.is_active),
+ json_object('name',NEW.name,'pricing_type',NEW.pricing_type,'amount_minor',NEW.amount_minor,'is_active',NEW.is_active),strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+END;
+CREATE TRIGGER IF NOT EXISTS audit_pricing_rule_delete AFTER DELETE ON local_pricing_rules
+BEGIN
+ INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,before_json,created_at)
+ VALUES(lower(hex(randomblob(16))),COALESCE((SELECT actor_user_id FROM local_session WHERE singleton_id=1),'system'),'pricing_rule_deleted','pricing_rule',OLD.id,
+ json_object('name',OLD.name,'pricing_type',OLD.pricing_type,'amount_minor',OLD.amount_minor,'is_active',OLD.is_active),strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+END;
