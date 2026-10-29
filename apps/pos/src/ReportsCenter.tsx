@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import Database from "@tauri-apps/plugin-sql";
 import "./ReportsCenter.css";
 
@@ -56,7 +56,6 @@ export default function ReportsCenter({ db, language }: { db: Database | null; l
     try { return JSON.parse(localStorage.getItem("skc.reportTemplates") || "[]"); } catch { return []; }
   });
   const current = reports.find(r => r.key === reportKey)!;
-  const labels = useMemo(() => new Map(current.fields.map(f => [f.key, f.label])), [current]);
 
   useEffect(() => {
     setSelectedFields(defaultFields[reportKey]);
