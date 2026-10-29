@@ -106,3 +106,28 @@ html[dir="rtl"] select {
 .settings-panel label {
   max-width: 420px;
 }
+
+/* Persistent alerts for visits whose booked time has elapsed. */
+.expiry-alerts {
+  margin: 16px 0 20px;
+  padding: 18px;
+  border: 1px solid #e5a33b;
+  border-radius: 14px;
+  background: #fff8e9;
+  color: #563b0d;
+}
+.expiry-alerts-heading { display: grid; gap: 5px; margin-bottom: 12px; }
+.expiry-alerts-heading strong { font-size: 16px; }
+.expiry-alerts-heading span { font-size: 12px; line-height: 1.5; }
+.expiry-alert { display: grid; grid-template-columns: minmax(130px, 1fr) minmax(130px, .55fr) auto; align-items: center; gap: 12px; padding: 13px 0; border-top: 1px solid #f0d8a7; }
+.expiry-alert-child { display: grid; gap: 5px; }
+.expiry-alert-child strong { font-size: 14px; }
+.expiry-alert-child span { font-size: 11px; }
+.expiry-duration { min-width: 120px; }
+.expiry-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.expiry-actions .secondary-button { background: #f6e5c4; color: #563b0d; }
+html[dir="rtl"] .expiry-alerts { text-align: right; }
+@media (max-width: 760px) {
+  .expiry-alert { grid-template-columns: minmax(0, 1fr); align-items: stretch; }
+  .expiry-actions { display: grid; grid-template-columns: 1fr 1fr; }
+}
