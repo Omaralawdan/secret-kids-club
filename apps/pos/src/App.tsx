@@ -1,15 +1,22 @@
 
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import Database from "@tauri-apps/plugin-sql";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 import { t, useLanguage, type Language } from "./i18n";
+import ReportsCenter from "./ReportsCenter";
+import AuthGate, { type AuthUser } from "./AuthGate";
+import AdminTools from "./AdminTools";
+
+type MembershipPlan = { id:string; name:string; price_minor:number; included_minutes:number; validity_days:number; is_active:number };
+type ChildMembership = { id:string; child_name_snapshot:string; guardian_phone_snapshot:string; plan_id:string; plan_name:string; purchased_at:string; expires_at:string; included_minutes:number; used_minutes:number; status:string };
 
 type PricingRule = {
   id: string;
   name: string;
   pricing_type: "fixed" | "hourly" | "offer";
   amount_minor: number;
+  duration_minutes: number;
   is_active: number;
 };
 
@@ -18,9 +25,10 @@ type ChildDraft = {
   name: string;
   ruleId: string;
   durationHours: number;
+  hourlyRateMinor: number | null;
 };
 
-type Screen = "reception" | "active" | "pricing" | "settings";
+type Screen = "reception" | "active" | "pricing" | "settings" | "reports" | "admin";
 
 type ActiveChild = {
   visit_id: string;
@@ -61,28 +69,65 @@ function formatDate(value: string, language: Language) {
 
 
 function formatDuration(minutes: number, language: Language) {
-  const hours = Math.floor(minutes / 60);
-  const remainder = minutes % 60;
-
-  if (language === "ar") {
-    if (hours && remainder) return `${hours} ساعة و${remainder} دقيقة`;
-    if (hours) return `${hours} ساعة`;
-    return `${remainder} دقيقة`;
-  }
-
-
-
-  if (hours && remainder) return `${hours}h ${remainder}m`;
-  if (hours) return `${hours}h`;
-  return `${remainder}m`;
+  const hours = minutes / 60;
+  const formatted = Number(hours.toFixed(2)).toString();
+  return language === "ar" ? `${formatted} ساعة` : `${formatted} h`;
 }
 
+type ReceiptData = {
+  visitNumber: number; guardianName: string; guardianPhone: string; childName: string;
+  checkedInAt: string; checkedOutAt?: string | null; expectedCheckoutAt?: string | null; bookedMinutes: number; actualMinutes?: number | null; paymentMethod?: string;
+  baseAmountMinor: number; discountAmountMinor: number; overtimeMinutes?: number | null;
+  overtimeAmountMinor?: number | null; overtimeCollected?: boolean; overtimeCollectionNote?: string | null; totalAmountMinor?: number | null;
+  venueName: string; venueAddress: string; venuePhone: string; issuer: string;
+};
+
+function escapeReceipt(value: unknown): string {
+  return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  })[char] ?? char);
+}
+
+function buildReceiptHtml(data: ReceiptData, language: Language): string {
+  const ar = language === "ar";
+  const finalReceipt = Boolean(data.checkedOutAt);
+  const label = (en: string, arabic: string) => ar ? arabic : en;
+  const row = (name: string, value: string) => '<div class="row"><span>' + name + '</span><strong>' + value + '</strong></div>';
+  const amount = (name: string, value: number) => row(name, escapeReceipt(money(value, language)));
+  const date = (value: string) => escapeReceipt(new Date(value).toLocaleString(ar ? "ar-EG" : "en-EG"));
+  let html = '<!doctype html><html lang="' + (ar ? "ar" : "en") + '" dir="' + (ar ? "rtl" : "ltr") + '"><head><meta charset="utf-8"><title>Secret Kids Club Receipt</title>';
+  html += '<style>@page{size:80mm auto;margin:3mm}*{box-sizing:border-box}body{margin:0;font:12px/1.45 Arial,Tahoma,sans-serif;color:#171717}.receipt{width:74mm;margin:auto;padding:2mm}.head{text-align:center;border-bottom:2px dashed #555;padding-bottom:10px;margin-bottom:8px}h1{font-size:18px;margin:0 0 3px;color:#b91c45}h2{font-size:14px;margin:5px 0}.sub{font-size:10px;color:#444}.row{display:flex;justify-content:space-between;gap:8px;padding:4px 0;border-bottom:1px dotted #ddd;align-items:flex-start}.row span{color:#444;max-width:48%}.row strong{text-align:end;max-width:58%;overflow-wrap:anywhere}.section{font-weight:700;margin:10px 0 3px;color:#b91c45}.total{margin-top:7px;padding:8px;background:#fff0f4;border:1px solid #f2b8c8;border-radius:6px;font-size:14px}.foot{text-align:center;border-top:2px dashed #555;margin-top:12px;padding-top:8px;font-size:10px}@media screen{body{background:#eee;padding:12px}.receipt{background:white;padding:10px;box-shadow:0 2px 14px #0002}}</style></head><body><main class="receipt">';
+  html += '<header class="head"><h1>' + escapeReceipt(data.venueName || "Secret Kids Club") + '</h1>';
+  if (data.venueAddress) html += '<div class="sub">' + escapeReceipt(data.venueAddress) + '</div>';
+  html += '<div class="sub">' + label("Phone", "تليفون") + ': ' + escapeReceipt(data.venuePhone || "01122799113") + '</div><h2>' + label("VISIT RECEIPT", "إيصال زيارة طفل") + '</h2>';
+  html += '<div class="sub">' + label("Receipt No.", "رقم الإيصال") + ': SKC-' + data.visitNumber + '-' + (finalReceipt ? "OUT" : "IN") + '-' + Date.now().toString().slice(-6) + '</div></header>';
+  html += '<div class="section">' + label("Visit details", "بيانات الزيارة") + '</div>';
+  html += row(label("Visit number", "رقم الزيارة"), String(data.visitNumber));
+  html += row(label("Visit date", "تاريخ الزيارة"), date(data.checkedInAt));
+  html += row(label("Guardian", "اسم المرافق"), escapeReceipt(data.guardianName));
+  html += row(label("Guardian phone", "تليفون المرافق"), escapeReceipt(data.guardianPhone));
+  html += row(label("Child", "اسم الطفل"), escapeReceipt(data.childName));
+  html += row(label("Check-in", "وقت الدخول"), date(data.checkedInAt));
+  if (!finalReceipt && data.expectedCheckoutAt) html += row(label("Expected check-out", "وقت الخروج المتوقع"), date(data.expectedCheckoutAt));
+  if (finalReceipt) html += row(label("Check-out", "وقت الخروج"), date(data.checkedOutAt || ""));
+  html += row(label("Booked duration", "المدة المحجوزة"), escapeReceipt(formatDuration(data.bookedMinutes, language)));
+  if (finalReceipt) html += row(label("Actual duration", "المدة الفعلية"), escapeReceipt(formatDuration(data.actualMinutes || 0, language)));
+  html += '<div class="section">' + label("Payment details", "تفاصيل الحساب") + '</div>';
+  if (data.paymentMethod) html += row(label("Payment method", "طريقة الدفع"), escapeReceipt(({cash:"Cash",instapay:"InstaPay",wallet:"E-Wallet"} as Record<string,string>)[data.paymentMethod] || data.paymentMethod));
+  html += amount(label("Base price", "السعر الأساسي"), data.baseAmountMinor);
+  html += amount(label("Discount", "الخصم"), data.discountAmountMinor);
+  if (finalReceipt) { html += row(label("Overtime duration", "مدة الوقت الإضافي"), escapeReceipt(formatDuration(data.overtimeMinutes || 0, language))); if (data.overtimeCollected === false) { html += row(label("Overtime waived", "إعفاء من الوقت الإضافي"), escapeReceipt(money(data.overtimeAmountMinor || 0, language))); if (data.overtimeCollectionNote) html += row(label("Waiver reason", "سبب الإعفاء"), escapeReceipt(data.overtimeCollectionNote)); } else { html += amount(label("Overtime amount", "قيمة الوقت الإضافي"), data.overtimeAmountMinor || 0); } }
+  html += '<div class="row total"><span>' + label(finalReceipt ? "FINAL TOTAL" : "INITIAL ESTIMATE", finalReceipt ? "الإجمالي النهائي" : "السعر المبدئي") + '</span><strong>' + escapeReceipt(money(finalReceipt ? (data.totalAmountMinor || 0) : (data.baseAmountMinor - data.discountAmountMinor), language)) + '</strong></div>';
+  html += '<div class="section">' + label("Receipt details", "بيانات الإيصال") + '</div>' + row(label("Issued by", "مُصدر الإيصال"), escapeReceipt(data.issuer || label("Cashier", "الكاشير")));
+  html += '<footer class="foot">' + label("Thank you for visiting! ❤️", "نورتونا في Secret Kids Club ❤️") + '<br>' + label("We loved having you. See you again soon! 🎈", "اتبسطنا بوجودكم، ومستنيينكم تنورونا تاني قريب! 🎈") + '</footer></main></body></html>';
+  return html;
+}
 function readHourlyRate(json: string): number | null {
   try {
     const value = JSON.parse(json) as { hourlyRateMinor?: unknown };
     return typeof value.hourlyRateMinor === "number" &&
       Number.isFinite(value.hourlyRateMinor) &&
-      value.hourlyRateMinor >= 0
+      value.hourlyRateMinor > 0
       ? value.hourlyRateMinor
       : null;
   } catch {
@@ -95,6 +140,7 @@ export default function App() {
   const tr = (key: string) => t(language, key);
   const ar = language === "ar";
 
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [db, setDb] = useState<Database | null>(null);
   const [databaseStatus, setDatabaseStatus] = useState("Connecting");
   const [error, setError] = useState("");
@@ -106,27 +152,46 @@ export default function App() {
   const [saving, setSaving] = useState(false);
   const [checkoutId, setCheckoutId] = useState("");
   const [clock, setClock] = useState(Date.now());
+  const [venueName, setVenueName] = useState("Secret Kids Club");
+  const [venueAddress, setVenueAddress] = useState("");
+  const [venuePhone, setVenuePhone] = useState("01122799113");
+  const [fontScale, setFontScale] = useState("1");
+  const [receiptQueue, setReceiptQueue] = useState<string[]>([]);
+  const [receiptPreviewHtml, setReceiptPreviewHtml] = useState("");
+  const receiptFrameRef = useRef<HTMLIFrameElement>(null);
 
   const [guardianName, setGuardianName] = useState("");
   const [guardianRelation, setGuardianRelation] = useState("Mother");
   const [guardianPhone, setGuardianPhone] = useState("");
+  const [paymentMethod, setPaymentMethod] = useState<"cash" | "instapay" | "wallet">("cash");
+  const [customerLookupMessage, setCustomerLookupMessage] = useState("");
+  const [previousChildren, setPreviousChildren] = useState<{name:string;lastVisit:string}[]>([]);
   const [children, setChildren] = useState<ChildDraft[]>([
-    { key: makeId(), name: "", ruleId: "", durationHours: 1 },
+    { key: makeId(), name: "", ruleId: "", durationHours: 1, hourlyRateMinor: null },
   ]);
 
   const [ruleName, setRuleName] = useState("");
   const [ruleType, setRuleType] =
     useState<PricingRule["pricing_type"]>("fixed");
   const [ruleAmount, setRuleAmount] = useState("");
+  const [ruleDurationHours, setRuleDurationHours] = useState("1");
+  const [membershipPlans,setMembershipPlans]=useState<MembershipPlan[]>([]);
+  const [memberships,setMemberships]=useState<ChildMembership[]>([]);
+  const [planName,setPlanName]=useState(""); const [planPrice,setPlanPrice]=useState(""); const [planHours,setPlanHours]=useState("20"); const [planValidity,setPlanValidity]=useState("30");
+  const [memberName,setMemberName]=useState(""); const [memberPhone,setMemberPhone]=useState(""); const [memberPlanId,setMemberPlanId]=useState(""); const [memberPaymentMethod,setMemberPaymentMethod]=useState<"cash"|"instapay"|"wallet">("cash");
 
   const refreshData = useCallback(async (connection: Database) => {
     const loadedRules = await connection.select<PricingRule[]>(
-      `SELECT id, name, pricing_type, amount_minor, is_active
+      `SELECT id, name, pricing_type, amount_minor, duration_minutes, is_active
        FROM local_pricing_rules
        WHERE is_active = 1 AND calculation_type = 'fixed'
        ORDER BY priority, name`
     );
     setRules(loadedRules);
+    try {
+      setMembershipPlans(await connection.select<MembershipPlan[]>("SELECT id,name,price_minor,included_minutes,validity_days,is_active FROM local_membership_plans WHERE is_active=1 ORDER BY name"));
+      setMemberships(await connection.select<ChildMembership[]>("SELECT m.id,m.child_name_snapshot,m.guardian_phone_snapshot,m.plan_id,p.name AS plan_name,m.purchased_at,m.expires_at,m.included_minutes,m.used_minutes,m.status FROM local_child_memberships m JOIN local_membership_plans p ON p.id=m.plan_id ORDER BY m.purchased_at DESC"));
+    } catch { /* Membership tables are created by the installed schema migration. */ }
 
     const counts = await connection.select<{ total: number }[]>(
       "SELECT COUNT(*) AS total FROM local_visits"
@@ -186,22 +251,51 @@ export default function App() {
   }, [refreshData]);
 
   useEffect(() => {
+    try {
+      setVenueName(localStorage.getItem("skc.venueName") || "Secret Kids Club");
+      setVenueAddress(localStorage.getItem("skc.venueAddress") || "");
+      setVenuePhone(localStorage.getItem("skc.venuePhone") || "01122799113");
+      setFontScale(localStorage.getItem("skc.fontScale") || "1");
+    } catch { /* Use in-memory defaults if storage is unavailable. */ }
+  }, []);
+
+  useEffect(() => {
+    setReceiptPreviewHtml(receiptQueue[0] || "");
+  }, [receiptQueue]);
+
+  useEffect(() => {
+    document.documentElement.style.setProperty("--app-scale", fontScale);
+    try {
+      localStorage.setItem("skc.venueName", venueName);
+      localStorage.setItem("skc.venueAddress", venueAddress);
+      localStorage.setItem("skc.venuePhone", venuePhone);
+      localStorage.setItem("skc.fontScale", fontScale);
+    } catch { /* Current settings remain usable for this session. */ }
+  }, [venueName, venueAddress, venuePhone, fontScale]);
+
+  useEffect(() => {
     const timer = window.setInterval(() => setClock(Date.now()), 30000);
     return () => window.clearInterval(timer);
   }, []);
 
   function updateChild(
     key: string,
-    field: "name" | "ruleId" | "durationHours",
-    value: string | number
+    field: "name" | "ruleId" | "durationHours" | "hourlyRateMinor",
+    value: string | number | null
   ) {
     setChildren((current) =>
       current.map((child) => {
         if (child.key !== key) return child;
-        if (field === "durationHours") {
-          return { ...child, durationHours: Number(value) };
+        if (field === "durationHours") return { ...child, durationHours: Number(value) };
+        if (field === "hourlyRateMinor") {
+          const rate = value === null ? null : Number(value);
+          return { ...child, hourlyRateMinor: rate };
         }
-        return { ...child, [field]: value };
+        if (field === "ruleId") {
+          const selected = rules.find(rule => rule.id === String(value));
+          return { ...child, ruleId: String(value), durationHours: selected?.duration_minutes ? selected.duration_minutes / 60 : child.durationHours, hourlyRateMinor: null };
+        }
+        return { ...child, [field]: value as string };
       })
     );
   }
@@ -209,7 +303,7 @@ export default function App() {
   function addChild() {
     setChildren((current) => [
       ...current,
-      { key: makeId(), name: "", ruleId: "", durationHours: 1 },
+      { key: makeId(), name: "", ruleId: "", durationHours: 1, hourlyRateMinor: null },
     ]);
   }
 
@@ -224,7 +318,7 @@ export default function App() {
     if (!rule) return 0;
 
     if (rule.pricing_type === "hourly") {
-      return Math.round(rule.amount_minor * child.durationHours);
+      return child.hourlyRateMinor === null ? 0 : Math.round(child.hourlyRateMinor * child.durationHours);
     }
 
     return rule.amount_minor;
@@ -232,13 +326,20 @@ export default function App() {
 
   const total = children.reduce((sum, child) => sum + priceFor(child), 0);
   const ready = databaseStatus === "Connected" && db !== null;
+  const authRoles: string[] = (() => { try { return authUser ? JSON.parse(authUser.roles) : []; } catch { return []; } })();
+  const isAdmin = authRoles.includes("admin");
+  const canWaiveOvertime = isAdmin || authRoles.includes("manager");
+  const canManage = isAdmin || authRoles.includes("manager");
+  const canOperate = canManage || authRoles.includes("cashier");
+  const reportAccess = canManage || authRoles.includes("viewer");
+  if (!authUser) return <AuthGate onAuthenticated={(user) => { setAuthUser(user); try { if (JSON.parse(user.roles).includes("viewer")) setScreen("reports"); } catch {} }} databaseReady={ready} />;
 
   async function createRule(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!db) return;
 
-    const amount = Number(ruleAmount);
-    if (!ruleName.trim() || !Number.isFinite(amount) || amount < 0) {
+    const amount = ruleType === "hourly" ? 0 : Number(ruleAmount);
+    if (!ruleName.trim() || (ruleType !== "hourly" && (!Number.isFinite(amount) || amount < 0)) || !Number.isFinite(Number(ruleDurationHours)) || Number(ruleDurationHours) < 0.25 || Number(ruleDurationHours) > 12 || !Number.isInteger(Number(ruleDurationHours) * 4)) {
       setError(tr("Enter a rule name and a valid non-negative price."));
       return;
     }
@@ -247,22 +348,63 @@ export default function App() {
     setMessage("");
 
     try {
-      await db.execute(
-        `INSERT INTO local_pricing_rules
-         (id, name, pricing_type, calculation_type, amount_minor,
-          duration_minutes, free_minutes, priority, weekdays_json,
-          is_active, created_at)
-         VALUES (?, ?, ?, 'fixed', ?, 60, 0, 100, '[]', 1, ?)`,
-        [makeId(), ruleName.trim(), ruleType, Math.round(amount * 100), now()]
-      );
+      await invoke("create_pricing_rule", {
+        name: ruleName.trim(),
+        pricingType: ruleType,
+        amountMinor: Math.round(amount * 100),
+        durationMinutes: Math.round(Number(ruleDurationHours) * 60),
+      });
 
       setRuleName("");
       setRuleAmount("");
+      setRuleDurationHours("1");
       await refreshData(db);
       setMessage(tr("Pricing rule saved."));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
+  }
+
+  async function createMembershipPlan(e:FormEvent<HTMLFormElement>) {
+    e.preventDefault(); if(!db)return;
+    const hours=Number(planHours), price=Number(planPrice), days=Number(planValidity);
+    if(!planName.trim()||!Number.isFinite(hours)||hours<=0||!Number.isFinite(price)||price<0||![7,30].includes(days)){setError("راجع اسم الباقة والسعر وعدد الساعات.");return}
+    try { await db.execute("INSERT INTO local_membership_plans(id,name,price_minor,included_minutes,validity_days,description,is_active,created_at) VALUES(?,?,?,?,?,NULL,1,?)",[makeId(),planName.trim(),Math.round(price*100),Math.round(hours*60),days,now()]);setPlanName("");setPlanPrice("");await refreshData(db);setMessage("تم حفظ الباقة.");setError("") } catch(e){setError(String(e))}
+  }
+  async function enrollMembership(e:FormEvent<HTMLFormElement>) {
+    e.preventDefault(); if(!db)return;
+    const plan=membershipPlans.find(p=>p.id===memberPlanId);
+    if(!plan||!memberName.trim()||!memberPhone.trim()){setError("أدخل اسم الطفل ورقم الهاتف واختار الباقة.");return} if(plan.price_minor<=0){setError("سعر الباقة يجب أن يكون أكبر من صفر لتسجيل التحصيل.");return}
+    const purchased=new Date(), expires=new Date(purchased.getTime()+plan.validity_days*86400000);
+    try {
+      const membershipId=makeId(), saleId=makeId();
+      const saleNoRows=await db.select<{n:number}[]>("SELECT COALESCE(MAX(sale_number_local),0)+1 AS n FROM local_sales");
+      const saleNo=saleNoRows[0]?.n||1;
+      const cashierRows=await db.select<{id:string}[]>("SELECT actor_user_id AS id FROM local_session WHERE singleton_id=1");
+      const cashierId=cashierRows[0]?.id;
+      if(!cashierId) throw new Error("يجب تسجيل الدخول قبل تسجيل بيع الباقة.");
+      await db.execute("INSERT INTO local_sales(id,sale_number_local,visit_id,status,subtotal_minor,discount_minor,total_minor,cashier_user_id,created_at,sync_state) VALUES(?, ?, NULL,'completed',?,0,?,?,?,'pending')",[saleId,saleNo,plan.price_minor,plan.price_minor,cashierId,purchased.toISOString()]);
+      await db.execute("INSERT INTO local_sale_items(id,sale_id,item_type,inventory_item_id,description_snapshot,quantity_milli,unit_price_minor,line_total_minor) VALUES(?, ?, 'other', NULL, ?,1000,?,?)",[makeId(),saleId,"Membership package: "+plan.name+" - "+memberName.trim(),plan.price_minor,plan.price_minor]);
+      await db.execute("INSERT INTO local_child_memberships(id,child_id,child_name_snapshot,guardian_phone_snapshot,plan_id,purchased_at,starts_at,expires_at,included_minutes,used_minutes,status,sync_state) VALUES(?,NULL,?,?,?,?,?,?,?,0,'active','pending')",[membershipId,memberName.trim(),memberPhone.trim(),plan.id,purchased.toISOString(),purchased.toISOString(),expires.toISOString(),plan.included_minutes]);
+      await db.execute("INSERT INTO local_payments(id,sale_id,visit_id,method,status,amount_minor,received_by,created_at,sync_state) VALUES(?,?,NULL,?,'confirmed',?,?,?,'pending')",[makeId(),saleId,memberPaymentMethod,plan.price_minor,cashierId,purchased.toISOString()]);
+      setMemberName("");setMemberPhone("");await refreshData(db);setMessage("تم تسجيل الطفل في الباقة وتسجيل تحصيل قيمتها.");setError("")
+    } catch(e){setError(String(e))}
+  }
+  async function checkInMember(m:ChildMembership) {
+    if(!db)return;
+    const remaining=m.included_minutes-m.used_minutes;
+    if(m.status!=="active"||new Date(m.expires_at)<=new Date()||remaining<=0){setError("الباقة منتهية أو لا يوجد بها وقت متبقٍ.");return}
+    if(!window.confirm("تسجيل دخول "+m.child_name_snapshot+" على باقة "+m.plan_name+"؟ الوقت المتبقي: "+formatDuration(remaining,language)))return;
+    try {
+      const visitId=makeId(), childId=makeId(), pricingId=makeId(), stamp=now();
+      const numRows=await db.select<{n:number}[]>("SELECT COALESCE(MAX(visit_number_local),0)+1 AS n FROM local_visits");
+      const guardian=await db.select<{full_name:string;id:string}[]>("SELECT id,full_name FROM local_guardians WHERE phone=? ORDER BY created_at DESC LIMIT 1",[m.guardian_phone_snapshot]);
+      const visitNo=numRows[0]?.n||1, guardianName=guardian[0]?.full_name||"ولي الأمر";
+      await db.execute("INSERT INTO local_visits(id,visit_number_local,guardian_id,guardian_name_snapshot,guardian_relation,guardian_phone_snapshot,child_count,checked_in_at,checked_out_at,status,pricing_type,amount_before_discount_minor,discount_amount_minor,final_amount_minor,cashier_user_id,sync_state,created_at) VALUES(?,?,?,?,?, ?,1,?,NULL,'active','membership',0,0,0,(SELECT actor_user_id FROM local_session WHERE singleton_id=1),'pending',?)",[visitId,visitNo,guardian[0]?.id||null,guardianName,"Guardian",m.guardian_phone_snapshot,stamp,stamp]);
+      await db.execute("INSERT INTO local_visit_children(id,visit_id,child_id,child_name_snapshot) VALUES(?,?,NULL,?)",[childId,visitId,m.child_name_snapshot]);
+      await db.execute("INSERT INTO local_visit_child_pricing(id,visit_child_id,pricing_type,pricing_rule_id,membership_id,base_amount_minor,discount_amount_minor,final_amount_minor,duration_minutes,included_minutes,calculation_json,created_at) VALUES(?,?,'membership',NULL,?,0,0,0,?,?,?,?)",[pricingId,childId,m.id,remaining,remaining,JSON.stringify({membershipId:m.id,membershipPlan:m.plan_name,initialEstimate:true}),stamp]);
+      await refreshData(db);setMessage("تم تسجيل دخول الطفل على الباقة. الوقت المتاح: "+formatDuration(remaining,language));setError("");setScreen("active");
+    } catch(e){setError(String(e))}
   }
 
   async function createVisit(event: FormEvent<HTMLFormElement>) {
@@ -285,14 +427,17 @@ export default function App() {
           !child.name ||
           !child.ruleId ||
           !Number.isFinite(child.durationHours) ||
-          child.durationHours < 0.5 ||
-          child.durationHours > 12
+          child.durationHours < 0.25 ||
+          child.durationHours > 12 ||
+          !Number.isInteger(child.durationHours * 4) ||
+          (rules.find(rule => rule.id === child.ruleId)?.pricing_type === "hourly" &&
+            (child.hourlyRateMinor === null || !Number.isFinite(child.hourlyRateMinor) || child.hourlyRateMinor <= 0))
       )
     ) {
       setError(
         ar
-          ? "أدخل اسم كل طفل وحدد السعر ومدة حجز من نصف ساعة إلى 12 ساعة."
-          : "Enter each child's name, pricing rule, and a duration between 0.5 and 12 hours."
+          ? "أدخل اسم كل طفل وحدد نوع التسعير وسعر الساعة يدويًا عند اختيار التسعير بالساعة، والمدة من 0.25 إلى 12 ساعة."
+          : "Enter each child's name, pricing type, manual hourly rate when applicable, and duration from 0.25 to 12 hours."
       );
       return;
     }
@@ -359,7 +504,7 @@ export default function App() {
           checked_in_at, checked_out_at, status, pricing_type,
           amount_before_discount_minor, discount_amount_minor,
           final_amount_minor, cashier_user_id, sync_state, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 'active', ?, ?, 0, ?, 'local-cashier', 'pending', ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 'active', ?, ?, 0, ?, (SELECT actor_user_id FROM local_session WHERE singleton_id=1), 'pending', ?)`,
         [
           visitId,
           visitNumber,
@@ -410,10 +555,11 @@ export default function App() {
               ruleName: selectedRule.name,
               pricingType: selectedRule.pricing_type,
               initialEstimate: selectedRule.pricing_type === "hourly",
+              paymentMethod,
               bookedDurationMinutes: bookedMinutes,
               hourlyRateMinor:
                 selectedRule.pricing_type === "hourly"
-                  ? selectedRule.amount_minor
+                  ? row.child.hourlyRateMinor
                   : null,
             }),
             timestamp,
@@ -422,11 +568,20 @@ export default function App() {
       }
 
       await refreshData(db);
+      for (const row of childRows) {
+        setReceiptQueue((current) => [...current, buildReceiptHtml({
+          visitNumber, guardianName: guardianName.trim(), guardianPhone: guardianPhone.trim(),
+          childName: row.child.name, checkedInAt: timestamp, expectedCheckoutAt: new Date(new Date(timestamp).getTime() + Math.round(row.child.durationHours * 60) * 60000).toISOString(), paymentMethod,
+          bookedMinutes: Math.round(row.child.durationHours * 60),
+          baseAmountMinor: priceFor(row.child), discountAmountMinor: 0,
+          venueName, venueAddress, venuePhone, issuer: "Cashier",
+        }, language)]);
+      }
       setGuardianName("");
       setGuardianPhone("");
       setGuardianRelation("Mother");
       setChildren([
-        { key: makeId(), name: "", ruleId: "", durationHours: 1 },
+        { key: makeId(), name: "", ruleId: "", durationHours: 1, hourlyRateMinor: null },
       ]);
       setMessage(
         ar
@@ -465,6 +620,20 @@ export default function App() {
       : `Confirm checkout for ${child.child_name}?`;
 
     if (!window.confirm(confirmMessage)) return;
+    const elapsedMinutes = Math.max(0, Math.ceil((Date.now() - new Date(child.checked_in_at).getTime()) / 60000));
+    const hourlyRate = readHourlyRate(child.calculation_json);
+    const estimatedOvertimeMinutes = child.pricing_type === "hourly" ? Math.max(0, elapsedMinutes - child.duration_minutes) : 0;
+    let overtimeCollected = true;
+    let overtimeCollectionNote: string | null = null;
+    if (estimatedOvertimeMinutes > 0 && hourlyRate !== null && canWaiveOvertime) {
+      overtimeCollected = window.confirm(ar
+        ? "هل تم تحصيل قيمة الوقت الإضافي؟ اضغط موافق للتحصيل، أو إلغاء للإعفاء (يتطلب سببًا)."
+        : "Was overtime collected? Choose OK to collect, or Cancel to waive it (a reason is required).");
+      if (!overtimeCollected) {
+        overtimeCollectionNote = window.prompt(ar ? "اكتب سبب إعفاء الوقت الإضافي (إجباري):" : "Enter the reason for waiving overtime (required):", "")?.trim() || null;
+        if (!overtimeCollectionNote) { setError(ar ? "لازم تكتب سبب الإعفاء قبل تسجيل الخروج." : "A reason is required before waiving overtime."); return; }
+      }
+    }
 
     setCheckoutId(child.visit_child_id);
     setError("");
@@ -473,7 +642,39 @@ export default function App() {
     try {
       await invoke<void>("checkout_child", {
         visitChildId: child.visit_child_id,
+        overtimeCollected,
+        overtimeCollectionNote,
       });
+
+      const receiptRows = await db.select<{
+        visit_number: number; guardian_name: string; guardian_phone: string; child_name: string;
+        checked_in_at: string; checked_out_at: string; duration_minutes: number;
+        actual_duration_minutes: number | null; base_amount_minor: number; discount_amount_minor: number;
+        overtime_minutes: number | null; overtime_amount_minor: number | null; overtime_collected: number; overtime_collection_note: string | null; final_amount_minor: number; calculation_json: string;
+      }[]>(
+        `SELECT v.visit_number_local AS visit_number, v.guardian_name_snapshot AS guardian_name,
+                v.guardian_phone_snapshot AS guardian_phone, vc.child_name_snapshot AS child_name,
+                v.checked_in_at, vc.checked_out_at, p.duration_minutes, vc.actual_duration_minutes,
+                p.base_amount_minor, p.discount_amount_minor, p.overtime_minutes,
+                p.overtime_amount_minor, p.overtime_collected, p.overtime_collection_note,
+                p.final_amount_minor, p.calculation_json
+         FROM local_visits v JOIN local_visit_children vc ON vc.visit_id = v.id
+         JOIN local_visit_child_pricing p ON p.visit_child_id = vc.id WHERE vc.id = ?`,
+        [child.visit_child_id]
+      );
+      const receipt = receiptRows[0];
+      if (receipt && receipt.checked_out_at) {
+        setReceiptQueue((current) => [...current, buildReceiptHtml({
+          visitNumber: receipt.visit_number, guardianName: receipt.guardian_name,
+          guardianPhone: receipt.guardian_phone, childName: receipt.child_name,
+          checkedInAt: receipt.checked_in_at, checkedOutAt: receipt.checked_out_at, paymentMethod: (() => { try { return JSON.parse(receipt.calculation_json).paymentMethod || "cash"; } catch { return "cash"; } })(),
+          bookedMinutes: receipt.duration_minutes, actualMinutes: receipt.actual_duration_minutes || 0,
+          baseAmountMinor: receipt.base_amount_minor, discountAmountMinor: receipt.discount_amount_minor,
+          overtimeMinutes: receipt.overtime_minutes || 0, overtimeAmountMinor: receipt.overtime_amount_minor || 0,
+          overtimeCollected: receipt.overtime_collected !== 0, overtimeCollectionNote: receipt.overtime_collection_note,
+          totalAmountMinor: receipt.final_amount_minor, venueName, venueAddress, venuePhone, issuer: "Cashier",
+        }, language)]);
+      }
 
       await refreshData(db);
 
@@ -500,7 +701,7 @@ export default function App() {
   }
 
   return (
-    <main className="app-shell">
+    <main className="app-shell" style={{ zoom: Number(fontScale) || 1 }}>
       <header className="topbar">
         <div className="brand-mark">SK</div>
         <div className="brand-copy">
@@ -513,19 +714,25 @@ export default function App() {
       </header>
 
       <nav className="nav-tabs">
-        <button className={screen === "reception" ? "active" : ""} onClick={() => setScreen("reception")}>
+        {authRoles.some(role => ["admin","manager","cashier"].includes(role)) && <button className={screen === "reception" ? "active" : ""} onClick={() => setScreen("reception")}>
           {tr("Reception")}
-        </button>
-        <button className={screen === "active" ? "active" : ""} onClick={() => setScreen("active")}>
+        </button>}
+        {authRoles.some(role => ["admin","manager","cashier"].includes(role)) && <button className={screen === "active" ? "active" : ""} onClick={() => setScreen("active")}>
           {ar ? "الزيارات النشطة" : "Active visits"}
           {activeChildren.length > 0 ? ` (${activeChildren.length})` : ""}
-        </button>
-        <button className={screen === "pricing" ? "active" : ""} onClick={() => setScreen("pricing")}>
+        </button>}
+        {isAdmin && <button className={screen === "pricing" ? "active" : ""} onClick={() => setScreen("pricing")}>
           {tr("Pricing setup")}
-        </button>
-        <button className={screen === "settings" ? "active" : ""} onClick={() => setScreen("settings")}>
+        </button>}
+        {isAdmin && <button className={screen === "settings" ? "active" : ""} onClick={() => setScreen("settings")}>
           {tr("Settings")}
-        </button>
+        </button>}
+        {reportAccess && <button className={screen === "reports" ? "active" : ""} onClick={() => setScreen("reports")}>
+          {ar ? "التقارير والتصدير" : "Reports & Export"}
+        </button>}
+        {canOperate && <button className={screen === "admin" ? "active" : ""} onClick={() => setScreen("admin")}>
+          {ar ? "الوردية والصندوق" : "Shift & Cash"}
+        </button>}
       </nav>
 
       <section className="page-heading">
@@ -537,7 +744,11 @@ export default function App() {
               ? ar ? "الزيارات النشطة" : "Active visits"
               : screen === "pricing"
                 ? tr("Pricing rules")
-                : tr("Settings")}
+                : screen === "reports"
+                  ? (ar ? "مركز التقارير والتصدير" : "Reports Center")
+                  : screen === "admin"
+                    ? (ar ? "الموظفون والورديات" : "Staff & Shifts")
+                    : tr("Settings")}
         </h2>
         <p>
           {screen === "reception"
@@ -548,7 +759,11 @@ export default function App() {
                 : "Track children currently in the club and check each child out individually."
               : screen === "pricing"
                 ? tr("Configure the prices available to cashiers. No prices are preloaded.")
-                : tr("Choose the language used throughout the application.")}
+                : screen === "reports"
+                  ? (ar ? "اختار البيانات والفلاتر والأعمدة وشكل التقرير ثم صدّره." : "Choose data, filters, columns, and export format.")
+                  : screen === "admin"
+                    ? (ar ? "إدارة الحسابات وكلمات المرور والورديات وسجل المراجعة." : "Manage accounts, passwords, shifts and audit history.")
+                    : tr("Choose the language used throughout the application.")}
         </p>
       </section>
 
@@ -563,19 +778,40 @@ export default function App() {
         </section>
       )}
 
-      {screen === "settings" ? (
+      {screen === "admin" ? (
+        <AdminTools user={authUser} onLogout={() => { void invoke("logout_user").finally(() => setAuthUser(null)); }}  />
+      ) : screen === "reports" ? (
+        <ReportsCenter db={db} language={language} isAdmin={isAdmin} canManage={canManage} />
+      ) : screen === "settings" && isAdmin ? (
         <section className="panel settings-panel">
           <div className="panel-title">
             <div><span className="step">01</span><h3>{tr("Settings")}</h3></div>
           </div>
-          <p className="muted intro">{tr("Choose the language used throughout the application.")}</p>
-          <label>
-            {tr("Language")}
-            <select value={language} onChange={(event) => setLanguage(event.target.value as Language)}>
-              <option value="en">{tr("English")}</option>
-              <option value="ar">{tr("Arabic")}</option>
-            </select>
-          </label>
+          <p className="muted intro">{ar ? "خصص شكل البرنامج وبيانات المكان التي ستظهر على الإيصالات." : "Customize the app appearance and the venue details printed on receipts."}</p>
+          <div className="settings-grid">
+            <label>{tr("Language")}
+              <select value={language} onChange={(event) => setLanguage(event.target.value as Language)}>
+                <option value="en">{tr("English")}</option><option value="ar">{tr("Arabic")}</option>
+              </select>
+            </label>
+            <label>{ar ? "حجم الخط" : "App font size"}
+              <select value={fontScale} onChange={(event) => setFontScale(event.target.value)}>
+                <option value="0.9">{ar ? "صغير" : "Small"}</option>
+                <option value="1">{ar ? "متوسط" : "Medium"}</option>
+                <option value="1.1">{ar ? "كبير" : "Large"}</option>
+              </select>
+            </label>
+            <label>{ar ? "اسم المكان على الإيصال" : "Venue name on receipt"}
+              <input value={venueName} onChange={(event) => setVenueName(event.target.value)} required />
+            </label>
+            <label>{ar ? "رقم تليفون المكان" : "Venue phone number"}
+              <input value={venuePhone} onChange={(event) => setVenuePhone(event.target.value)} inputMode="tel" required />
+            </label>
+            <label className="full-width">{ar ? "عنوان المكان (اختياري)" : "Venue address (optional)"}
+              <input value={venueAddress} onChange={(event) => setVenueAddress(event.target.value)} />
+            </label>
+          </div>
+          <div className="settings-preview"><strong>{ar ? "معاينة الإيصال" : "Receipt preview"}</strong><span>{venueName || "Secret Kids Club"}</span><span>{venuePhone || "01122799113"}</span></div>
         </section>
       ) : screen === "active" ? (
         <section className="panel">
@@ -617,10 +853,9 @@ export default function App() {
                     <div className="child-number">#{child.visit_number}</div>
                     <div className="child-name">
                       <strong>{child.child_name}</strong>
-                      <span className="muted">{child.guardian_name} · {child.guardian_phone}</span>
-                      <span className="muted">
-                        {ar ? "الدخول: " : "Checked in: "}{formatDate(child.checked_in_at, language)}
-                      </span>
+                      <span className="muted active-visit-detail">{ar ? "اسم المرافق: " : "Guardian: "}{child.guardian_name}</span>
+                      <span className="muted active-visit-detail">{ar ? "رقم التليفون: " : "Phone: "}{child.guardian_phone}</span>
+                      <span className="muted active-visit-detail">{ar ? "تاريخ ووقت الدخول: " : "Check-in date & time: "}{formatDate(child.checked_in_at, language)}</span>
                     </div>
                     <div className="child-price">
                       <span>{ar ? "المدة المحجوزة" : "Booked duration"}</span>
@@ -677,7 +912,12 @@ export default function App() {
                 </select>
               </label>
               <label className="full-width">{tr("Phone number")}
-                <input value={guardianPhone} onChange={(e) => setGuardianPhone(e.target.value)} required inputMode="tel" placeholder={tr("Guardian phone")} />
+                <input value={guardianPhone} onChange={(e) => { setGuardianPhone(e.target.value); setCustomerLookupMessage(""); setPreviousChildren([]); }} onBlur={() => { if (!db || !guardianPhone.trim()) return; void (async()=>{ const found=await db!.select<{full_name:string}[]>("SELECT full_name FROM local_guardians WHERE phone = ? ORDER BY created_at DESC LIMIT 1",[guardianPhone.trim()]); if(found[0]) setGuardianName(found[0].full_name); const history=await db!.select<{name:string;lastVisit:string}[]>(`SELECT vc.child_name_snapshot AS name, MAX(v.checked_in_at) AS lastVisit FROM local_visits v JOIN local_visit_children vc ON vc.visit_id=v.id WHERE v.guardian_phone_snapshot=? GROUP BY vc.child_name_snapshot ORDER BY MAX(v.checked_in_at) DESC LIMIT 20`,[guardianPhone.trim()]); setPreviousChildren(history); setCustomerLookupMessage(history.length ? (ar ? "تم العثور على العميل وأطفاله السابقين. اضغط على اسم طفل لإضافته." : "Customer history found. Select a previous child to add them.") : (found[0] ? (ar ? "تم العثور على العميل السابق." : "Existing customer found.") : "")); })().catch(()=>{}); }}  required inputMode="tel" placeholder={tr("Guardian phone")} />
+                {customerLookupMessage && <span className="muted">{customerLookupMessage}</span>}
+              </label>
+              {previousChildren.length>0 && <div className="full-width panel"><strong>{ar ? "الأطفال المسجلون سابقًا لنفس رقم الهاتف" : "Children previously registered to this phone"}</strong><div className="rule-list">{previousChildren.map((item,i)=><button type="button" className="secondary-button" key={item.name+i} onClick={()=>{setChildren(current=>[...current,{key:makeId(),name:item.name,ruleId:rules[0]?.id||"",durationHours:1,hourlyRateMinor:rules[0]?.pricing_type==="hourly"?rules[0].amount_minor:null}]);setMessage(ar ? "تمت إضافة الطفل؛ يمكنك تعديل الاسم والمدة والسعر." : "Child added. You can edit the name, duration and price.");}}>{item.name} · {formatDate(item.lastVisit,language)} · {ar ? "إضافة" : "Add"}</button>)}</div></div>}
+              <label className="full-width">{ar ? "طريقة الدفع" : "Payment method"}
+                <select value={paymentMethod} onChange={e => setPaymentMethod(e.target.value as "cash"|"instapay"|"wallet")}><option value="cash">{ar ? "كاش" : "Cash"}</option><option value="instapay">InstaPay</option><option value="wallet">{ar ? "محفظة إلكترونية" : "E-Wallet"}</option></select>
               </label>
             </div>
           </section>
@@ -710,14 +950,14 @@ export default function App() {
                       </select>
                     </label>
                     <label className="booked-hours-field">
-                      {ar ? "مدة الحجز لكل طفل (بالساعات)" : "Booked duration per child (hours)"}
+                      {ar ? "مدة الحجز (بالساعات)" : "Booked duration (hours)"}
                       <input
                         type="number"
-                        min="0.5"
+                        min="0.25"
                         max="12"
-                        step="0.5"
                         required
-                        value={child.durationHours}
+                        value={Number(child.durationHours.toFixed(2))}
+                        step="0.25"
                         onChange={(e) => updateChild(child.key, "durationHours", Number(e.target.value))}
                       />
                       <span className="muted">
@@ -726,6 +966,7 @@ export default function App() {
                           : (ar ? "السعر الأساسي ثابت؛ الإضافي بالدقيقة متاح للتسعير بالساعة فقط" : "Base price stays fixed; per-minute overtime is available for hourly pricing only")}
                       </span>
                     </label>
+                    {selected?.pricing_type === "hourly" && <label className="child-pricing">{ar ? "سعر الساعة لهذا الطفل (جنيه)" : "Hourly price for this child (EGP)"}<input type="number" min="0.01" step="0.01" required value={child.hourlyRateMinor === null ? "" : (child.hourlyRateMinor / 100).toFixed(2)} onChange={e => updateChild(child.key, "hourlyRateMinor", e.target.value === "" ? null : Math.round(Number(e.target.value) * 100))} placeholder={ar ? "اكتب سعر الساعة" : "Enter hourly rate"} /><span className="muted">{ar ? "أدخل سعر الساعة لهذا الطفل؛ لا يتم استخدام سعر ثابت تلقائيًا." : "Enter this child's hourly rate. No preset rate is applied."}</span></label>}
                     <div className="child-price">
                       <span>{tr("Price estimate")}</span>
                       <strong>{selected ? money(priceFor(child), language) : "—"}</strong>
@@ -745,7 +986,7 @@ export default function App() {
               <p>{ar ? "قبل الخصومات؛ يتم حساب الوقت الإضافي عند الخروج بالدقيقة." : "Before discounts; applicable overtime is calculated per minute at checkout."}</p>
             </div>
             <button className="primary-button" type="submit" disabled={!ready || saving || rules.length === 0}>
-              {saving ? tr("Saving visit…") : tr("Confirm check-in")}
+              {saving ? tr("Saving visit…") : (ar ? "حفظ ودخول" : "Save & Check In")}
             </button>
           </section>
         </form>
@@ -766,9 +1007,11 @@ export default function App() {
                 <option value="offer">{tr("Offer (fixed price)")}</option>
               </select>
             </label>
-            <label>{tr("Price in EGP")}
+            {ruleType !== "hourly" && <label>{tr("Price in EGP")}
               <input type="number" min="0" step="0.01" value={ruleAmount} onChange={(e) => setRuleAmount(e.target.value)} required placeholder={tr("Enter actual price")} />
-            </label>
+            </label>}
+            {ruleType === "hourly" && <p className="muted full-width">{ar ? "سعر الساعة لا يُحفظ هنا؛ ستدخله يدويًا لكل طفل عند تسجيل الزيارة." : "The hourly rate is not preset here. Enter it separately for each child when registering a visit."}</p>}
+            <label>{ar ? "مدة الحجز الافتراضية (بالساعات)" : "Default booking duration (hours)"}<input type="number" min="0.25" max="12" step="0.25" value={ruleDurationHours} onChange={e=>setRuleDurationHours(e.target.value)} required /></label>
             <div className="full-width">
               <button className="primary-button" type="submit" disabled={!ready}>{tr("Save pricing rule")}</button>
             </div>
@@ -777,18 +1020,59 @@ export default function App() {
             <h3>{tr("Active pricing rules")}</h3>
             {rules.length === 0 ? <p className="muted">{tr("No rules configured.")}</p> : rules.map((rule) => (
               <div className="rule-item" key={rule.id}>
-                <div><strong>{rule.name}</strong><span>{tr(rule.pricing_type)}</span></div>
-                <strong>{money(rule.amount_minor, language)}</strong>
+                <div><strong>{rule.name}</strong><span>{tr(rule.pricing_type)}</span><span>{ar ? "المدة الافتراضية" : "Default duration"}: {formatDuration(rule.duration_minutes || 60, language)}</span></div>
+                <strong>{rule.pricing_type === "hourly" ? (ar ? "السعر عند التسجيل" : "Set at check-in") : money(rule.amount_minor, language)}</strong>
+                {isAdmin && <button type="button" className="remove-button" onClick={()=>{if(!window.confirm(ar?"حذف/إيقاف قاعدة التسعير؟ إذا كانت مستخدمة في زيارات سابقة فسيتم إيقافها فقط للحفاظ على السجلات.":"Remove this pricing rule? If used in past visits, it will be deactivated to preserve history."))return;void invoke("delete_pricing_rule",{ruleId:rule.id}).then(()=>db&&refreshData(db)).then(()=>setMessage(ar?"تم حذف/إيقاف التسعير.":"Pricing rule removed.")).catch(e=>setError(String(e)));}}>{ar?"حذف":"Remove"}</button>}
               </div>
             ))}
           </div>
+          <section className="report-field-panel">
+            <h3>{ar ? "باقات الاشتراك الأسبوعية والشهرية" : "Weekly and monthly packages"}</h3>
+            <p className="muted">{ar ? "أنشئ باقة بعدد ساعات وصلاحية 7 أيام أو 30 يومًا، ثم سجّل الطفل في الباقة. وقت الباقة يُخصم عند تسجيل الخروج." : "Create a package with included hours and 7-day or 30-day validity. Enroll a child; used minutes are deducted at checkout."}</p>
+            <form className="form-grid" onSubmit={createMembershipPlan}>
+              <label>{ar?"اسم الباقة":"Package name"}<input value={planName} onChange={e=>setPlanName(e.target.value)} required/></label>
+              <label>{ar?"السعر بالجنيه":"Price (EGP)"}<input type="number" min="0" step="0.01" value={planPrice} onChange={e=>setPlanPrice(e.target.value)} required/></label>
+              <label>{ar?"عدد الساعات":"Included hours"}<input type="number" min="0.25" step="0.25" value={planHours} onChange={e=>setPlanHours(e.target.value)} required/></label>
+              <label>{ar?"مدة الباقة":"Validity"}<select value={planValidity} onChange={e=>setPlanValidity(e.target.value)}><option value="7">{ar?"أسبوع (7 أيام)":"Weekly (7 days)"}</option><option value="30">{ar?"شهر (30 يومًا)":"Monthly (30 days)"}</option></select></label>
+              <div className="full-width"><button className="primary-button" type="submit">{ar?"حفظ الباقة":"Save package"}</button></div>
+            </form>
+            <h4>{ar?"تسجيل طفل في باقة":"Enroll a child"}</h4>
+            <form className="form-grid" onSubmit={enrollMembership}>
+              <label>{ar?"اسم الطفل":"Child name"}<input value={memberName} onChange={e=>setMemberName(e.target.value)} required/></label>
+              <label>{ar?"رقم هاتف ولي الأمر":"Guardian phone"}<input value={memberPhone} onChange={e=>setMemberPhone(e.target.value)} required inputMode="tel"/></label>
+              <label>{ar?"الباقة":"Package"}<select value={memberPlanId} onChange={e=>setMemberPlanId(e.target.value)} required><option value="">{ar?"اختار الباقة":"Choose a package"}</option>{membershipPlans.map(p=><option key={p.id} value={p.id}>{p.name} · {p.validity_days===7?(ar?"أسبوع":"Weekly"):(ar?"شهر":"Monthly")} · {money(p.price_minor,language)} · {formatDuration(p.included_minutes,language)}</option>)}</select></label><label>{ar?"طريقة تحصيل الباقة":"Package payment method"}<select value={memberPaymentMethod} onChange={e=>setMemberPaymentMethod(e.target.value as "cash"|"instapay"|"wallet")}><option value="cash">{ar?"كاش":"Cash"}</option><option value="instapay">InstaPay</option><option value="wallet">{ar?"محفظة إلكترونية":"E-Wallet"}</option></select></label>
+              <div className="full-width"><button className="primary-button" type="submit" disabled={!membershipPlans.length}>{ar?"تسجيل الاشتراك":"Enroll"}</button></div>
+            </form>
+            <h4>{ar?"المشتركون وحالة الباقات":"Subscribers and package status"}</h4>
+            <div className="report-table-wrap"><table className="report-table"><thead><tr><th>{ar?"الطفل":"Child"}</th><th>{ar?"الهاتف":"Phone"}</th><th>{ar?"الباقة":"Package"}</th><th>{ar?"المستخدم / الإجمالي":"Used / included"}</th><th>{ar?"الانتهاء":"Expires"}</th><th>{ar?"الحالة":"Status"}</th><th>{ar?"إجراء":"Action"}</th></tr></thead><tbody>{memberships.map(m=>{const remaining=Math.max(0,m.included_minutes-m.used_minutes);const status=new Date(m.expires_at)<=new Date()&&m.status==="active"?"expired":m.status;return <tr key={m.id}><td>{m.child_name_snapshot}</td><td>{m.guardian_phone_snapshot}</td><td>{m.plan_name}</td><td>{formatDuration(m.used_minutes,language)} / {formatDuration(m.included_minutes,language)}<br/>{ar?"متبقي":"Remaining"}: {formatDuration(remaining,language)}</td><td>{formatDate(m.expires_at,language)}</td><td>{status}</td><td><button className="primary-button" disabled={status!=="active"||remaining<=0} onClick={()=>void checkInMember(m)}>{ar?"تسجيل دخول":"Check in"}</button></td></tr>})}</tbody></table></div>
+          </section>
         </section>
       )}
 
       <footer>
         <span>Secret Kids Club POS</span>
-        <span>{visits} {tr(visits === 1 ? "saved visit" : "saved visits")} · {tr("Local SQLite")}</span>
+        <span>{authUser.name} · {authRoles.join(", ")} · {visits} {tr(visits === 1 ? "saved visit" : "saved visits")} · {tr("Local SQLite")}</span>
+        <button type="button" className="secondary-button" onClick={() => { void invoke("logout_user").finally(() => setAuthUser(null)); }}>{ar ? "تسجيل الخروج" : "Log out"}</button>
       </footer>
+      {receiptPreviewHtml && (
+        <div className="receipt-modal-backdrop" role="dialog" aria-modal="true" aria-label={ar ? "معاينة الإيصال" : "Receipt preview"}>
+          <section className="receipt-modal">
+            <header className="receipt-modal-header">
+              <div>
+                <h3>{ar ? "معاينة الإيصال" : "Receipt preview"}</h3>
+                <p className="muted">{ar ? "راجع الإيصال، ثم اختار الطباعة أو الإلغاء." : "Review the receipt, then choose Print or Cancel."}</p>
+              </div>
+              <button type="button" className="secondary-button" onClick={() => setReceiptQueue((current) => current.slice(1))} aria-label={ar ? "إغلاق المعاينة" : "Close preview"}>×</button>
+            </header>
+            <iframe ref={receiptFrameRef} className="receipt-preview-frame" title={ar ? "معاينة الإيصال" : "Receipt preview"} srcDoc={receiptPreviewHtml} />
+            <footer className="receipt-modal-actions">
+              <button type="button" className="secondary-button" onClick={() => setReceiptQueue((current) => current.slice(1))}>{ar ? "إلغاء / بدون طباعة" : "Cancel / Don't print"}</button>
+              <button type="button" className="primary-button" onClick={() => receiptFrameRef.current?.contentWindow?.print()}>{ar ? "طباعة الإيصال" : "Print receipt"}</button>
+            </footer>
+          </section>
+        </div>
+      )}
+
     </main>
   );
 }

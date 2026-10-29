@@ -6,6 +6,13 @@ use std::io;
 use std::path::{Path, PathBuf};
 use tauri::Manager;
 use tauri_plugin_sql::{Migration, MigrationKind};
+use pbkdf2::pbkdf2_hmac;
+use sha2::Sha256;
+use rand::RngCore;
+
+fn is_valid_booking_duration(duration_minutes: i64) -> bool {
+    (15..=720).contains(&duration_minutes) && duration_minutes % 15 == 0
+}
 
 fn database_path(app: &tauri::AppHandle) -> Result<PathBuf, Box<dyn Error>> {
     // Must match tauri-plugin-sql's app_config_dir() + database filename.
@@ -28,9 +35,15 @@ fn database_path(app: &tauri::AppHandle) -> Result<PathBuf, Box<dyn Error>> {
     .into())
 }
 
-fn checkout_transaction(
+fn checkout_transaction(path: &Path, visit_child_id: &str) -> Result<(), Box<dyn Error>> {
+    checkout_transaction_with_overtime(path, visit_child_id, true, None)
+}
+
+fn checkout_transaction_with_overtime(
     path: &Path,
     visit_child_id: &str,
+    overtime_collected: bool,
+    overtime_collection_note: Option<String>,
 ) -> Result<(), Box<dyn Error>> {
     let mut connection = Connection::open_with_flags(
         path,
@@ -51,7 +64,10 @@ fn checkout_transaction(
                 p.duration_minutes,
                 p.base_amount_minor,
                 p.discount_amount_minor,
-                p.calculation_json
+                p.calculation_json,
+                p.pricing_rule_id,
+                p.membership_id,
+                p.included_minutes
             FROM local_visit_children vc
             JOIN local_visits v ON v.id = vc.visit_id
             JOIN local_visit_child_pricing p ON p.visit_child_id = vc.id
@@ -69,6 +85,9 @@ fn checkout_transaction(
                     row.get::<_, i64>(5)?,
                     row.get::<_, i64>(6)?,
                     row.get::<_, String>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                    row.get::<_, Option<String>>(9)?,
+                    row.get::<_, i64>(10)?,
                 ))
             },
         )
@@ -89,6 +108,9 @@ fn checkout_transaction(
         base_amount,
         discount_amount,
         calculation_json,
+        pricing_rule_id,
+        membership_id,
+        included_minutes,
     ) = record;
 
     if visit_status != "active" {
@@ -115,10 +137,15 @@ fn checkout_transaction(
         .into());
     }
 
+    // The manually entered hourly rate is part of the immutable visit snapshot.
+    // Never replace a missing/invalid child rate with a generic pricing-rule value.
     let hourly_rate = calculation
         .get("hourlyRateMinor")
         .and_then(Value::as_i64)
-        .filter(|rate| *rate >= 0);
+        .filter(|rate| *rate > 0);
+    if let Some(rate) = hourly_rate {
+        calculation["hourlyRateMinor"] = json!(rate);
+    }
 
     if pricing_type == "hourly" && hourly_rate.is_none() {
         return Err(io::Error::other(
@@ -148,12 +175,34 @@ fn checkout_transaction(
         0
     };
 
+    let membership_minutes_used = if pricing_type == "membership" {
+        let membership_id = membership_id.as_deref().ok_or_else(|| io::Error::other("اشتراك الطفل غير محدد."))?;
+        let membership: Option<(i64,i64,String)> = tx.query_row(
+            "SELECT included_minutes, used_minutes, status FROM local_child_memberships WHERE id=?",
+            params![membership_id],
+            |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))
+        ).optional()?;
+        let (total_minutes, used_minutes, status) = membership.ok_or_else(|| io::Error::other("الاشتراك غير موجود."))?;
+        if status != "active" { return Err(io::Error::other("الاشتراك غير نشط.").into()); }
+        let expiry: String = tx.query_row("SELECT expires_at FROM local_child_memberships WHERE id=?",params![membership_id],|r|r.get(0))?;
+        if DateTime::parse_from_rfc3339(&expiry).map(|d| d <= checkout_time).unwrap_or(true) { return Err(io::Error::other("انتهت صلاحية الباقة.").into()); }
+        let available = total_minutes.saturating_sub(used_minutes).max(0);
+        let consumed = actual_minutes.min(available);
+        let new_used = used_minutes.saturating_add(consumed);
+        tx.execute("UPDATE local_child_memberships SET used_minutes=?, status=CASE WHEN ?>=included_minutes THEN 'used' ELSE 'active' END WHERE id=?",params![new_used,new_used,membership_id])?;
+        tx.execute("INSERT INTO local_membership_usage(id,membership_id,visit_child_id,minutes_used,created_at) VALUES(?,?,?,?,?)",params![uuid::Uuid::new_v4().to_string(),membership_id,visit_child_id,consumed,checkout_time.to_rfc3339()])?;
+        consumed
+    } else { 0 };
+    calculation["membershipMinutesUsed"] = json!(membership_minutes_used);
+    calculation["membershipIncludedMinutesAtCheckout"] = json!(included_minutes);
+
     let base_final_amount = base_amount
         .checked_sub(discount_amount)
         .ok_or_else(|| io::Error::other("Base price calculation overflowed."))?
         .max(0);
+    let charged_overtime = if overtime_collected { overtime_amount } else { 0 };
     let final_child_amount = base_final_amount
-        .checked_add(overtime_amount)
+        .checked_add(charged_overtime)
         .ok_or_else(|| io::Error::other("Final child price overflowed."))?;
     let checkout_time_string =
         checkout_time.to_rfc3339_opts(SecondsFormat::Millis, true);
@@ -161,6 +210,8 @@ fn checkout_transaction(
     calculation["actualDurationMinutes"] = json!(actual_minutes);
     calculation["overtimeMinutes"] = json!(overtime_minutes);
     calculation["overtimeAmountMinor"] = json!(overtime_amount);
+    calculation["overtimeCollected"] = json!(overtime_amount == 0 || overtime_collected);
+    calculation["overtimeCollectionNote"] = json!(if overtime_amount > 0 && !overtime_collected { overtime_collection_note.as_deref().unwrap_or("").trim() } else { "" });
     calculation["checkoutCalculatedAt"] = json!(checkout_time_string);
 
     let child_update = tx.execute(
@@ -185,6 +236,8 @@ fn checkout_transaction(
         SET overtime_minutes = ?,
             overtime_amount_minor = ?,
             final_amount_minor = ?,
+            overtime_collected = ?,
+            overtime_collection_note = ?,
             calculation_json = ?
         WHERE visit_child_id = ?
         "#,
@@ -192,6 +245,8 @@ fn checkout_transaction(
             overtime_minutes,
             overtime_amount,
             final_child_amount,
+            if overtime_amount == 0 || overtime_collected { 1 } else { 0 },
+            if overtime_amount > 0 && !overtime_collected { overtime_collection_note.as_deref().unwrap_or("").trim() } else { "" },
             serde_json::to_string(&calculation)?,
             visit_child_id
         ],
@@ -202,6 +257,25 @@ fn checkout_transaction(
             "Could not save the child's final price. Checkout was cancelled.",
         )
         .into());
+    }
+
+    if overtime_amount > 0 && !overtime_collected {
+        let actor: String = tx.query_row(
+            "SELECT COALESCE(actor_user_id, 'system') FROM local_session WHERE singleton_id = 1",
+            [],
+            |row| row.get(0),
+        )?;
+        tx.execute(
+            "INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,reason,before_json,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'overtime_waived','visit_child_pricing',?,?,?,?,?)",
+            params![
+                actor,
+                visit_child_id,
+                overtime_collection_note.as_deref().unwrap_or("").trim(),
+                json!({"overtime_amount_minor": overtime_amount, "overtime_collected": true}).to_string(),
+                json!({"overtime_amount_minor": 0, "overtime_collected": false, "charged_amount_minor": final_child_amount}).to_string(),
+                checkout_time_string,
+            ],
+        )?;
     }
 
     let remaining: i64 = tx.query_row(
@@ -217,7 +291,7 @@ fn checkout_transaction(
     if remaining == 0 {
         let total: i64 = tx.query_row(
             r#"
-            SELECT COALESCE(SUM(p.final_amount_minor), 0)
+            SELECT COALESCE(SUM(MAX(0, p.final_amount_minor)), 0)
             FROM local_visit_child_pricing p
             JOIN local_visit_children vc ON vc.id = p.visit_child_id
             WHERE vc.visit_id = ?
@@ -243,6 +317,21 @@ fn checkout_transaction(
             )
             .into());
         }
+
+        let payment_method = calculation.get("paymentMethod").and_then(Value::as_str).unwrap_or("cash");
+        let payment_method = if ["cash", "instapay", "wallet"].contains(&payment_method) { payment_method } else { "cash" };
+        let collected_total: i64 = tx.query_row(
+            "SELECT COALESCE(SUM(MAX(0, p.final_amount_minor)),0) FROM local_visit_child_pricing p JOIN local_visit_children vc ON vc.id=p.visit_child_id WHERE vc.visit_id=?",
+            params![visit_id], |row| row.get(0)
+        )?;
+        let has_session_table: i64 = tx.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='local_session'", [], |row| row.get(0))?;
+        if collected_total > 0 && has_session_table > 0 {
+            let actor: String = tx.query_row("SELECT COALESCE(actor_user_id,'system') FROM local_session WHERE singleton_id=1", [], |row| row.get(0))?;
+            tx.execute(
+                "INSERT INTO local_payments(id,visit_id,method,status,amount_minor,received_by,created_at) VALUES(lower(hex(randomblob(16))),? ,?,'confirmed',?,?,?)",
+                params![visit_id, payment_method, collected_total, actor, checkout_time_string],
+            )?;
+        }
     }
 
     // All child, pricing, and final-visit updates commit together.
@@ -254,13 +343,238 @@ fn checkout_transaction(
 fn checkout_child(
     app: tauri::AppHandle,
     visit_child_id: String,
+    overtime_collected: bool,
+    overtime_collection_note: Option<String>,
 ) -> Result<(), String> {
     if visit_child_id.trim().is_empty() {
         return Err("Missing child visit ID.".to_string());
     }
 
+    if !overtime_collected {
+        let reason = overtime_collection_note.as_deref().unwrap_or("").trim();
+        if reason.is_empty() || reason.chars().count() > 500 { return Err("يجب تسجيل سبب إعفاء واضح لا يتجاوز 500 حرف.".into()); }
+    }
+    // Cashiers can check out and collect; only admins/managers can authorize waivers.
+    let db = auth_db(&app)?;
+    let (_, roles) = require_role(&db, &["admin", "manager", "cashier"])?;
+    if !overtime_collected && !roles.iter().any(|role| role == "admin" || role == "manager") {
+        return Err("ليس لديك صلاحية إعفاء الوقت الإضافي. اطلب اعتماد المدير.".into());
+    }
+    drop(db);
+
     let path = database_path(&app).map_err(|error| error.to_string())?;
-    checkout_transaction(&path, &visit_child_id).map_err(|error| error.to_string())
+    checkout_transaction_with_overtime(&path, &visit_child_id, overtime_collected, overtime_collection_note).map_err(|error| error.to_string())
+}
+
+
+fn auth_db(app: &tauri::AppHandle) -> Result<Connection, String> {
+ let path=database_path(app).map_err(|e|e.to_string())?; Connection::open(path).map_err(|e|e.to_string())
+}
+fn hash_password(password:&str,salt:&[u8])->String { let mut out=[0u8;32]; pbkdf2_hmac::<Sha256>(password.as_bytes(),salt,600_000,&mut out); hex::encode(out) }
+fn active_user(db: &Connection) -> Result<(String, Vec<String>), String> {
+    let (id, roles_json): (String, String) = db
+        .query_row(
+            "SELECT u.id, u.role_codes_json FROM local_session s
+             JOIN local_users u ON u.id = s.actor_user_id
+             WHERE s.singleton_id = 1 AND u.is_active = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|_| "لا يوجد مستخدم نشط مسجل الدخول.".to_string())?;
+
+    let roles: Vec<String> = serde_json::from_str(&roles_json)
+        .map_err(|_| "إعدادات صلاحيات المستخدم غير صالحة؛ تواصل مع المدير.".to_string())?;
+    if roles.is_empty() || roles.iter().any(|role| !["admin", "manager", "cashier", "viewer"].contains(&role.as_str())) {
+        return Err("إعدادات صلاحيات المستخدم غير صالحة؛ تواصل مع المدير.".to_string());
+    }
+    Ok((id, roles))
+}
+fn require_role(db:&Connection,allowed:&[&str])->Result<(String,Vec<String>),String>{let(id,roles)=active_user(db)?;if roles.iter().any(|r|allowed.contains(&r.as_str())){Ok((id,roles))}else{Err("ليس لديك صلاحية لتنفيذ هذه العملية.".into())}}
+#[tauri::command]
+fn auth_status(app:tauri::AppHandle)->Result<Value,String>{
+ let db=auth_db(&app)?;
+ let count:i64=db.query_row("SELECT COUNT(*) FROM local_users WHERE username IS NOT NULL AND password_hash IS NOT NULL",[],|r|r.get(0)).map_err(|e|e.to_string())?;
+ // Read the current local session without mutating it. The previous implementation
+ // silently logged the user out whenever the UI rechecked authentication status.
+ let user:Option<(String,String,String)>=db.query_row(
+  "SELECT u.id,u.display_name,u.role_codes_json FROM local_session s JOIN local_users u ON u.id=s.actor_user_id WHERE s.singleton_id=1 AND u.is_active=1",
+  [],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))
+ ).optional().map_err(|e|e.to_string())?;
+ let user_json=user.map(|(id,name,roles)|json!({"id":id,"name":name,"roles":roles}));
+ Ok(json!({"needsSetup":count==0,"user":user_json}))
+}
+#[tauri::command]
+fn setup_first_admin(app:tauri::AppHandle,username:String,display_name:String,password:String)->Result<Value,String>{
+ if username.trim().len()<3||display_name.trim().is_empty()||password.chars().count()<12{return Err("اسم المستخدم 3 أحرف على الأقل وكلمة المرور 12 حرفًا على الأقل.".into())}
+ let mut db=auth_db(&app)?;let tx=db.transaction().map_err(|e|e.to_string())?;let count:i64=tx.query_row("SELECT COUNT(*) FROM local_users WHERE username IS NOT NULL AND password_hash IS NOT NULL",[],|r|r.get(0)).map_err(|e|e.to_string())?;if count>0{return Err("تم إعداد المدير بالفعل.".into())}
+ let mut salt=[0u8;16];rand::thread_rng().fill_bytes(&mut salt);let id=uuid::Uuid::new_v4().to_string();let now=Utc::now().to_rfc3339();
+ tx.execute("INSERT INTO local_users(id,display_name,role_codes_json,permissions_json,is_active,last_authenticated_at,username,password_salt,password_hash,created_at) VALUES(?,?,'[\"admin\"]','[\"all\"]',1,?,?,?,?,?)",params![id,display_name.trim(),now,username.trim(),hex::encode(salt),hash_password(&password,&salt),now]).map_err(|e|e.to_string())?;
+ tx.execute("UPDATE local_session SET actor_user_id=?,authenticated_at=? WHERE singleton_id=1",params![id,now]).map_err(|e|e.to_string())?;tx.commit().map_err(|e|e.to_string())?;Ok(json!({"id":id,"name":display_name.trim(),"roles":"[\"admin\"]"}))
+}
+#[tauri::command]
+fn login_user(app:tauri::AppHandle,username:String,password:String)->Result<Value,String>{
+ let mut db=auth_db(&app)?;let row:Option<(String,String,String,String,i64)>=db.query_row("SELECT id,display_name,password_salt,password_hash,is_active FROM local_users WHERE username=? COLLATE NOCASE",params![username.trim()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional().map_err(|e|e.to_string())?;
+ let(id,name,salt,expected,active)=row.ok_or("اسم المستخدم أو كلمة المرور غير صحيحة.")?;let salt=hex::decode(salt).map_err(|e|e.to_string())?;if active!=1||hash_password(&password,&salt)!=expected{return Err("اسم المستخدم أو كلمة المرور غير صحيحة.".into())}
+ let now=Utc::now().to_rfc3339();let tx=db.transaction().map_err(|e|e.to_string())?;tx.execute("UPDATE local_session SET actor_user_id=?,authenticated_at=? WHERE singleton_id=1",params![id,now]).map_err(|e|e.to_string())?;tx.execute("UPDATE local_users SET last_authenticated_at=? WHERE id=?",params![now,id]).map_err(|e|e.to_string())?;tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,created_at) VALUES(lower(hex(randomblob(16))),?,'login','user',?,?)",params![id,id,now]).map_err(|e|e.to_string())?;tx.commit().map_err(|e|e.to_string())?;
+ let roles:String=db.query_row("SELECT role_codes_json FROM local_users WHERE id=?",params![id],|r|r.get(0)).map_err(|e|e.to_string())?;Ok(json!({"id":id,"name":name,"roles":roles}))
+}
+#[tauri::command]
+fn logout_user(app:tauri::AppHandle)->Result<(),String>{let db=auth_db(&app)?;db.execute("UPDATE local_session SET actor_user_id=NULL,authenticated_at=NULL WHERE singleton_id=1",[]).map_err(|e|e.to_string())?;Ok(())}
+#[tauri::command]
+fn change_own_password(app:tauri::AppHandle,current_password:String,new_password:String)->Result<(),String>{
+ if new_password.chars().count()<12{return Err("كلمة المرور الجديدة يجب أن تكون 12 حرفًا على الأقل.".into())}
+ let mut db=auth_db(&app)?;let(id,_)=active_user(&db)?;let(salt,expected):(String,String)=db.query_row("SELECT password_salt,password_hash FROM local_users WHERE id=?",params![id],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|e|e.to_string())?;let salt=hex::decode(salt).map_err(|e|e.to_string())?;if hash_password(&current_password,&salt)!=expected{return Err("كلمة المرور الحالية غير صحيحة.".into())}
+ let mut new_salt=[0u8;16];rand::thread_rng().fill_bytes(&mut new_salt);let now=Utc::now().to_rfc3339();let tx=db.transaction().map_err(|e|e.to_string())?;tx.execute("UPDATE local_users SET password_salt=?,password_hash=? WHERE id=?",params![hex::encode(new_salt),hash_password(&new_password,&new_salt),id]).map_err(|e|e.to_string())?;tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,created_at) VALUES(lower(hex(randomblob(16))),?,'password_changed','user',?,?)",params![id,id,now]).map_err(|e|e.to_string())?;tx.commit().map_err(|e|e.to_string())?;Ok(())
+}
+#[tauri::command]
+fn admin_list_users(app:tauri::AppHandle)->Result<Vec<Value>,String>{
+ let db=auth_db(&app)?;require_role(&db,&["admin"])?;let mut st=db.prepare("SELECT id,username,display_name,role_codes_json,is_active,created_at,last_authenticated_at FROM local_users ORDER BY display_name").map_err(|e|e.to_string())?;
+ let rows=st.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"username":r.get::<_,Option<String>>(1)?,"name":r.get::<_,String>(2)?,"roles":r.get::<_,String>(3)?,"active":r.get::<_,i64>(4)?,"createdAt":r.get::<_,Option<String>>(5)?,"lastLogin":r.get::<_,Option<String>>(6)?}))).map_err(|e|e.to_string())?;rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())
+}
+#[tauri::command]
+fn admin_create_user(app:tauri::AppHandle,username:String,display_name:String,password:String,role:String)->Result<(),String>{
+ if username.trim().len()<3||display_name.trim().is_empty()||password.chars().count()<12{return Err("أدخل اسم مستخدم واسم موظف وكلمة مرور 12 حرفًا على الأقل.".into())}if !["admin","manager","cashier","viewer"].contains(&role.as_str()){return Err("الدور غير صالح.".into())}
+ let mut db=auth_db(&app)?;let(actor,_)=require_role(&db,&["admin"])?;let mut salt=[0u8;16];rand::thread_rng().fill_bytes(&mut salt);let id=uuid::Uuid::new_v4().to_string();let now=Utc::now().to_rfc3339();let tx=db.transaction().map_err(|e|e.to_string())?;
+ tx.execute("INSERT INTO local_users(id,username,display_name,password_salt,password_hash,role_codes_json,permissions_json,is_active,created_at) VALUES(?,?,?,?,?,?,?,1,?)",params![id,username.trim(),display_name.trim(),hex::encode(salt),hash_password(&password,&salt),json!([role]).to_string(),if role=="admin"{"[\"all\"]"}else{"[]"},now]).map_err(|e|e.to_string())?;
+ tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'user_created','user',?,?,?)",params![actor,id,json!({"username":username,"name":display_name,"role":role}).to_string(),now]).map_err(|e|e.to_string())?;tx.commit().map_err(|e|e.to_string())?;Ok(())
+}
+#[tauri::command]
+fn admin_set_user_active(app:tauri::AppHandle,user_id:String,is_active:bool)->Result<(),String>{
+ let mut db=auth_db(&app)?;let(actor,_)=require_role(&db,&["admin"])?;let(current,_)=active_user(&db)?;if current==user_id&&!is_active{return Err("لا يمكنك إيقاف حسابك أثناء تسجيل الدخول.".into())}
+ let now=Utc::now().to_rfc3339();let tx=db.transaction().map_err(|e|e.to_string())?;let before:i64=tx.query_row("SELECT is_active FROM local_users WHERE id=?",params![user_id],|r|r.get(0)).map_err(|e|e.to_string())?;tx.execute("UPDATE local_users SET is_active=? WHERE id=?",params![if is_active{1}else{0},user_id]).map_err(|e|e.to_string())?;tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,before_json,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'user_status_changed','user',?,?,?,?)",params![actor,user_id,json!({"is_active":before}).to_string(),json!({"is_active":is_active}).to_string(),now]).map_err(|e|e.to_string())?;tx.commit().map_err(|e|e.to_string())?;Ok(())
+}
+#[tauri::command]
+fn admin_reset_user_password(app: tauri::AppHandle, user_id: String, new_password: String) -> Result<(), String> {
+    if new_password.chars().count() < 12 { return Err("كلمة المرور يجب أن تكون 12 حرفًا على الأقل.".into()); }
+    let mut db=auth_db(&app)?; let (actor,_)=require_role(&db,&["admin"])?;
+    let mut salt=[0u8;16]; rand::thread_rng().fill_bytes(&mut salt);
+    let tx=db.transaction().map_err(|e|e.to_string())?;
+    let exists:i64=tx.query_row("SELECT COUNT(*) FROM local_users WHERE id=?",params![user_id],|r|r.get(0)).map_err(|e|e.to_string())?;
+    if exists!=1 { return Err("حساب الموظف غير موجود.".into()); }
+    tx.execute("UPDATE local_users SET password_salt=?,password_hash=? WHERE id=?",params![hex::encode(salt),hash_password(&new_password,&salt),user_id]).map_err(|e|e.to_string())?;
+    tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,created_at) VALUES(lower(hex(randomblob(16))),?,'admin_password_reset','user',?,?)",params![actor,user_id,Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
+    tx.commit().map_err(|e|e.to_string())?; Ok(())
+}
+#[tauri::command]
+fn admin_update_user_role(app: tauri::AppHandle, user_id: String, role: String) -> Result<(), String> {
+    if !["admin","manager","cashier","viewer"].contains(&role.as_str()) { return Err("الدور غير صالح.".into()); }
+    let mut db=auth_db(&app)?; let (actor,_)=require_role(&db,&["admin"])?; let (current,_)=active_user(&db)?;
+    if current==user_id && role!="admin" { return Err("لا يمكنك إزالة صلاحية مدير النظام من حسابك الحالي.".into()); }
+    let tx=db.transaction().map_err(|e|e.to_string())?;
+    let before:String=tx.query_row("SELECT role_codes_json FROM local_users WHERE id=?",params![user_id],|r|r.get(0)).map_err(|e|e.to_string())?;
+    tx.execute("UPDATE local_users SET role_codes_json=?,permissions_json=? WHERE id=?",params![json!([role]).to_string(),if role=="admin"{"[\"all\"]"}else{"[]"},user_id]).map_err(|e|e.to_string())?;
+    tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,before_json,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'user_role_changed','user',?,?,?,?)",params![actor,user_id,json!({"roles":before}).to_string(),json!({"role":role}).to_string(),Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
+    tx.commit().map_err(|e|e.to_string())?; Ok(())
+}
+#[tauri::command]
+fn admin_delete_user(app: tauri::AppHandle, user_id: String) -> Result<(), String> {
+    let mut db=auth_db(&app)?; let (actor,_)=require_role(&db,&["admin"])?; let (current,_)=active_user(&db)?;
+    if current==user_id { return Err("لا يمكنك حذف الحساب الذي تستخدمه حاليًا.".into()); }
+    let tx=db.transaction().map_err(|e|e.to_string())?;
+    let active_shift:i64=tx.query_row("SELECT COUNT(*) FROM local_cash_sessions WHERE closed_at IS NULL AND opened_by=?",params![user_id],|r|r.get(0)).map_err(|e|e.to_string())?;
+    if active_shift>0 { return Err("لا يمكن حذف مستخدم فتح وردية ما زالت مفتوحة؛ أغلق الوردية أولًا.".into()); }
+    let before:String=tx.query_row("SELECT json_object('username',COALESCE(username,''),'name',display_name,'roles',role_codes_json) FROM local_users WHERE id=?",params![user_id],|r|r.get(0)).map_err(|e|e.to_string())?;
+    tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,before_json,created_at) VALUES(lower(hex(randomblob(16))),?,'user_deleted','user',?,?,?)",params![actor,user_id,before,Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
+    tx.execute("DELETE FROM local_users WHERE id=?",params![user_id]).map_err(|e|e.to_string())?;
+    tx.commit().map_err(|e|e.to_string())?; Ok(())
+}
+#[tauri::command]
+fn delete_pricing_rule(app: tauri::AppHandle, rule_id: String) -> Result<(), String> {
+    let mut db=auth_db(&app)?; let (actor,_)=require_role(&db,&["admin"])?;
+    let tx=db.transaction().map_err(|e|e.to_string())?;
+    let name:String=tx.query_row("SELECT name FROM local_pricing_rules WHERE id=?",params![rule_id],|r|r.get(0)).map_err(|e|e.to_string())?;
+    let used:i64=tx.query_row("SELECT COUNT(*) FROM local_visit_child_pricing WHERE pricing_rule_id=?",params![rule_id],|r|r.get(0)).map_err(|e|e.to_string())?;
+    if used>0 {
+      tx.execute("UPDATE local_pricing_rules SET is_active=0 WHERE id=?",params![rule_id]).map_err(|e|e.to_string())?;
+    } else {
+      tx.execute("DELETE FROM local_pricing_rules WHERE id=?",params![rule_id]).map_err(|e|e.to_string())?;
+    }
+    tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'pricing_rule_removed','pricing_rule',?,?,?)",params![actor,rule_id,json!({"name":name,"usedHistorically":used>0,"active":false}).to_string(),Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
+    tx.commit().map_err(|e|e.to_string())?; Ok(())
+}
+
+#[tauri::command]
+fn create_pricing_rule(
+    app: tauri::AppHandle,
+    name: String,
+    pricing_type: String,
+    amount_minor: i64,
+    duration_minutes: i64,
+) -> Result<(), String> {
+    let clean_name = name.trim();
+    if clean_name.is_empty() || clean_name.chars().count() > 100 {
+        return Err("اسم قاعدة السعر مطلوب ويجب ألا يتجاوز 100 حرف.".into());
+    }
+    if !["fixed", "hourly", "offer"].contains(&pricing_type.as_str()) {
+        return Err("نوع التسعير غير صالح.".into());
+    }
+    if amount_minor < 0 {
+        return Err("السعر لا يمكن أن يكون سالبًا.".into());
+    }
+    if !is_valid_booking_duration(duration_minutes) { return Err("مدة الحجز يجب أن تكون بزيادات 15 دقيقة من 15 دقيقة إلى 12 ساعة.".into()); }
+
+    let mut db = auth_db(&app)?;
+    let (actor, _) = require_role(&db, &["admin", "manager"])?;
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
+    tx.execute(
+        "INSERT INTO local_pricing_rules
+         (id, name, pricing_type, calculation_type, amount_minor,
+          duration_minutes, free_minutes, priority, weekdays_json,
+          is_active, created_at)
+         VALUES (?, ?, ?, 'fixed', ?, ?, 0, 100, '[]', 1, ?)",
+        params![id, clean_name, pricing_type, amount_minor, duration_minutes, now],
+    ).map_err(|e| e.to_string())?;
+    // The database audit trigger records this insert exactly once.
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn get_active_cash_shift(app: tauri::AppHandle) -> Result<Value, String> {
+    let db = auth_db(&app)?;
+    require_role(&db, &["admin", "manager", "cashier"])?;
+    let shift: Option<Value> = db.query_row(
+        "SELECT s.id, s.opening_float_minor, s.opened_at, COALESCE(u.display_name, s.opened_by), COALESCE((SELECT SUM(p.amount_minor) FROM local_payments p WHERE p.method='cash' AND p.status='confirmed' AND p.created_at >= s.opened_at AND p.created_at <= strftime('%Y-%m-%dT%H:%M:%fZ','now')), 0) FROM local_cash_sessions s LEFT JOIN local_users u ON u.id=s.opened_by WHERE s.closed_at IS NULL ORDER BY s.opened_at DESC LIMIT 1",
+        [], |row| { let opening: i64 = row.get(1)?; let sales: i64 = row.get(4)?; Ok(json!({"id":row.get::<_,String>(0)?,"openingFloatMinor":opening,"openedAt":row.get::<_,String>(2)?,"openedBy":row.get::<_,String>(3)?,"cashSalesMinor":sales,"expectedCashMinor":opening.saturating_add(sales)})) }
+    ).optional().map_err(|e| e.to_string())?;
+    Ok(shift.unwrap_or(Value::Null))
+}
+
+#[tauri::command]
+fn open_cash_shift(app:tauri::AppHandle,opening_float_minor:i64)->Result<Value,String>{
+ if opening_float_minor<0{return Err("رصيد بداية الوردية غير صحيح.".into())}
+ let mut db=auth_db(&app)?;
+ let(actor,_)=require_role(&db,&["admin","manager","cashier"])?;
+ let tx=db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
+ let count:i64=tx.query_row("SELECT COUNT(*) FROM local_cash_sessions WHERE closed_at IS NULL",[],|r|r.get(0)).map_err(|e|e.to_string())?;
+ if count>0{return Err("هناك وردية مفتوحة بالفعل.".into())}
+ let id=uuid::Uuid::new_v4().to_string();let now=Utc::now().to_rfc3339();
+ tx.execute("INSERT INTO local_cash_sessions(id,opening_float_minor,opened_by,opened_at) VALUES(?,?,?,?)",params![id,opening_float_minor,actor,now]).map_err(|e|e.to_string())?;
+ tx.commit().map_err(|e|e.to_string())?;
+ Ok(json!({"id":id,"openedAt":now}))
+}
+#[tauri::command]
+fn close_cash_shift(app:tauri::AppHandle,counted_cash_minor:i64)->Result<Value,String>{
+ if counted_cash_minor<0{return Err("النقدية المعدودة غير صحيحة.".into())}
+ let mut db=auth_db(&app)?;
+ let(actor,_)=require_role(&db,&["admin","manager","cashier"])?;
+ let tx=db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
+ let shift:Option<(String,i64,String)>=tx.query_row("SELECT id,opening_float_minor,opened_at FROM local_cash_sessions WHERE closed_at IS NULL ORDER BY opened_at DESC LIMIT 1",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(|e|e.to_string())?;
+ let(id,float,opened)=shift.ok_or("لا توجد وردية مفتوحة.")?;
+ let now=Utc::now().to_rfc3339();
+ let sales:i64=tx.query_row("SELECT COALESCE(SUM(amount_minor),0) FROM local_payments WHERE method='cash' AND status='confirmed' AND created_at>=? AND created_at<=?",params![opened,now],|r|r.get(0)).map_err(|e|e.to_string())?;
+ let expected=float.checked_add(sales).ok_or("قيمة النقدية المتوقعة تجاوزت الحد المسموح.")?;
+ let variance=counted_cash_minor.checked_sub(expected).ok_or("فرق النقدية تجاوز الحد المسموح.")?;
+ let changed=tx.execute("UPDATE local_cash_sessions SET closed_by=?,closed_at=?,counted_cash_minor=?,expected_cash_minor=?,variance_minor=? WHERE id=? AND closed_at IS NULL",params![actor,now,counted_cash_minor,expected,variance,id]).map_err(|e|e.to_string())?;
+ if changed!=1{return Err("تم إغلاق الوردية بالفعل أو تغيرت حالتها.".into())}
+ tx.commit().map_err(|e|e.to_string())?;
+ Ok(json!({"id":id,"expectedCashMinor":expected,"countedCashMinor":counted_cash_minor,"varianceMinor":variance,"closedAt":now}))
+}
+#[tauri::command]
+fn admin_audit_log(app:tauri::AppHandle,limit:i64)->Result<Vec<Value>,String>{
+ let db=auth_db(&app)?;require_role(&db,&["admin","manager"])?;let mut st=db.prepare("SELECT a.created_at,COALESCE(u.display_name,a.actor_user_id),a.action,a.entity_type,a.entity_id,a.reason,a.before_json,a.after_json FROM local_audit_log a LEFT JOIN local_users u ON u.id=a.actor_user_id ORDER BY a.created_at DESC LIMIT ?").map_err(|e|e.to_string())?;let rows=st.query_map(params![limit.clamp(1,5000)],|r|Ok(json!({"createdAt":r.get::<_,String>(0)?,"actor":r.get::<_,String>(1)?,"action":r.get::<_,String>(2)?,"entityType":r.get::<_,String>(3)?,"entityId":r.get::<_,Option<String>>(4)?,"reason":r.get::<_,Option<String>>(5)?,"before":r.get::<_,Option<String>>(6)?,"after":r.get::<_,Option<String>>(7)?}))).map_err(|e|e.to_string())?;rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())
 }
 
 #[tauri::command]
@@ -289,6 +603,10 @@ pub fn run() {
             sql: include_str!("../migrations/003_customer_profiles_and_membership_usage.sql"),
             kind: MigrationKind::Up,
         },
+        Migration { version: 4, description: "auth_shifts_audit", sql: include_str!("../migrations/004_auth_shifts_audit.sql"), kind: MigrationKind::Up },
+        Migration { version: 5, description: "role_write_guards", sql: include_str!("../migrations/005_role_write_guards.sql"), kind: MigrationKind::Up },
+        Migration { version: 6, description: "pricing_role_policy", sql: include_str!("../migrations/006_pricing_role_policy.sql"), kind: MigrationKind::Up },
+        Migration { version: 7, description: "partial_collection_and_membership_sales", sql: include_str!("../migrations/007_partial_collection_and_membership_sales.sql"), kind: MigrationKind::Up },
     ];
 
     tauri::Builder::default()
@@ -298,14 +616,14 @@ pub fn run() {
                 .add_migrations("sqlite:secret-kids-club.db", migrations)
                 .build(),
         )
-        .invoke_handler(tauri::generate_handler![greet, checkout_child])
+        .invoke_handler(tauri::generate_handler![greet, checkout_child, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_create_user, admin_set_user_active, admin_reset_user_password, admin_update_user_role, admin_delete_user, delete_pricing_rule, create_pricing_rule, get_active_cash_shift, open_cash_shift, close_cash_shift, admin_audit_log])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
 
 #[cfg(test)]
 mod checkout_tests {
-    use super::checkout_transaction;
+    use super::{checkout_transaction, checkout_transaction_with_overtime};
     use chrono::{Duration, SecondsFormat, Utc};
     use rusqlite::{params, Connection};
     use std::path::{Path, PathBuf};
@@ -337,16 +655,32 @@ mod checkout_tests {
                 checked_out_at TEXT,
                 actual_duration_minutes INTEGER NOT NULL DEFAULT 0
             );
+            CREATE TABLE local_session (singleton_id INTEGER PRIMARY KEY, actor_user_id TEXT);
+            INSERT INTO local_session(singleton_id, actor_user_id) VALUES (1, 'test-cashier');
+            CREATE TABLE local_payments (
+                id TEXT PRIMARY KEY, visit_id TEXT, method TEXT, status TEXT,
+                amount_minor INTEGER, received_by TEXT, created_at TEXT
+            );
+            CREATE TABLE local_audit_log (
+                id TEXT PRIMARY KEY, actor_user_id TEXT NOT NULL, action TEXT NOT NULL,
+                entity_type TEXT NOT NULL, entity_id TEXT, reason TEXT, before_json TEXT,
+                after_json TEXT, created_at TEXT NOT NULL
+            );
             CREATE TABLE local_visit_child_pricing (
                 id TEXT PRIMARY KEY,
                 visit_child_id TEXT NOT NULL UNIQUE,
                 pricing_type TEXT NOT NULL,
+                pricing_rule_id TEXT,
+                membership_id TEXT,
                 duration_minutes INTEGER NOT NULL DEFAULT 0,
+                included_minutes INTEGER NOT NULL DEFAULT 0,
                 base_amount_minor INTEGER NOT NULL DEFAULT 0,
                 discount_amount_minor INTEGER NOT NULL DEFAULT 0,
                 calculation_json TEXT NOT NULL DEFAULT '{}',
                 overtime_minutes INTEGER NOT NULL DEFAULT 0,
                 overtime_amount_minor INTEGER NOT NULL DEFAULT 0,
+                overtime_collected INTEGER NOT NULL DEFAULT 1,
+                overtime_collection_note TEXT,
                 final_amount_minor INTEGER NOT NULL DEFAULT 0
             );
             "
@@ -396,6 +730,19 @@ mod checkout_tests {
     }
 
     #[test]
+    fn booking_duration_accepts_quarter_hours_from_15_minutes_to_12_hours() {
+        assert!(super::is_valid_booking_duration(15));
+        assert!(super::is_valid_booking_duration(30));
+        assert!(super::is_valid_booking_duration(45));
+        assert!(super::is_valid_booking_duration(75));
+        assert!(super::is_valid_booking_duration(720));
+        assert!(!super::is_valid_booking_duration(0));
+        assert!(!super::is_valid_booking_duration(14));
+        assert!(!super::is_valid_booking_duration(25));
+        assert!(!super::is_valid_booking_duration(721));
+    }
+
+    #[test]
     fn hourly_checkout_saves_overtime_discount_and_total() {
         let path = setup_db(3690);
         add_child(
@@ -431,7 +778,52 @@ mod checkout_tests {
         assert_eq!(visit.0, "completed");
         assert!(visit.1.is_some());
         assert_eq!(visit.2, 10200);
+        let payment: i64 = db.query_row(
+            "SELECT amount_minor FROM local_payments WHERE visit_id='visit-1'", [], |r| r.get(0)
+        ).unwrap();
+        assert_eq!(payment, 10200);
 
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn authorized_overtime_waiver_is_excluded_from_total_and_audited() {
+        let path = setup_db(3690);
+        add_child(&path, "child-waived", "hourly", 60, 12000, 2000,
+            r#"{"hourlyRateMinor":6000}"#);
+
+        checkout_transaction_with_overtime(&path, "child-waived", false,
+            Some("Manager approved 5-minute grace".to_string())).unwrap();
+
+        let db = Connection::open(&path).unwrap();
+        let saved: (i64, i64, i64, i64, Option<String>) = db.query_row(
+            "SELECT overtime_minutes, overtime_amount_minor, final_amount_minor,
+                    overtime_collected, overtime_collection_note
+             FROM local_visit_child_pricing WHERE visit_child_id='child-waived'",
+            [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        ).unwrap();
+        assert_eq!(saved.0, 2);
+        assert_eq!(saved.1, 200);
+        assert_eq!(saved.2, 10000);
+        assert_eq!(saved.3, 0);
+        assert_eq!(saved.4.as_deref(), Some("Manager approved 5-minute grace"));
+
+        let visit_total: i64 = db.query_row(
+            "SELECT final_amount_minor FROM local_visits WHERE id='visit-1'", [], |r| r.get(0)
+        ).unwrap();
+        assert_eq!(visit_total, 10000);
+        let audit: (String, String, String) = db.query_row(
+            "SELECT action, reason, actor_user_id FROM local_audit_log WHERE entity_id='child-waived'",
+            [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        ).unwrap();
+        assert_eq!(audit.0, "overtime_waived");
+        assert_eq!(audit.1, "Manager approved 5-minute grace");
+        assert_eq!(audit.2, "test-cashier");
+        let payment: i64 = db.query_row(
+            "SELECT amount_minor FROM local_payments WHERE visit_id='visit-1'", [], |r| r.get(0)
+        ).unwrap();
+        assert_eq!(payment, 10000, "Waived overtime must not be collected");
         drop(db);
         let _ = std::fs::remove_file(path);
     }
