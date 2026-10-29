@@ -337,14 +337,11 @@ export default function App() {
     setMessage("");
 
     try {
-      await db.execute(
-        `INSERT INTO local_pricing_rules
-         (id, name, pricing_type, calculation_type, amount_minor,
-          duration_minutes, free_minutes, priority, weekdays_json,
-          is_active, created_at)
-         VALUES (?, ?, ?, 'fixed', ?, 60, 0, 100, '[]', 1, ?)`,
-        [makeId(), ruleName.trim(), ruleType, Math.round(amount * 100), now()]
-      );
+      await invoke("create_pricing_rule", {
+        name: ruleName.trim(),
+        pricingType: ruleType,
+        amountMinor: Math.round(amount * 100),
+      });
 
       setRuleName("");
       setRuleAmount("");
