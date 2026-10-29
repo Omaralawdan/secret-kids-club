@@ -69,20 +69,9 @@ function formatDate(value: string, language: Language) {
 
 
 function formatDuration(minutes: number, language: Language) {
-  const hours = Math.floor(minutes / 60);
-  const remainder = minutes % 60;
-
-  if (language === "ar") {
-    if (hours && remainder) return `${hours} ساعة و${remainder} دقيقة`;
-    if (hours) return `${hours} ساعة`;
-    return `${remainder} دقيقة`;
-  }
-
-
-
-  if (hours && remainder) return `${hours}h ${remainder}m`;
-  if (hours) return `${hours}h`;
-  return `${remainder}m`;
+  const hours = minutes / 60;
+  const formatted = Number(hours.toFixed(2)).toString();
+  return language === "ar" ? `${formatted} ساعة` : `${formatted} h`;
 }
 
 type ReceiptData = {
@@ -304,7 +293,7 @@ export default function App() {
         }
         if (field === "ruleId") {
           const selected = rules.find(rule => rule.id === String(value));
-          return { ...child, ruleId: String(value), durationHours: selected?.duration_minutes ? selected.duration_minutes / 60 : child.durationHours, hourlyRateMinor: selected?.pricing_type === "hourly" ? selected.amount_minor : null };
+          return { ...child, ruleId: String(value), durationHours: selected?.duration_minutes ? selected.duration_minutes / 60 : child.durationHours, hourlyRateMinor: null };
         }
         return { ...child, [field]: value as string };
       })
@@ -329,7 +318,7 @@ export default function App() {
     if (!rule) return 0;
 
     if (rule.pricing_type === "hourly") {
-      return Math.round((child.hourlyRateMinor ?? rule.amount_minor) * child.durationHours);
+      return child.hourlyRateMinor === null ? 0 : Math.round(child.hourlyRateMinor * child.durationHours);
     }
 
     return rule.amount_minor;
@@ -348,8 +337,8 @@ export default function App() {
     event.preventDefault();
     if (!db) return;
 
-    const amount = Number(ruleAmount);
-    if (!ruleName.trim() || !Number.isFinite(amount) || amount < 0 || !Number.isFinite(Number(ruleDurationHours)) || Number(ruleDurationHours) < 25/60 || Number(ruleDurationHours) > 12) {
+    const amount = ruleType === "hourly" ? 0 : Number(ruleAmount);
+    if (!ruleName.trim() || (ruleType !== "hourly" && (!Number.isFinite(amount) || amount < 0)) || !Number.isFinite(Number(ruleDurationHours)) || Number(ruleDurationHours) < 0.25 || Number(ruleDurationHours) > 12 || !Number.isInteger(Number(ruleDurationHours) * 4)) {
       setError(tr("Enter a rule name and a valid non-negative price."));
       return;
     }
@@ -437,14 +426,17 @@ export default function App() {
           !child.name ||
           !child.ruleId ||
           !Number.isFinite(child.durationHours) ||
-          child.durationHours < (25 / 60) ||
-          child.durationHours > 12
+          child.durationHours < 0.25 ||
+          child.durationHours > 12 ||
+          !Number.isInteger(child.durationHours * 4) ||
+          (rules.find(rule => rule.id === child.ruleId)?.pricing_type === "hourly" &&
+            (child.hourlyRateMinor === null || !Number.isFinite(child.hourlyRateMinor) || child.hourlyRateMinor <= 0))
       )
     ) {
       setError(
         ar
-          ? "أدخل اسم كل طفل وحدد السعر ومدة الحجز من 25 دقيقة إلى 12 ساعة."
-          : "Enter each child's name, pricing rule, and duration between 0.42 and 12 hours."
+          ? "أدخل اسم كل طفل وحدد نوع التسعير وسعر الساعة يدويًا عند اختيار التسعير بالساعة، والمدة من 0.25 إلى 12 ساعة."
+          : "Enter each child's name, pricing type, manual hourly rate when applicable, and duration from 0.25 to 12 hours."
       );
       return;
     }
@@ -955,10 +947,10 @@ export default function App() {
                       </select>
                     </label>
                     <label className="booked-hours-field">
-                      {ar ? "مدة الحجز (بالساعات أو الدقائق)" : "Booked duration (hours or minutes)"}
+                      {ar ? "مدة الحجز (بالساعات)" : "Booked duration (hours)"}
                       <input
                         type="number"
-                        min="0.42"
+                        min="0.25"
                         max="12"
                         required
                         value={Number(child.durationHours.toFixed(2))}
@@ -971,7 +963,7 @@ export default function App() {
                           : (ar ? "السعر الأساسي ثابت؛ الإضافي بالدقيقة متاح للتسعير بالساعة فقط" : "Base price stays fixed; per-minute overtime is available for hourly pricing only")}
                       </span>
                     </label>
-                    {selected?.pricing_type === "hourly" && <label className="child-pricing">{ar ? "سعر الساعة لهذا الطفل (جنيه)" : "Hourly price for this child (EGP)"}<input type="number" min="0" step="0.01" value={((child.hourlyRateMinor ?? selected.amount_minor) / 100).toFixed(2)} onChange={e => { const v=Math.round(Number(e.target.value||0)*100); setChildren(current=>current.map(item=>item.key===child.key||current.every(x=>x.hourlyRateMinor===null||x.hourlyRateMinor===selected.amount_minor)?{...item,hourlyRateMinor:v}:item)); }} /><span className="muted">{ar ? "تغيير السعر هنا يطبّقه على باقي الأطفال، ويمكنك تعديل سعر أي طفل بعد ذلك." : "Changing this rate applies it to the other children; you can then adjust any child individually."}</span></label>}
+                    {selected?.pricing_type === "hourly" && <label className="child-pricing">{ar ? "سعر الساعة لهذا الطفل (جنيه)" : "Hourly price for this child (EGP)"}<input type="number" min="0.01" step="0.01" required value={child.hourlyRateMinor === null ? "" : (child.hourlyRateMinor / 100).toFixed(2)} onChange={e => updateChild(child.key, "hourlyRateMinor", e.target.value === "" ? null : Math.round(Number(e.target.value) * 100))} placeholder={ar ? "اكتب سعر الساعة" : "Enter hourly rate"} /><span className="muted">{ar ? "أدخل سعر الساعة لهذا الطفل؛ لا يتم استخدام سعر ثابت تلقائيًا." : "Enter this child's hourly rate. No preset rate is applied."}</span></label>}
                     <div className="child-price">
                       <span>{tr("Price estimate")}</span>
                       <strong>{selected ? money(priceFor(child), language) : "—"}</strong>
@@ -1012,10 +1004,11 @@ export default function App() {
                 <option value="offer">{tr("Offer (fixed price)")}</option>
               </select>
             </label>
-            <label>{tr("Price in EGP")}
+            {ruleType !== "hourly" && <label>{tr("Price in EGP")}
               <input type="number" min="0" step="0.01" value={ruleAmount} onChange={(e) => setRuleAmount(e.target.value)} required placeholder={tr("Enter actual price")} />
-            </label>
-            <label>{ar ? "مدة الحجز الافتراضية (بالساعات)" : "Default booking duration (hours)"}<input type="number" min="0.42" max="12" step="0.25" value={ruleDurationHours} onChange={e=>setRuleDurationHours(e.target.value)} required /></label>
+            </label>}
+            {ruleType === "hourly" && <p className="muted full-width">{ar ? "سعر الساعة لا يُحفظ هنا؛ ستدخله يدويًا لكل طفل عند تسجيل الزيارة." : "The hourly rate is not preset here. Enter it separately for each child when registering a visit."}</p>}
+            <label>{ar ? "مدة الحجز الافتراضية (بالساعات)" : "Default booking duration (hours)"}<input type="number" min="0.25" max="12" step="0.25" value={ruleDurationHours} onChange={e=>setRuleDurationHours(e.target.value)} required /></label>
             <div className="full-width">
               <button className="primary-button" type="submit" disabled={!ready}>{tr("Save pricing rule")}</button>
             </div>
@@ -1025,7 +1018,7 @@ export default function App() {
             {rules.length === 0 ? <p className="muted">{tr("No rules configured.")}</p> : rules.map((rule) => (
               <div className="rule-item" key={rule.id}>
                 <div><strong>{rule.name}</strong><span>{tr(rule.pricing_type)}</span><span>{ar ? "المدة الافتراضية" : "Default duration"}: {formatDuration(rule.duration_minutes || 60, language)}</span></div>
-                <strong>{money(rule.amount_minor, language)}</strong>
+                <strong>{rule.pricing_type === "hourly" ? (ar ? "السعر عند التسجيل" : "Set at check-in") : money(rule.amount_minor, language)}</strong>
                 {isAdmin && <button type="button" className="remove-button" onClick={()=>{if(!window.confirm(ar?"حذف/إيقاف قاعدة التسعير؟ إذا كانت مستخدمة في زيارات سابقة فسيتم إيقافها فقط للحفاظ على السجلات.":"Remove this pricing rule? If used in past visits, it will be deactivated to preserve history."))return;void invoke("delete_pricing_rule",{ruleId:rule.id}).then(()=>db&&refreshData(db)).then(()=>setMessage(ar?"تم حذف/إيقاف التسعير.":"Pricing rule removed.")).catch(e=>setError(String(e)));}}>{ar?"حذف":"Remove"}</button>}
               </div>
             ))}
@@ -1036,7 +1029,7 @@ export default function App() {
             <form className="form-grid" onSubmit={createMembershipPlan}>
               <label>{ar?"اسم الباقة":"Package name"}<input value={planName} onChange={e=>setPlanName(e.target.value)} required/></label>
               <label>{ar?"السعر بالجنيه":"Price (EGP)"}<input type="number" min="0" step="0.01" value={planPrice} onChange={e=>setPlanPrice(e.target.value)} required/></label>
-              <label>{ar?"عدد الساعات":"Included hours"}<input type="number" min="1" step="1" value={planHours} onChange={e=>setPlanHours(e.target.value)} required/></label>
+              <label>{ar?"عدد الساعات":"Included hours"}<input type="number" min="0.25" step="0.25" value={planHours} onChange={e=>setPlanHours(e.target.value)} required/></label>
               <label>{ar?"مدة الباقة":"Validity"}<select value={planValidity} onChange={e=>setPlanValidity(e.target.value)}><option value="7">{ar?"أسبوع (7 أيام)":"Weekly (7 days)"}</option><option value="30">{ar?"شهر (30 يومًا)":"Monthly (30 days)"}</option></select></label>
               <div className="full-width"><button className="primary-button" type="submit">{ar?"حفظ الباقة":"Save package"}</button></div>
             </form>
