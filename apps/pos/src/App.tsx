@@ -96,7 +96,7 @@ function printReceipt(data: ReceiptData, language: Language) {
   const finalReceipt = Boolean(data.checkedOutAt);
   const label = (en: string, arabic: string) => ar ? arabic : en;
   const row = (name: string, value: string) => '<div class="row"><span>' + name + '</span><strong>' + value + '</strong></div>';
-  const amount = (name: string, value: number) => row(label(name, name), escapeReceipt(money(value, language)));
+  const amount = (name: string, value: number) => row(name, escapeReceipt(money(value, language)));
   const popup = window.open("", "_blank", "width=420,height=720");
   if (!popup) { window.alert(label("Allow pop-ups to print the receipt.", "اسمح بالنوافذ المنبثقة لطباعة الإيصال.")); return; }
   const date = (value: string) => escapeReceipt(new Date(value).toLocaleString(ar ? "ar-EG" : "en-EG"));
