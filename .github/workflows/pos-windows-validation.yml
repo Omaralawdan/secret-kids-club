@@ -1,0 +1,56 @@
+name: POS Windows validation
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "apps/pos/**"
+      - ".github/workflows/pos-windows-validation.yml"
+  push:
+    branches: [main, "feat/**"]
+    paths:
+      - "apps/pos/**"
+      - ".github/workflows/pos-windows-validation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: apps/pos
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/pos/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Type-check and build frontend
+        run: npm run build
+
+      - name: Set up stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/pos/src-tauri -> target
+
+      - name: Run Rust database transaction tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Build Windows installer
+        run: npm run tauri -- build --bundles nsis
