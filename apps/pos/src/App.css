@@ -123,3 +123,24 @@ html { font-size: calc(16px * var(--app-scale, 1)); }
 .settings-preview { display: flex; flex-direction: column; gap: 4px; margin-top: 18px; padding: 14px 16px; border: 1px dashed #d3a0b0; border-radius: 12px; background: #fff7fa; color: #4b1e30; }
 .settings-preview strong { color: #a51e46; }
 @media (max-width: 620px) { .settings-grid { grid-template-columns: 1fr; } .settings-grid .full-width { grid-column: auto; } }
+
+
+/* Active visit identity is deliberately stacked for quick scanning. */
+.active-visit-detail { display: block; line-height: 1.55; overflow-wrap: anywhere; }
+.active-visit-row .child-name { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; min-width: 0; }
+.active-visit-row .child-name > strong { font-size: 1.05rem; }
+.receipt-modal-backdrop { position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 18px; background: rgb(16 24 40 / 65%); }
+.receipt-modal { display: flex; flex-direction: column; width: min(100%, 560px); max-height: min(92vh, 900px); overflow: hidden; background: #fff; border-radius: 18px; box-shadow: 0 24px 80px rgb(0 0 0 / 28%); }
+.receipt-modal-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 16px 18px; border-bottom: 1px solid #e8eaf0; }
+.receipt-modal-header h3 { margin: 0; color: #182033; }
+.receipt-modal-header p { margin: 5px 0 0; font-size: 12px; }
+.receipt-preview-frame { width: 100%; min-height: 360px; flex: 1; border: 0; background: #f4f5f8; }
+.receipt-modal-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 10px; padding: 14px 18px; border-top: 1px solid #e8eaf0; margin: 0; }
+.receipt-modal-actions .primary-button, .receipt-modal-actions .secondary-button { min-height: 42px; }
+@media (max-width: 560px) {
+  .receipt-modal-backdrop { padding: 8px; }
+  .receipt-modal { max-height: 96vh; border-radius: 12px; }
+  .receipt-preview-frame { min-height: 280px; }
+  .receipt-modal-actions { flex-direction: column-reverse; }
+  .receipt-modal-actions button { width: 100%; }
+}
