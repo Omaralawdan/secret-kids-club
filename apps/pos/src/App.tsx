@@ -124,7 +124,7 @@ function buildReceiptHtml(data: ReceiptData, language: Language): string {
 }
 function readHourlyRate(json: string): number | null {
   try {
-    const value = JSON.parse(json) as { hourlyRateMinor?: unknown };
+    const value = JSON.parse(json) as { hourlyRateMinor?: unknown; overtimeRateMinor?: unknown };
     const rate = typeof value.hourlyRateMinor === "number" ? value.hourlyRateMinor : value.overtimeRateMinor;
     return typeof rate === "number" && Number.isFinite(rate) && rate > 0 ? rate : null;
   } catch {
