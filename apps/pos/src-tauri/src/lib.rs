@@ -187,18 +187,20 @@ fn checkout_transaction_with_overtime(
 
     let membership_minutes_used = if pricing_type == "membership" {
         let membership_id = membership_id.as_deref().ok_or_else(|| io::Error::other("اشتراك الطفل غير محدد."))?;
-        let membership: Option<(i64,i64,String)> = tx.query_row(
-            "SELECT included_minutes, used_minutes, status FROM local_child_memberships WHERE id=?",
+        let membership: Option<(i64,i64,String,String)> = tx.query_row(
+            "SELECT included_minutes, used_minutes, status, expires_at FROM local_child_memberships WHERE id=?",
             params![membership_id],
-            |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))
+            |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))
         ).optional()?;
-        let (total_minutes, used_minutes, status) = membership.ok_or_else(|| io::Error::other("الاشتراك غير موجود."))?;
-        if status != "active" { return Err(io::Error::other("الاشتراك غير نشط.").into()); }
-        // Expiry is validated at check-in. Do not block settlement of an active visit.
+        let (total_minutes, used_minutes, status, expires_at) = membership.ok_or_else(|| io::Error::other("الاشتراك غير موجود."))?;
+        if status == "cancelled" { return Err(io::Error::other("تم إلغاء الاشتراك.").into()); }
+        // Expiry and exhausted status never block settlement of a visit already in progress.
+        let expired = DateTime::parse_from_rfc3339(&expires_at).map(|d| d <= checkout_time).unwrap_or(true);
         let available = total_minutes.saturating_sub(used_minutes).max(0);
         let consumed = actual_minutes.min(available);
         let new_used = used_minutes.saturating_add(consumed);
-        tx.execute("UPDATE local_child_memberships SET used_minutes=?, status=CASE WHEN ?>=included_minutes THEN 'used' ELSE 'active' END WHERE id=?",params![new_used,new_used,membership_id])?;
+        let next_status = if new_used >= total_minutes { "used" } else if expired { "expired" } else { "active" };
+        tx.execute("UPDATE local_child_memberships SET used_minutes=?, status=? WHERE id=?",params![new_used,next_status,membership_id])?;
         tx.execute("INSERT INTO local_membership_usage(id,membership_id,visit_child_id,minutes_used,created_at) VALUES(?,?,?,?,?)",params![uuid::Uuid::new_v4().to_string(),membership_id,visit_child_id,consumed,checkout_time.to_rfc3339()])?;
         consumed
     } else { 0 };
