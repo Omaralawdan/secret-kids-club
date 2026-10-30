@@ -617,17 +617,30 @@ export default function App() {
     const estimatedOvertimeMinutes = Math.max(0, elapsedMinutes - child.duration_minutes);
     let overtimeCollected = true;
     let overtimeCollectionNote: string | null = null;
+    let overtimeWaived = false;
+    let overtimeWaiverReason: string | null = null;
     if (estimatedOvertimeMinutes > 0 && hourlyRate === null) {
       setError(ar ? "لا يوجد سعر ساعة محفوظ لحساب الوقت الإضافي. لا يمكن تسجيل الخروج قبل تحديد السعر." : "No hourly overtime rate is saved. Checkout cannot continue until a valid rate is available.");
       return;
     }
     if (estimatedOvertimeMinutes > 0 && hourlyRate !== null) {
-      overtimeCollected = window.confirm(ar
-        ? "هل تم تحصيل قيمة الوقت الإضافي؟ اضغط موافق لو تم التحصيل، أو إلغاء لو لم يتم التحصيل."
-        : "Was the overtime amount collected? Choose OK for collected, Cancel for not collected.");
-      if (!overtimeCollected) {
-        overtimeCollectionNote = window.prompt(ar ? "اكتب سبب عدم تحصيل الوقت الإضافي (إجباري):" : "Enter the reason overtime was not collected (required):", "")?.trim() || null;
-        if (!overtimeCollectionNote) { setError(ar ? "لازم تكتب سبب عدم التحصيل قبل تسجيل الخروج." : "A reason is required when overtime is not collected."); return; }
+      if (canManage) {
+        overtimeWaived = window.confirm(ar
+          ? "هل المدير سيعفي الطفل من قيمة الوقت الإضافي؟ موافق = إعفاء، إلغاء = متابعة التحصيل."
+          : "Manager: waive this child's overtime charge? OK = waive, Cancel = continue to collection.");
+        if (overtimeWaived) {
+          overtimeWaiverReason = window.prompt(ar ? "اكتب سبب إعفاء الوقت الإضافي (إجباري):" : "Enter the mandatory reason for waiving overtime:", "")?.trim() || null;
+          if (!overtimeWaiverReason) { setError(ar ? "سبب الإعفاء مطلوب." : "A waiver reason is required."); return; }
+        }
+      }
+      if (!overtimeWaived) {
+        overtimeCollected = window.confirm(ar
+          ? "هل تم تحصيل قيمة الوقت الإضافي؟ اضغط موافق لو تم التحصيل، أو إلغاء لو لم يتم التحصيل."
+          : "Was the overtime amount collected? Choose OK for collected, Cancel for not collected.");
+        if (!overtimeCollected) {
+          overtimeCollectionNote = window.prompt(ar ? "اكتب سبب عدم تحصيل الوقت الإضافي (إجباري):" : "Enter the reason overtime was not collected (required):", "")?.trim() || null;
+          if (!overtimeCollectionNote) { setError(ar ? "لازم تكتب سبب عدم التحصيل قبل تسجيل الخروج." : "A reason is required when overtime is not collected."); return; }
+        }
       }
     }
 
@@ -640,6 +653,8 @@ export default function App() {
         visitChildId: child.visit_child_id,
         overtimeCollected,
         overtimeCollectionNote,
+        overtimeWaived,
+        overtimeWaiverReason,
       });
 
       const receiptRows = await db.select<{
