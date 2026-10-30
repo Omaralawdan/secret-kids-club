@@ -389,8 +389,16 @@ export default function App() {
       setMemberName("");setMemberPhone("");await refreshData(db);setMessage("تم تسجيل الطفل في الباقة وتسجيل تحصيل قيمتها.");setError("")
     } catch(e){setError(String(e))}
   }
+  async function updateMembershipOvertimeRate(m:ChildMembership) {
+    const entered=window.prompt(ar?"سعر ساعة الإضافي للباقة بالجنيه:":"Membership overtime hourly rate (EGP):",(m.overtime_rate_minor/100).toFixed(2));
+    if(entered===null)return;
+    const value=Number(entered);
+    if(!Number.isFinite(value)||value<=0){setError(ar?"أدخل سعرًا أكبر من صفر.":"Enter a rate greater than zero.");return;}
+    try{await invoke("update_membership_overtime_rate",{planId:m.plan_id,overtimeRateMinor:Math.round(value*100)});if(db)await refreshData(db);setMessage(ar?"تم تحديث سعر الإضافي للباقة.":"Package overtime rate updated.");setError("")}catch(e){setError(String(e))}
+  }
   async function checkInMember(m:ChildMembership) {
     if(!db)return;
+    if(m.overtime_rate_minor<=0){setError(ar?"يجب على المدير تحديد سعر ساعة الإضافي لهذه الباقة قبل تسجيل الدخول.":"A manager must set this package's overtime rate before check-in.");return}
     const remaining=m.included_minutes-m.used_minutes;
     if(m.status!=="active"||new Date(m.expires_at)<=new Date()||remaining<=0){setError("الباقة منتهية أو لا يوجد بها وقت متبقٍ.");return}
     if(!window.confirm("تسجيل دخول "+m.child_name_snapshot+" على باقة "+m.plan_name+"؟ الوقت المتبقي: "+formatDuration(remaining,language)))return;
@@ -1071,7 +1079,7 @@ export default function App() {
               <div className="full-width"><button className="primary-button" type="submit" disabled={!membershipPlans.length}>{ar?"تسجيل الاشتراك":"Enroll"}</button></div>
             </form>
             <h4>{ar?"المشتركون وحالة الباقات":"Subscribers and package status"}</h4>
-            <div className="report-table-wrap"><table className="report-table"><thead><tr><th>{ar?"الطفل":"Child"}</th><th>{ar?"الهاتف":"Phone"}</th><th>{ar?"الباقة":"Package"}</th><th>{ar?"المستخدم / الإجمالي":"Used / included"}</th><th>{ar?"الانتهاء":"Expires"}</th><th>{ar?"الحالة":"Status"}</th><th>{ar?"إجراء":"Action"}</th></tr></thead><tbody>{memberships.map(m=>{const remaining=Math.max(0,m.included_minutes-m.used_minutes);const status=new Date(m.expires_at)<=new Date()&&m.status==="active"?"expired":m.status;return <tr key={m.id}><td>{m.child_name_snapshot}</td><td>{m.guardian_phone_snapshot}</td><td>{m.plan_name}</td><td>{formatDuration(m.used_minutes,language)} / {formatDuration(m.included_minutes,language)}<br/>{ar?"متبقي":"Remaining"}: {formatDuration(remaining,language)}</td><td>{formatDate(m.expires_at,language)}</td><td>{status!=="active"||remaining<=0 ? (ar?"انتهت الباقة — تجديد أو إلغاء":"Package ended — renew or cancel") : status}</td><td><button className="primary-button" disabled={status!=="active"||remaining<=0} onClick={()=>void checkInMember(m)}>{ar?"تسجيل دخول":"Check in"}</button></td></tr>})}</tbody></table></div>
+            <div className="report-table-wrap"><table className="report-table"><thead><tr><th>{ar?"الطفل":"Child"}</th><th>{ar?"الهاتف":"Phone"}</th><th>{ar?"الباقة":"Package"}</th><th>{ar?"المستخدم / الإجمالي":"Used / included"}</th><th>{ar?"الانتهاء":"Expires"}</th><th>{ar?"سعر ساعة الإضافي":"Overtime rate/hour"}</th><th>{ar?"الحالة":"Status"}</th><th>{ar?"إجراء":"Action"}</th></tr></thead><tbody>{memberships.map(m=>{const remaining=Math.max(0,m.included_minutes-m.used_minutes);const status=new Date(m.expires_at)<=new Date()&&m.status==="active"?"expired":m.status;return <tr key={m.id}><td>{m.child_name_snapshot}</td><td>{m.guardian_phone_snapshot}</td><td>{m.plan_name}</td><td>{formatDuration(m.used_minutes,language)} / {formatDuration(m.included_minutes,language)}<br/>{ar?"متبقي":"Remaining"}: {formatDuration(remaining,language)}</td><td>{formatDate(m.expires_at,language)}</td><td>{money(m.overtime_rate_minor,language)}</td><td>{status!=="active"||remaining<=0 ? (ar?"انتهت الباقة — تجديد أو إلغاء":"Package ended — renew or cancel") : status}</td><td><button className="secondary-button" onClick={()=>void updateMembershipOvertimeRate(m)}>{ar?"تعديل سعر الإضافي":"Edit overtime rate"}</button> <button className="primary-button" disabled={status!=="active"||remaining<=0||m.overtime_rate_minor<=0} onClick={()=>void checkInMember(m)}>{ar?"تسجيل دخول":"Check in"}</button></td></tr>})}</tbody></table></div>
           </section>
         </section>
       )}
