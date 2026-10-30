@@ -579,7 +579,7 @@ fn open_cash_shift(app:tauri::AppHandle,opening_float_minor:i64)->Result<Value,S
  Ok(json!({"id":id,"openedAt":now}))
 }
 #[tauri::command]
-fn close_cash_shift(app:tauri::AppHandle,counted_cash_minor:i64)->Result<Value,String>{
+fn close_cash_shift(app:tauri::AppHandle,counted_cash_minor:i64,variance_reason:String)->Result<Value,String>{
  if counted_cash_minor<0{return Err("النقدية المعدودة غير صحيحة.".into())}
  let mut db=auth_db(&app)?;
  let(actor,_)=require_role(&db,&["admin","manager","cashier"])?;
@@ -592,7 +592,8 @@ fn close_cash_shift(app:tauri::AppHandle,counted_cash_minor:i64)->Result<Value,S
  let refunds:i64=tx.query_row("SELECT COALESCE(SUM(amount_minor),0) FROM local_refunds WHERE cash_session_id=? AND method='cash'",params![id],|r|r.get(0)).map_err(|e|e.to_string())?;
  let expected=float.checked_add(sales).and_then(|v|v.checked_sub(expenses)).and_then(|v|v.checked_sub(refunds)).ok_or("قيمة النقدية المتوقعة تجاوزت الحد المسموح.")?;
  let variance=counted_cash_minor.checked_sub(expected).ok_or("فرق النقدية تجاوز الحد المسموح.")?;
- let changed=tx.execute("UPDATE local_cash_sessions SET closed_by=?,closed_at=?,counted_cash_minor=?,expected_cash_minor=?,variance_minor=? WHERE id=? AND closed_at IS NULL",params![actor,now,counted_cash_minor,expected,variance,id]).map_err(|e|e.to_string())?;
+ if variance != 0 && variance_reason.trim().is_empty() { return Err("يجب تسجيل سبب العجز أو الزيادة قبل إغلاق الوردية.".into()); }
+ let changed=tx.execute("UPDATE local_cash_sessions SET closed_by=?,closed_at=?,counted_cash_minor=?,expected_cash_minor=?,variance_minor=?,variance_reason=? WHERE id=? AND closed_at IS NULL",params![actor,now,counted_cash_minor,expected,variance,variance_reason.trim(),id]).map_err(|e|e.to_string())?;
  if changed!=1{return Err("تم إغلاق الوردية بالفعل أو تغيرت حالتها.".into())}
  tx.commit().map_err(|e|e.to_string())?;
  Ok(json!({"id":id,"expectedCashMinor":expected,"countedCashMinor":counted_cash_minor,"varianceMinor":variance,"closedAt":now}))
@@ -726,6 +727,7 @@ pub fn run() {
         Migration { version: 8, description: "membership_overtime_rate", sql: include_str!("../migrations/008_membership_overtime_rate.sql"), kind: MigrationKind::Up },
         Migration { version: 9, description: "waivers_and_visit_cancellations", sql: include_str!("../migrations/009_waivers_and_visit_cancellations.sql"), kind: MigrationKind::Up },
         Migration { version: 10, description: "shift_payments_expenses_refunds", sql: include_str!("../migrations/010_shift_payments_expenses_refunds.sql"), kind: MigrationKind::Up },
+        Migration { version: 11, description: "shift_variance_reason", sql: include_str!("../migrations/011_shift_variance_reason.sql"), kind: MigrationKind::Up },
     ];
 
     tauri::Builder::default()
