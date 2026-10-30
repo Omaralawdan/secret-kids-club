@@ -154,38 +154,33 @@ fn checkout_transaction_with_overtime(
     } else {
         None
     };
-    let hourly_rate = saved_hourly_rate.or(recovered_hourly_rate);
+    let membership_overtime_rate = if pricing_type == "membership" {
+        if let Some(id) = membership_id.as_deref() {
+            tx.query_row(
+                "SELECT p.overtime_rate_minor FROM local_child_memberships m JOIN local_membership_plans p ON p.id=m.plan_id WHERE m.id=?",
+                params![id],
+                |row| row.get::<_, i64>(0),
+            ).optional()?.filter(|rate| *rate > 0)
+        } else { None }
+    } else { None };
+    let hourly_rate = saved_hourly_rate.or(recovered_hourly_rate).or(membership_overtime_rate);
     if let Some(rate) = hourly_rate {
         calculation["hourlyRateMinor"] = json!(rate);
     }
 
-    if pricing_type == "hourly" && hourly_rate.is_none() {
-        return Err(io::Error::other(
-            "Hourly checkout cancelled: the saved hourly rate is missing or invalid. Check the child's pricing before trying again.",
-        )
-        .into());
+    let overtime_minutes = if booked_minutes > 0 {
+        actual_minutes.checked_sub(booked_minutes)
+            .ok_or_else(|| io::Error::other("Overtime calculation overflowed."))?.max(0)
+    } else { 0 };
+    if overtime_minutes > 0 && hourly_rate.is_none() {
+        return Err(io::Error::other("Overtime checkout cancelled: a valid manual hourly rate is required.").into());
     }
-
-    let overtime_minutes = if pricing_type == "hourly" && booked_minutes > 0 {
-        actual_minutes
-            .checked_sub(booked_minutes)
-            .ok_or_else(|| io::Error::other("Overtime calculation overflowed."))?
-            .max(0)
-    } else {
-        0
-    };
-
-    let overtime_amount = if pricing_type == "hourly" && overtime_minutes > 0 {
-        let rate = hourly_rate.ok_or_else(|| {
-            io::Error::other("Hourly rate is unavailable. Checkout was cancelled.")
-        })?;
+    let overtime_amount = if overtime_minutes > 0 {
+        let rate = hourly_rate.ok_or_else(|| io::Error::other("Overtime rate is unavailable. Checkout was cancelled."))?;
         rate.checked_mul(overtime_minutes)
             .and_then(|amount| amount.checked_add(30))
-            .ok_or_else(|| io::Error::other("Overtime amount overflowed."))?
-            / 60
-    } else {
-        0
-    };
+            .ok_or_else(|| io::Error::other("Overtime amount overflowed."))? / 60
+    } else { 0 };
 
     let membership_minutes_used = if pricing_type == "membership" {
         let membership_id = membership_id.as_deref().ok_or_else(|| io::Error::other("اشتراك الطفل غير محدد."))?;
@@ -196,8 +191,7 @@ fn checkout_transaction_with_overtime(
         ).optional()?;
         let (total_minutes, used_minutes, status) = membership.ok_or_else(|| io::Error::other("الاشتراك غير موجود."))?;
         if status != "active" { return Err(io::Error::other("الاشتراك غير نشط.").into()); }
-        let expiry: String = tx.query_row("SELECT expires_at FROM local_child_memberships WHERE id=?",params![membership_id],|r|r.get(0))?;
-        if DateTime::parse_from_rfc3339(&expiry).map(|d| d <= checkout_time).unwrap_or(true) { return Err(io::Error::other("انتهت صلاحية الباقة.").into()); }
+        // Expiry is validated at check-in. Do not block settlement of an active visit.
         let available = total_minutes.saturating_sub(used_minutes).max(0);
         let consumed = actual_minutes.min(available);
         let new_used = used_minutes.saturating_add(consumed);
@@ -207,6 +201,7 @@ fn checkout_transaction_with_overtime(
     } else { 0 };
     calculation["membershipMinutesUsed"] = json!(membership_minutes_used);
     calculation["membershipIncludedMinutesAtCheckout"] = json!(included_minutes);
+    if let Some(rate) = hourly_rate { calculation["hourlyRateMinor"] = json!(rate); }
 
     let base_final_amount = base_amount
         .checked_sub(discount_amount)
@@ -244,6 +239,7 @@ fn checkout_transaction_with_overtime(
         UPDATE local_visit_child_pricing
         SET overtime_minutes = ?,
             overtime_amount_minor = ?,
+            membership_minutes_used = ?,
             final_amount_minor = ?,
             overtime_collected = ?,
             overtime_collection_note = ?,
@@ -253,6 +249,7 @@ fn checkout_transaction_with_overtime(
         params![
             overtime_minutes,
             overtime_amount,
+            membership_minutes_used,
             final_child_amount,
             if overtime_amount == 0 || overtime_collected { 1 } else { 0 },
             if overtime_amount > 0 && !overtime_collected { overtime_collection_note.as_deref().unwrap_or("").trim() } else { "" },
@@ -591,6 +588,7 @@ pub fn run() {
         Migration { version: 5, description: "role_write_guards", sql: include_str!("../migrations/005_role_write_guards.sql"), kind: MigrationKind::Up },
         Migration { version: 6, description: "pricing_role_policy", sql: include_str!("../migrations/006_pricing_role_policy.sql"), kind: MigrationKind::Up },
         Migration { version: 7, description: "partial_collection_and_membership_sales", sql: include_str!("../migrations/007_partial_collection_and_membership_sales.sql"), kind: MigrationKind::Up },
+        Migration { version: 8, description: "membership_overtime_rate", sql: include_str!("../migrations/008_membership_overtime_rate.sql"), kind: MigrationKind::Up },
     ];
 
     tauri::Builder::default()
