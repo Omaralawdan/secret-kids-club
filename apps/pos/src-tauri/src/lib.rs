@@ -702,6 +702,14 @@ mod checkout_tests {
                 entity_type TEXT NOT NULL, entity_id TEXT, reason TEXT, before_json TEXT,
                 after_json TEXT, created_at TEXT NOT NULL
             );
+            CREATE TABLE local_session (singleton_id INTEGER PRIMARY KEY, actor_user_id TEXT);
+            INSERT INTO local_session(singleton_id,actor_user_id) VALUES(1,'test-user');
+            CREATE TABLE local_cash_sessions (id TEXT PRIMARY KEY, opened_at TEXT, closed_at TEXT);
+            INSERT INTO local_cash_sessions(id,opened_at,closed_at) VALUES('shift-test','2000-01-01T00:00:00Z',NULL);
+            CREATE TABLE local_payments (
+                id TEXT PRIMARY KEY, visit_id TEXT, method TEXT, status TEXT,
+                amount_minor INTEGER, received_by TEXT, created_at TEXT, cash_session_id TEXT
+            );
             CREATE TABLE local_visit_child_pricing (
                 id TEXT PRIMARY KEY,
                 visit_child_id TEXT NOT NULL UNIQUE,
