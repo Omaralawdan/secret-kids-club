@@ -278,6 +278,19 @@ fn checkout_transaction_with_overtime(
         )
         .into());
     }
+    if overtime_waived {
+        tx.execute(
+            "INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,reason,before_json,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'overtime_waived','visit_child',?,?,?,?,?)",
+            params![
+                actor_user_id.as_deref().unwrap_or(""),
+                visit_child_id,
+                overtime_waiver_reason.as_deref().unwrap_or("").trim(),
+                json!({"overtime_amount_minor":overtime_amount,"waived":false}).to_string(),
+                json!({"overtime_amount_minor":overtime_amount,"waived":true}).to_string(),
+                checkout_time_string
+            ],
+        )?;
+    }
 
     let remaining: i64 = tx.query_row(
         r#"
@@ -679,6 +692,11 @@ mod checkout_tests {
                 visit_id TEXT NOT NULL,
                 checked_out_at TEXT,
                 actual_duration_minutes INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE local_audit_log (
+                id TEXT PRIMARY KEY, actor_user_id TEXT NOT NULL, action TEXT NOT NULL,
+                entity_type TEXT NOT NULL, entity_id TEXT, reason TEXT, before_json TEXT,
+                after_json TEXT, created_at TEXT NOT NULL
             );
             CREATE TABLE local_visit_child_pricing (
                 id TEXT PRIMARY KEY,
