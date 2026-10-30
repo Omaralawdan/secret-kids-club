@@ -14,7 +14,7 @@ const reports: { key: ReportKey; label: string; description: string; fields: Fie
   { key: "payments", label: "التحصيلات وطرق الدفع", description: "المدفوعات المسجلة في قاعدة البيانات.", fields: [
     {key:"created_at",label:"التاريخ"},{key:"visit_number",label:"رقم الزيارة"},{key:"sale_number",label:"رقم عملية البيع"},{key:"sale_description",label:"تفاصيل البيع / الباقة"},{key:"guardian_name",label:"اسم ولي الأمر"},{key:"phone",label:"رقم التليفون"},{key:"method",label:"طريقة الدفع"},{key:"amount",label:"المبلغ"},{key:"status",label:"حالة الدفع"},{key:"received_by",label:"المستلم"},{key:"external_reference",label:"رقم مرجعي"}]},
   { key: "shifts", label: "الورديات والصندوق", description: "جلسات فتح وإغلاق الصندوق والعجز أو الزيادة.", fields: [
-    {key:"opened_at",label:"بداية الوردية"},{key:"closed_at",label:"نهاية الوردية"},{key:"opened_by",label:"فتح بواسطة"},{key:"closed_by",label:"إغلاق بواسطة"},{key:"opening_float",label:"رصيد بداية الوردية"},{key:"expected_cash",label:"النقدية المتوقعة"},{key:"counted_cash",label:"النقدية الفعلية"},{key:"variance",label:"العجز / الزيادة"}]},
+    {key:"opened_at",label:"بداية الوردية"},{key:"closed_at",label:"نهاية الوردية"},{key:"opened_by",label:"فتح بواسطة"},{key:"closed_by",label:"إغلاق بواسطة"},{key:"opening_float",label:"رصيد بداية الوردية"},{key:"expected_cash",label:"النقدية المتوقعة"},{key:"counted_cash",label:"النقدية الفعلية"},{key:"variance",label:"العجز / الزيادة"},{key:"variance_reason",label:"سبب الفرق"},{key:"cash_sales",label:"تحصيلات الكاش"},{key:"electronic_sales",label:"التحصيل الإلكتروني"},{key:"expenses",label:"المصروفات"},{key:"refunds",label:"الاستردادات"}]},
   { key: "audit", label: "سجل العمليات", description: "تغييرات البيانات والعمليات المسجلة في سجل المراجعة.", fields: [
     {key:"created_at",label:"التاريخ والوقت"},{key:"actor",label:"المستخدم"},{key:"action",label:"العملية"},{key:"entity_type",label:"نوع البيانات"},{key:"entity_id",label:"رقم السجل"},{key:"reason",label:"السبب"},{key:"before_json",label:"قبل التعديل"},{key:"after_json",label:"بعد التعديل"}]},
   { key: "users", label: "المستخدمون والصلاحيات", description: "حسابات المستخدمين والأدوار والحالة.", fields: [
@@ -27,7 +27,7 @@ const defaultFields: Record<ReportKey, string[]> = {
   visits:["visit_number","child_name","guardian_name","phone","checked_in_at","expected_checkout","checked_out_at","duration_minutes","total_amount","status"],
   customers:["guardian_name","phone","child_name","visit_count","last_visit"],
   payments:["created_at","visit_number","sale_number","sale_description","guardian_name","method","amount","status","received_by"],
-  shifts:["opened_at","closed_at","opened_by","closed_by","expected_cash","counted_cash","variance"],
+  shifts:["opened_at","closed_at","opened_by","closed_by","opening_float","cash_sales","electronic_sales","expenses","refunds","expected_cash","counted_cash","variance","variance_reason"],
   audit:["created_at","actor","action","entity_type","entity_id"],
   users:["display_name","username","role_codes_json","is_active","last_authenticated_at"],
   financials:["period","normal_entry","overtime","membership","revenue","expenses","refunds","net","operation_count","average_transaction"],
@@ -195,7 +195,7 @@ export default function ReportsCenter({ db, language, isAdmin = false, canManage
       if (sortBy === "name_asc") result.sort((a,b) => String(a.guardian_name ?? a.display_name ?? a.child_name ?? "").localeCompare(String(b.guardian_name ?? b.display_name ?? b.child_name ?? ""), "ar"));
       if (sortBy === "amount_desc") result.sort((a,b) => Number(b.total_amount ?? b.amount ?? 0)-Number(a.total_amount ?? a.amount ?? 0));
       if (sortBy === "amount_asc") result.sort((a,b) => Number(a.total_amount ?? a.amount ?? 0)-Number(b.total_amount ?? b.amount ?? 0));
-      if (groupBy !== "none") result.sort((a,b) => String(a[groupBy] ?? "").localeCompare(String(b[groupBy] ?? ""), "ar"));
+      if (groupBy !== "none" && reportKey !== "financials") result.sort((a,b) => String(a[groupBy] ?? "").localeCompare(String(b[groupBy] ?? ""), "ar"));
       setRows(result); setLoaded(true);
     } catch (e) {
       setError("تعذر إنشاء التقرير. قد تكون بعض البيانات أو الجداول غير متاحة بعد. التفاصيل: " + (e instanceof Error ? e.message : String(e)));
@@ -244,7 +244,8 @@ export default function ReportsCenter({ db, language, isAdmin = false, canManage
     if (key.endsWith("_at") || key === "last_visit" || key === "expected_checkout") return dateValue(value == null ? "" : String(value));
     if (key === "is_active") return Number(value) === 1 ? "نشط" : "متوقف";
     if (key === "overtime_collected") return Number(value) === 1 ? "تم التحصيل" : "لم يتم التحصيل";
-    if (["base_amount","discount_amount","overtime_amount","total_amount","amount","opening_float","expected_cash","counted_cash","variance"].includes(key) && value !== null && value !== undefined) return Number(value).toLocaleString("ar-EG",{style:"currency",currency:"EGP"});
+    if (key === "overtime_waived") return Number(value) === 1 ? "تم الإعفاء" : "لا";
+    if (["base_amount","discount_amount","overtime_amount","total_amount","amount","opening_float","expected_cash","counted_cash","variance","cash_sales","electronic_sales","expenses","refunds","normal_entry","overtime","membership","revenue","net","average_transaction"].includes(key) && value !== null && value !== undefined) return Number(value).toLocaleString("ar-EG",{style:"currency",currency:"EGP"});
     if (key === "method" || key === "payment_method") return ({cash:"كاش",instapay:"إنستاباي",wallet:"محفظة إلكترونية"} as Record<string,string>)[String(value)] ?? String(value ?? "");
     if (key === "status") return ({active:"نشطة",completed:"مكتملة",cancelled:"ملغاة",confirmed:"تم التحصيل",pending:"معلقة",failed:"فشلت",refunded:"مستردة"} as Record<string,string>)[String(value)] ?? String(value ?? "");
     return String(value ?? "—");
@@ -258,7 +259,7 @@ export default function ReportsCenter({ db, language, isAdmin = false, canManage
       <label>من تاريخ<input type="date" value={startDate} onChange={e=>setStartDate(e.target.value)}/></label>
       <label>إلى تاريخ<input type="date" value={endDate} onChange={e=>setEndDate(e.target.value)}/></label>
       <label>بحث داخل النتائج<input value={search} onChange={e=>setSearch(e.target.value)} placeholder="اسم، تليفون، أو كلمة..."/></label>
-      <label>تجميع حسب<select value={groupBy} onChange={e=>setGroupBy(e.target.value)}><option value="none">بدون تجميع</option><option value="guardian_name">ولي الأمر</option><option value="child_name">الطفل</option><option value="method">طريقة الدفع</option><option value="status">الحالة</option><option value="actor">المستخدم</option></select></label>
+      <label>تجميع حسب<select value={groupBy} onChange={e=>setGroupBy(e.target.value)}><option value="none">بدون تجميع</option><option value="guardian_name">ولي الأمر</option><option value="child_name">الطفل</option><option value="method">طريقة الدفع</option><option value="status">الحالة</option><option value="actor">المستخدم</option><option value="month">شهري</option></select></label>
       <label>ترتيب النتائج<select value={sortBy} onChange={e=>setSortBy(e.target.value)}><option value="date_desc">الأحدث أولًا</option><option value="name_asc">الاسم أبجديًا</option><option value="amount_desc">المبلغ الأكبر أولًا</option><option value="amount_asc">المبلغ الأصغر أولًا</option></select></label>
     </div>
     <div className="report-field-panel"><div className="report-field-title"><strong>الأعمدة المطلوبة</strong><div><button type="button" className="secondary-button" onClick={()=>setSelectedFields(current.fields.map(f=>f.key))}>تحديد الكل</button><button type="button" className="secondary-button" onClick={()=>setSelectedFields([])}>مسح الاختيار</button></div></div>
