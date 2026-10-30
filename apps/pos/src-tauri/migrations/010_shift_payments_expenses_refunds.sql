@@ -1,6 +1,16 @@
 -- Explicitly attribute every payment to the cash session that received it.
 ALTER TABLE local_payments ADD COLUMN cash_session_id TEXT REFERENCES local_cash_sessions(id);
 
+-- Backfill historical payments to the session that was open when they were recorded.
+UPDATE local_payments
+SET cash_session_id = (
+  SELECT s.id FROM local_cash_sessions s
+  WHERE s.opened_at <= local_payments.created_at
+    AND (s.closed_at IS NULL OR s.closed_at >= local_payments.created_at)
+  ORDER BY s.opened_at DESC LIMIT 1
+)
+WHERE cash_session_id IS NULL;
+
 CREATE INDEX IF NOT EXISTS local_payments_cash_session_idx
 ON local_payments(cash_session_id, method, status, created_at);
 
