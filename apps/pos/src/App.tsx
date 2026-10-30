@@ -379,10 +379,13 @@ export default function App() {
       const cashierRows=await db.select<{id:string}[]>("SELECT actor_user_id AS id FROM local_session WHERE singleton_id=1");
       const cashierId=cashierRows[0]?.id;
       if(!cashierId) throw new Error("يجب تسجيل الدخول قبل تسجيل بيع الباقة.");
+      const shiftRows=await db.select<{id:string}[]>("SELECT id FROM local_cash_sessions WHERE closed_at IS NULL ORDER BY opened_at DESC LIMIT 1");
+      const cashSessionId=shiftRows[0]?.id;
+      if(!cashSessionId) throw new Error("افتح وردية قبل تسجيل تحصيل الباقة.");
       await db.execute("INSERT INTO local_sales(id,sale_number_local,visit_id,status,subtotal_minor,discount_minor,total_minor,cashier_user_id,created_at,sync_state) VALUES(?, ?, NULL,'completed',?,0,?,?,?,'pending')",[saleId,saleNo,plan.price_minor,plan.price_minor,cashierId,purchased.toISOString()]);
       await db.execute("INSERT INTO local_sale_items(id,sale_id,item_type,inventory_item_id,description_snapshot,quantity_milli,unit_price_minor,line_total_minor) VALUES(?, ?, 'other', NULL, ?,1000,?,?)",[makeId(),saleId,"Membership package: "+plan.name+" - "+memberName.trim(),plan.price_minor,plan.price_minor]);
       await db.execute("INSERT INTO local_child_memberships(id,child_id,child_name_snapshot,guardian_phone_snapshot,plan_id,purchased_at,starts_at,expires_at,included_minutes,used_minutes,status,sync_state) VALUES(?,NULL,?,?,?,?,?,?,?,0,'active','pending')",[membershipId,memberName.trim(),memberPhone.trim(),plan.id,purchased.toISOString(),purchased.toISOString(),expires.toISOString(),plan.included_minutes]);
-      await db.execute("INSERT INTO local_payments(id,sale_id,visit_id,method,status,amount_minor,received_by,created_at,sync_state) VALUES(?,?,NULL,?,'confirmed',?,?,?,'pending')",[makeId(),saleId,memberPaymentMethod,plan.price_minor,cashierId,purchased.toISOString()]);
+      await db.execute("INSERT INTO local_payments(id,sale_id,visit_id,method,status,amount_minor,received_by,created_at,sync_state,cash_session_id) VALUES(?,?,NULL,?,'confirmed',?,?,?,'pending',?)",[makeId(),saleId,memberPaymentMethod,plan.price_minor,cashierId,purchased.toISOString(),cashSessionId]);
       setMemberName("");setMemberPhone("");await refreshData(db);setMessage("تم تسجيل الطفل في الباقة وتسجيل تحصيل قيمتها.");setError("")
     } catch(e){setError(String(e))}
   }
