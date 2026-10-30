@@ -32,7 +32,7 @@ fn database_path(app: &tauri::AppHandle) -> Result<PathBuf, Box<dyn Error>> {
 }
 
 fn checkout_transaction(path: &Path, visit_child_id: &str) -> Result<(), Box<dyn Error>> {
-    checkout_transaction_with_overtime(path, visit_child_id, true, None)
+    checkout_transaction_with_overtime(path, visit_child_id, true, None, false, None, None)
 }
 
 fn checkout_transaction_with_overtime(
@@ -40,6 +40,9 @@ fn checkout_transaction_with_overtime(
     visit_child_id: &str,
     overtime_collected: bool,
     overtime_collection_note: Option<String>,
+    overtime_waived: bool,
+    overtime_waiver_reason: Option<String>,
+    actor_user_id: Option<String>,
 ) -> Result<(), Box<dyn Error>> {
     let mut connection = Connection::open_with_flags(
         path,
@@ -207,8 +210,9 @@ fn checkout_transaction_with_overtime(
         .checked_sub(discount_amount)
         .ok_or_else(|| io::Error::other("Base price calculation overflowed."))?
         .max(0);
+    let charged_overtime_amount = if overtime_waived { 0 } else { overtime_amount };
     let final_child_amount = base_final_amount
-        .checked_add(overtime_amount)
+        .checked_add(charged_overtime_amount)
         .ok_or_else(|| io::Error::other("Final child price overflowed."))?;
     let checkout_time_string =
         checkout_time.to_rfc3339_opts(SecondsFormat::Millis, true);
@@ -216,6 +220,8 @@ fn checkout_transaction_with_overtime(
     calculation["actualDurationMinutes"] = json!(actual_minutes);
     calculation["overtimeMinutes"] = json!(overtime_minutes);
     calculation["overtimeAmountMinor"] = json!(overtime_amount);
+    calculation["overtimeWaived"] = json!(overtime_waived);
+    calculation["overtimeWaiverReason"] = json!(overtime_waiver_reason.as_deref().unwrap_or(""));
     calculation["checkoutCalculatedAt"] = json!(checkout_time_string);
 
     let child_update = tx.execute(
@@ -243,6 +249,10 @@ fn checkout_transaction_with_overtime(
             final_amount_minor = ?,
             overtime_collected = ?,
             overtime_collection_note = ?,
+            overtime_waived = ?,
+            overtime_waived_by = ?,
+            overtime_waived_at = ?,
+            overtime_waiver_reason = ?,
             calculation_json = ?
         WHERE visit_child_id = ?
         "#,
@@ -251,8 +261,12 @@ fn checkout_transaction_with_overtime(
             overtime_amount,
             membership_minutes_used,
             final_child_amount,
-            if overtime_amount == 0 || overtime_collected { 1 } else { 0 },
-            if overtime_amount > 0 && !overtime_collected { overtime_collection_note.as_deref().unwrap_or("").trim() } else { "" },
+            if overtime_amount == 0 || overtime_collected || overtime_waived { 1 } else { 0 },
+            if overtime_amount > 0 && !overtime_collected && !overtime_waived { overtime_collection_note.as_deref().unwrap_or("").trim() } else { "" },
+            if overtime_waived { 1 } else { 0 },
+            if overtime_waived { actor_user_id.as_deref().unwrap_or("") } else { "" },
+            if overtime_waived { checkout_time_string.as_str() } else { "" },
+            if overtime_waived { overtime_waiver_reason.as_deref().unwrap_or("").trim() } else { "" },
             serde_json::to_string(&calculation)?,
             visit_child_id
         ],
@@ -332,19 +346,21 @@ fn checkout_child(
     visit_child_id: String,
     overtime_collected: bool,
     overtime_collection_note: Option<String>,
+    overtime_waived: bool,
+    overtime_waiver_reason: Option<String>,
 ) -> Result<(), String> {
     if visit_child_id.trim().is_empty() {
         return Err("Missing child visit ID.".to_string());
     }
 
-    if !overtime_collected && overtime_collection_note.as_deref().unwrap_or("").trim().is_empty() { return Err("يجب تسجيل سبب عدم تحصيل الوقت الإضافي.".into()); }
-    // Authorize the operation in the command layer as well as through database guards.
+    if !overtime_collected && overtime_collection_note.as_deref().unwrap_or("").trim().is_empty() && !overtime_waived { return Err("يجب تسجيل سبب عدم تحصيل الوقت الإضافي.".into()); }
+    if overtime_waived && overtime_waiver_reason.as_deref().unwrap_or("").trim().is_empty() { return Err("يجب تسجيل سبب إعفاء الوقت الإضافي.".into()); }
     let db = auth_db(&app)?;
-    require_role(&db, &["admin", "manager", "cashier"])?;
+    let (actor, _) = if overtime_waived { require_role(&db, &["admin", "manager"])? } else { require_role(&db, &["admin", "manager", "cashier"])? };
     drop(db);
 
     let path = database_path(&app).map_err(|error| error.to_string())?;
-    checkout_transaction_with_overtime(&path, &visit_child_id, overtime_collected, overtime_collection_note).map_err(|error| error.to_string())
+    checkout_transaction_with_overtime(&path, &visit_child_id, overtime_collected, overtime_collection_note, overtime_waived, overtime_waiver_reason, Some(actor)).map_err(|error| error.to_string())
 }
 
 
@@ -589,6 +605,7 @@ pub fn run() {
         Migration { version: 6, description: "pricing_role_policy", sql: include_str!("../migrations/006_pricing_role_policy.sql"), kind: MigrationKind::Up },
         Migration { version: 7, description: "partial_collection_and_membership_sales", sql: include_str!("../migrations/007_partial_collection_and_membership_sales.sql"), kind: MigrationKind::Up },
         Migration { version: 8, description: "membership_overtime_rate", sql: include_str!("../migrations/008_membership_overtime_rate.sql"), kind: MigrationKind::Up },
+        Migration { version: 9, description: "waivers_and_visit_cancellations", sql: include_str!("../migrations/009_waivers_and_visit_cancellations.sql"), kind: MigrationKind::Up },
     ];
 
     tauri::Builder::default()
@@ -653,6 +670,10 @@ mod checkout_tests {
                 overtime_collected INTEGER NOT NULL DEFAULT 1,
                 overtime_collection_note TEXT,
                 membership_minutes_used INTEGER NOT NULL DEFAULT 0,
+                overtime_waived INTEGER NOT NULL DEFAULT 0,
+                overtime_waived_by TEXT,
+                overtime_waived_at TEXT,
+                overtime_waiver_reason TEXT,
                 final_amount_minor INTEGER NOT NULL DEFAULT 0
             );
             "
