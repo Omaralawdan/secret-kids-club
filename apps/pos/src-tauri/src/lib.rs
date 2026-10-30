@@ -652,6 +652,7 @@ mod checkout_tests {
                 overtime_amount_minor INTEGER NOT NULL DEFAULT 0,
                 overtime_collected INTEGER NOT NULL DEFAULT 1,
                 overtime_collection_note TEXT,
+                membership_minutes_used INTEGER NOT NULL DEFAULT 0,
                 final_amount_minor INTEGER NOT NULL DEFAULT 0
             );
             "
