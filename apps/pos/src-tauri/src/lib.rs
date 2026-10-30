@@ -658,9 +658,6 @@ fn record_refund(app: tauri::AppHandle, payment_id: String, amount_minor: i64, r
     let id = uuid::Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
     tx.execute("INSERT INTO local_refunds(id,payment_id,cash_session_id,amount_minor,reason,method,refunded_by,created_at) VALUES(?,?,?,?,?,?,?,?)",params![id,payment_id,shift_id,amount_minor,reason.trim(),method,actor,now]).map_err(|e|e.to_string())?;
-    if new_total == original_amount {
-        tx.execute("UPDATE local_payments SET status='refunded' WHERE id=?",params![payment_id]).map_err(|e|e.to_string())?;
-    }
     if let Some(sale_id) = sale_id {
         let sale_status = if new_total == original_amount { "refunded" } else { "partially_refunded" };
         tx.execute("UPDATE local_sales SET status=? WHERE id=?",params![sale_status,sale_id]).map_err(|e|e.to_string())?;
