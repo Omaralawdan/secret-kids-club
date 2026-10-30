@@ -604,6 +604,20 @@ fn admin_audit_log(app:tauri::AppHandle,limit:i64)->Result<Vec<Value>,String>{
 }
 
 #[tauri::command]
+fn update_membership_overtime_rate(app: tauri::AppHandle, plan_id: String, overtime_rate_minor: i64) -> Result<(), String> {
+    if plan_id.trim().is_empty() || overtime_rate_minor <= 0 { return Err("أدخل سعر ساعة إضافي صحيحًا.".into()); }
+    let mut db = auth_db(&app)?;
+    let (actor, _) = require_role(&db, &["admin"])?;
+    let now = Utc::now().to_rfc3339();
+    let tx = db.transaction().map_err(|e| e.to_string())?;
+    let previous: i64 = tx.query_row("SELECT overtime_rate_minor FROM local_membership_plans WHERE id=?",params![plan_id],|r|r.get(0)).map_err(|_| "الباقة غير موجودة.".to_string())?;
+    tx.execute("UPDATE local_membership_plans SET overtime_rate_minor=? WHERE id=?",params![overtime_rate_minor,plan_id]).map_err(|e|e.to_string())?;
+    tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,reason,before_json,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'membership_overtime_rate_changed','membership_plan',?, 'تحديث سعر ساعة الإضافي',?,?,?)",params![actor,plan_id,json!({"overtime_rate_minor":previous}).to_string(),json!({"overtime_rate_minor":overtime_rate_minor}).to_string(),now]).map_err(|e|e.to_string())?;
+    tx.commit().map_err(|e|e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 fn list_refundable_payments(app: tauri::AppHandle) -> Result<Vec<Value>, String> {
     let db = auth_db(&app)?;
     require_role(&db, &["admin", "manager", "cashier"])?;
@@ -737,7 +751,7 @@ pub fn run() {
                 .add_migrations("sqlite:secret-kids-club.db", migrations)
                 .build(),
         )
-        .invoke_handler(tauri::generate_handler![greet, checkout_child, cancel_visit, list_refundable_payments, record_expense, record_refund, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_create_user, admin_set_user_active, admin_reset_user_password, admin_update_user_role, admin_delete_user, delete_pricing_rule, create_pricing_rule, get_active_cash_shift, open_cash_shift, close_cash_shift, admin_audit_log])
+        .invoke_handler(tauri::generate_handler![greet, checkout_child, cancel_visit, update_membership_overtime_rate, list_refundable_payments, record_expense, record_refund, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_create_user, admin_set_user_active, admin_reset_user_password, admin_update_user_role, admin_delete_user, delete_pricing_rule, create_pricing_rule, get_active_cash_shift, open_cash_shift, close_cash_shift, admin_audit_log])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
