@@ -709,6 +709,19 @@ export default function App() {
     }
   }
 
+  async function cancelVisit(visitId: string, childName: string) {
+    if (!db || !canOperate) return;
+    if (!window.confirm(ar ? "سيتم إلغاء الزيارة بالكامل مع الاحتفاظ بسجلها والمدفوعات. هل تريد المتابعة؟" : "This will cancel the entire visit while retaining its history and payments. Continue?")) return;
+    const reason = window.prompt(ar ? "اكتب سبب إلغاء الزيارة (إجباري):" : "Enter the mandatory visit cancellation reason:", "")?.trim();
+    if (!reason) { setError(ar ? "سبب الإلغاء مطلوب." : "A cancellation reason is required."); return; }
+    try {
+      await invoke("cancel_visit", { visitId, reason });
+      await refreshData(db);
+      setMessage(ar ? "تم إلغاء الزيارة مع الاحتفاظ بسجلها." : "Visit cancelled; its history and payments were retained.");
+      setError("");
+    } catch (e) { setError(String(e)); }
+  }
+
   return (
     <main className="app-shell" style={{ zoom: Number(fontScale) || 1 }}>
       <header className="topbar">
@@ -890,6 +903,9 @@ export default function App() {
                       {checkoutId === child.visit_child_id
                         ? (ar ? "جارٍ الخروج..." : "Checking out...")
                         : (ar ? "تسجيل الخروج" : "Check out")}
+                    </button>
+                    <button type="button" className="remove-button" disabled={!ready || checkoutId !== ""} onClick={() => void cancelVisit(child.visit_id, child.child_name)}>
+                      {ar ? "إلغاء الزيارة" : "Cancel visit"}
                     </button>
                   </article>
                 );
