@@ -674,7 +674,9 @@ fn record_refund(app: tauri::AppHandle, payment_id: String, amount_minor: i64, r
     let now = Utc::now().to_rfc3339();
     tx.execute("INSERT INTO local_refunds(id,payment_id,cash_session_id,amount_minor,reason,method,refunded_by,created_at) VALUES(?,?,?,?,?,?,?,?)",params![id,payment_id,shift_id,amount_minor,reason.trim(),method,actor,now]).map_err(|e|e.to_string())?;
     if let Some(sale_id) = sale_id {
-        let sale_status = if new_total == original_amount { "refunded" } else { "partially_refunded" };
+        let paid_total:i64 = tx.query_row("SELECT COALESCE(SUM(amount_minor),0) FROM local_payments WHERE sale_id=? AND status IN ('confirmed','refunded')",params![sale_id],|r|r.get(0)).map_err(|e|e.to_string())?;
+        let refunded_total:i64 = tx.query_row("SELECT COALESCE(SUM(r.amount_minor),0) FROM local_refunds r JOIN local_payments p ON p.id=r.payment_id WHERE p.sale_id=?",params![sale_id],|r|r.get(0)).map_err(|e|e.to_string())?;
+        let sale_status = if refunded_total >= paid_total && paid_total > 0 { "refunded" } else if refunded_total > 0 { "partially_refunded" } else { "completed" };
         tx.execute("UPDATE local_sales SET status=? WHERE id=?",params![sale_status,sale_id]).map_err(|e|e.to_string())?;
     }
     tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,reason,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'refund_recorded','refund',?,?,?,?)",params![actor,id,reason.trim(),json!({"payment_id":payment_id,"amount_minor":amount_minor,"method":method,"cash_session_id":shift_id}).to_string(),now]).map_err(|e|e.to_string())?;
