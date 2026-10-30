@@ -125,11 +125,8 @@ function buildReceiptHtml(data: ReceiptData, language: Language): string {
 function readHourlyRate(json: string): number | null {
   try {
     const value = JSON.parse(json) as { hourlyRateMinor?: unknown };
-    return typeof value.hourlyRateMinor === "number" &&
-      Number.isFinite(value.hourlyRateMinor) &&
-      value.hourlyRateMinor >= 0
-      ? value.hourlyRateMinor
-      : null;
+    const rate = typeof value.hourlyRateMinor === "number" ? value.hourlyRateMinor : value.overtimeRateMinor;
+    return typeof rate === "number" && Number.isFinite(rate) && rate > 0 ? rate : null;
   } catch {
     return null;
   }
@@ -555,10 +552,7 @@ export default function App() {
               initialEstimate: selectedRule.pricing_type === "hourly",
               paymentMethod,
               bookedDurationMinutes: bookedMinutes,
-              hourlyRateMinor:
-                selectedRule.pricing_type === "hourly"
-                  ? (row.child.hourlyRateMinor ?? selectedRule.amount_minor)
-                  : null,
+              hourlyRateMinor: row.child.hourlyRateMinor,
             }),
             timestamp,
           ]
@@ -623,6 +617,10 @@ export default function App() {
     const estimatedOvertimeMinutes = Math.max(0, elapsedMinutes - child.duration_minutes);
     let overtimeCollected = true;
     let overtimeCollectionNote: string | null = null;
+    if (estimatedOvertimeMinutes > 0 && hourlyRate === null) {
+      setError(ar ? "لا يوجد سعر ساعة محفوظ لحساب الوقت الإضافي. لا يمكن تسجيل الخروج قبل تحديد السعر." : "No hourly overtime rate is saved. Checkout cannot continue until a valid rate is available.");
+      return;
+    }
     if (estimatedOvertimeMinutes > 0 && hourlyRate !== null) {
       overtimeCollected = window.confirm(ar
         ? "هل تم تحصيل قيمة الوقت الإضافي؟ اضغط موافق لو تم التحصيل، أو إلغاء لو لم يتم التحصيل."
