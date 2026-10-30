@@ -603,6 +603,74 @@ fn admin_audit_log(app:tauri::AppHandle,limit:i64)->Result<Vec<Value>,String>{
 }
 
 #[tauri::command]
+fn list_refundable_payments(app: tauri::AppHandle) -> Result<Vec<Value>, String> {
+    let db = auth_db(&app)?;
+    require_role(&db, &["admin", "manager", "cashier"])?;
+    let mut statement = db.prepare(
+        "SELECT p.id,p.amount_minor,p.method,p.created_at,p.visit_id,p.sale_id,
+          COALESCE(v.visit_number_local,0),COALESCE(s.sale_number_local,0),
+          p.amount_minor-COALESCE((SELECT SUM(r.amount_minor) FROM local_refunds r WHERE r.payment_id=p.id),0)
+         FROM local_payments p
+         LEFT JOIN local_visits v ON v.id=p.visit_id
+         LEFT JOIN local_sales s ON s.id=p.sale_id
+         WHERE p.status='confirmed' AND p.amount_minor>COALESCE((SELECT SUM(r.amount_minor) FROM local_refunds r WHERE r.payment_id=p.id),0)
+         ORDER BY p.created_at DESC LIMIT 200"
+    ).map_err(|e| e.to_string())?;
+    let rows = statement.query_map([], |row| Ok(json!({
+        "id":row.get::<_,String>(0)?,"amountMinor":row.get::<_,i64>(1)?,"method":row.get::<_,String>(2)?,
+        "createdAt":row.get::<_,String>(3)?,"visitId":row.get::<_,Option<String>>(4)?,"saleId":row.get::<_,Option<String>>(5)?,
+        "visitNumber":row.get::<_,i64>(6)?,"saleNumber":row.get::<_,i64>(7)?,"refundableMinor":row.get::<_,i64>(8)?
+    }))).map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>,_>>().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn record_expense(app: tauri::AppHandle, amount_minor: i64, category: String, reason: String, method: String) -> Result<(), String> {
+    if amount_minor <= 0 || category.trim().is_empty() || reason.trim().is_empty() { return Err("أدخل مبلغًا صحيحًا وتصنيفًا وسببًا للمصروف.".into()); }
+    if !["cash","instapay","wallet"].contains(&method.as_str()) { return Err("طريقة الدفع غير صحيحة.".into()); }
+    let mut db = auth_db(&app)?;
+    let (actor, _) = require_role(&db, &["admin","manager","cashier"])?;
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
+    let shift_id: String = tx.query_row("SELECT id FROM local_cash_sessions WHERE closed_at IS NULL ORDER BY opened_at DESC LIMIT 1",[],|r|r.get(0)).optional().map_err(|e|e.to_string())?.ok_or("افتح وردية قبل تسجيل المصروف.")?;
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
+    tx.execute("INSERT INTO local_expenses(id,cash_session_id,amount_minor,category,reason,method,created_by,created_at) VALUES(?,?,?,?,?,?,?,?)",params![id,shift_id,amount_minor,category.trim(),reason.trim(),method,actor,now]).map_err(|e|e.to_string())?;
+    tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,reason,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'expense_recorded','expense',?,?,?,?)",params![actor,id,reason.trim(),json!({"amount_minor":amount_minor,"category":category,"method":method,"cash_session_id":shift_id}).to_string(),now]).map_err(|e|e.to_string())?;
+    tx.commit().map_err(|e|e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn record_refund(app: tauri::AppHandle, payment_id: String, amount_minor: i64, reason: String) -> Result<(), String> {
+    if payment_id.trim().is_empty() || amount_minor <= 0 || reason.trim().is_empty() { return Err("اختر عملية أصلية وأدخل مبلغ الاسترداد وسببه.".into()); }
+    let mut db = auth_db(&app)?;
+    let (actor, _) = require_role(&db, &["admin","manager","cashier"])?;
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
+    let original: Option<(i64,String,Option<String>)> = tx.query_row(
+        "SELECT amount_minor,method,sale_id FROM local_payments WHERE id=? AND status='confirmed'",
+        params![payment_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))
+    ).optional().map_err(|e|e.to_string())?;
+    let (original_amount,method,sale_id) = original.ok_or("عملية التحصيل الأصلية غير متاحة للاسترداد.")?;
+    let refunded: i64 = tx.query_row("SELECT COALESCE(SUM(amount_minor),0) FROM local_refunds WHERE payment_id=?",params![payment_id],|r|r.get(0)).map_err(|e|e.to_string())?;
+    let new_total = refunded.checked_add(amount_minor).ok_or("مبلغ الاسترداد تجاوز الحد المسموح.")?;
+    if new_total > original_amount { return Err("مبلغ الاسترداد أكبر من المبلغ المتبقي من العملية الأصلية.".into()); }
+    let shift_id: String = tx.query_row("SELECT id FROM local_cash_sessions WHERE closed_at IS NULL ORDER BY opened_at DESC LIMIT 1",[],|r|r.get(0)).optional().map_err(|e|e.to_string())?.ok_or("افتح وردية قبل تسجيل الاسترداد.")?;
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
+    tx.execute("INSERT INTO local_refunds(id,payment_id,cash_session_id,amount_minor,reason,method,refunded_by,created_at) VALUES(?,?,?,?,?,?,?,?)",params![id,payment_id,shift_id,amount_minor,reason.trim(),method,actor,now]).map_err(|e|e.to_string())?;
+    if new_total == original_amount {
+        tx.execute("UPDATE local_payments SET status='refunded' WHERE id=?",params![payment_id]).map_err(|e|e.to_string())?;
+    }
+    if let Some(sale_id) = sale_id {
+        let sale_status = if new_total == original_amount { "refunded" } else { "partially_refunded" };
+        tx.execute("UPDATE local_sales SET status=? WHERE id=?",params![sale_status,sale_id]).map_err(|e|e.to_string())?;
+    }
+    tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,reason,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'refund_recorded','refund',?,?,?,?)",params![actor,id,reason.trim(),json!({"payment_id":payment_id,"amount_minor":amount_minor,"method":method,"cash_session_id":shift_id}).to_string(),now]).map_err(|e|e.to_string())?;
+    tx.commit().map_err(|e|e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 fn cancel_visit(app: tauri::AppHandle, visit_id: String, reason: String) -> Result<(), String> {
     if visit_id.trim().is_empty() { return Err("رقم الزيارة غير صالح.".into()); }
     if reason.trim().is_empty() { return Err("يجب تسجيل سبب إلغاء الزيارة.".into()); }
@@ -670,7 +738,7 @@ pub fn run() {
                 .add_migrations("sqlite:secret-kids-club.db", migrations)
                 .build(),
         )
-        .invoke_handler(tauri::generate_handler![greet, checkout_child, cancel_visit, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_create_user, admin_set_user_active, admin_reset_user_password, admin_update_user_role, admin_delete_user, delete_pricing_rule, create_pricing_rule, get_active_cash_shift, open_cash_shift, close_cash_shift, admin_audit_log])
+        .invoke_handler(tauri::generate_handler![greet, checkout_child, cancel_visit, list_refundable_payments, record_expense, record_refund, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_create_user, admin_set_user_active, admin_reset_user_password, admin_update_user_role, admin_delete_user, delete_pricing_rule, create_pricing_rule, get_active_cash_shift, open_cash_shift, close_cash_shift, admin_audit_log])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
