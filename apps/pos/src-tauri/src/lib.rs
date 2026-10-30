@@ -338,12 +338,15 @@ fn checkout_transaction_with_overtime(
             "SELECT COALESCE(SUM(MAX(0, p.final_amount_minor - CASE WHEN p.overtime_collected=0 THEN p.overtime_amount_minor ELSE 0 END)),0) FROM local_visit_child_pricing p JOIN local_visit_children vc ON vc.id=p.visit_child_id WHERE vc.visit_id=?",
             params![visit_id], |row| row.get(0)
         )?;
-        let has_session_table: i64 = tx.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='local_session'", [], |row| row.get(0))?;
-        if collected_total > 0 && has_session_table > 0 {
+        if collected_total > 0 {
             let actor: String = tx.query_row("SELECT COALESCE(actor_user_id,'system') FROM local_session WHERE singleton_id=1", [], |row| row.get(0))?;
+            let shift_id: String = tx.query_row(
+                "SELECT id FROM local_cash_sessions WHERE closed_at IS NULL ORDER BY opened_at DESC LIMIT 1",
+                [], |row| row.get(0)
+            ).optional()?.ok_or_else(|| io::Error::other("افتح وردية قبل تسجيل أي تحصيل."))?;
             tx.execute(
-                "INSERT INTO local_payments(id,visit_id,method,status,amount_minor,received_by,created_at) VALUES(lower(hex(randomblob(16))),? ,?,'confirmed',?,?,?)",
-                params![visit_id, payment_method, collected_total, actor, checkout_time_string],
+                "INSERT INTO local_payments(id,visit_id,method,status,amount_minor,received_by,created_at,cash_session_id) VALUES(lower(hex(randomblob(16))),? ,?,'confirmed',?,?,?,?)",
+                params![visit_id, payment_method, collected_total, actor, checkout_time_string, shift_id],
             )?;
         }
     }
@@ -645,6 +648,7 @@ pub fn run() {
         Migration { version: 7, description: "partial_collection_and_membership_sales", sql: include_str!("../migrations/007_partial_collection_and_membership_sales.sql"), kind: MigrationKind::Up },
         Migration { version: 8, description: "membership_overtime_rate", sql: include_str!("../migrations/008_membership_overtime_rate.sql"), kind: MigrationKind::Up },
         Migration { version: 9, description: "waivers_and_visit_cancellations", sql: include_str!("../migrations/009_waivers_and_visit_cancellations.sql"), kind: MigrationKind::Up },
+        Migration { version: 10, description: "shift_payments_expenses_refunds", sql: include_str!("../migrations/010_shift_payments_expenses_refunds.sql"), kind: MigrationKind::Up },
     ];
 
     tauri::Builder::default()
