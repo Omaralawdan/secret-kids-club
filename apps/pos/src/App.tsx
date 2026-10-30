@@ -894,6 +894,8 @@ export default function App() {
                       <strong>{booked > 0 ? formatDuration(booked, language) : (ar ? "غير محددة" : "Not recorded")}</strong>
                       <span>{ar ? "المدة الفعلية" : "Elapsed time"}</span>
                       <strong>{formatDuration(actual, language)}</strong>
+                      <span>{ar ? "مدة الوقت الإضافي" : "Overtime duration"}</span>
+                      <strong>{formatDuration(estimatedOvertime, language)}</strong>
                     </div>
                     <div className="child-price">
                       <span>{ar ? "السعر الأساسي" : "Base price"}</span>
