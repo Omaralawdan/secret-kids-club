@@ -549,8 +549,18 @@ fn get_active_cash_shift(app: tauri::AppHandle) -> Result<Value, String> {
     let db = auth_db(&app)?;
     require_role(&db, &["admin", "manager", "cashier"])?;
     let shift: Option<Value> = db.query_row(
-        "SELECT s.id, s.opening_float_minor, s.opened_at, COALESCE(u.display_name, s.opened_by), COALESCE((SELECT SUM(p.amount_minor) FROM local_payments p WHERE p.method='cash' AND p.status='confirmed' AND p.created_at >= s.opened_at AND p.created_at <= strftime('%Y-%m-%dT%H:%M:%fZ','now')), 0) FROM local_cash_sessions s LEFT JOIN local_users u ON u.id=s.opened_by WHERE s.closed_at IS NULL ORDER BY s.opened_at DESC LIMIT 1",
-        [], |row| { let opening: i64 = row.get(1)?; let sales: i64 = row.get(4)?; Ok(json!({"id":row.get::<_,String>(0)?,"openingFloatMinor":opening,"openedAt":row.get::<_,String>(2)?,"openedBy":row.get::<_,String>(3)?,"cashSalesMinor":sales,"expectedCashMinor":opening.saturating_add(sales)})) }
+        "SELECT s.id,s.opening_float_minor,s.opened_at,COALESCE(u.display_name,s.opened_by),
+          COALESCE((SELECT SUM(p.amount_minor) FROM local_payments p WHERE p.cash_session_id=s.id AND p.method='cash' AND p.status='confirmed'),0),
+          COALESCE((SELECT SUM(p.amount_minor) FROM local_payments p WHERE p.cash_session_id=s.id AND p.method<>'cash' AND p.status='confirmed'),0),
+          COALESCE((SELECT SUM(e.amount_minor) FROM local_expenses e WHERE e.cash_session_id=s.id AND e.method='cash'),0),
+          COALESCE((SELECT SUM(r.amount_minor) FROM local_refunds r WHERE r.cash_session_id=s.id AND r.method='cash'),0)
+         FROM local_cash_sessions s LEFT JOIN local_users u ON u.id=s.opened_by
+         WHERE s.closed_at IS NULL ORDER BY s.opened_at DESC LIMIT 1",
+        [], |row| {
+            let opening:i64=row.get(1)?; let cash:i64=row.get(4)?; let electronic:i64=row.get(5)?;
+            let expenses:i64=row.get(6)?; let refunds:i64=row.get(7)?;
+            Ok(json!({"id":row.get::<_,String>(0)?,"openingFloatMinor":opening,"openedAt":row.get::<_,String>(2)?,"openedBy":row.get::<_,String>(3)?,"cashSalesMinor":cash,"electronicSalesMinor":electronic,"cashExpensesMinor":expenses,"cashRefundsMinor":refunds,"expectedCashMinor":opening.saturating_add(cash).saturating_sub(expenses).saturating_sub(refunds)}))
+        }
     ).optional().map_err(|e| e.to_string())?;
     Ok(shift.unwrap_or(Value::Null))
 }
@@ -575,10 +585,12 @@ fn close_cash_shift(app:tauri::AppHandle,counted_cash_minor:i64)->Result<Value,S
  let(actor,_)=require_role(&db,&["admin","manager","cashier"])?;
  let tx=db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
  let shift:Option<(String,i64,String)>=tx.query_row("SELECT id,opening_float_minor,opened_at FROM local_cash_sessions WHERE closed_at IS NULL ORDER BY opened_at DESC LIMIT 1",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(|e|e.to_string())?;
- let(id,float,opened)=shift.ok_or("لا توجد وردية مفتوحة.")?;
+ let(id,float,_opened)=shift.ok_or("لا توجد وردية مفتوحة.")?;
  let now=Utc::now().to_rfc3339();
- let sales:i64=tx.query_row("SELECT COALESCE(SUM(amount_minor),0) FROM local_payments WHERE method='cash' AND status='confirmed' AND created_at>=? AND created_at<=?",params![opened,now],|r|r.get(0)).map_err(|e|e.to_string())?;
- let expected=float.checked_add(sales).ok_or("قيمة النقدية المتوقعة تجاوزت الحد المسموح.")?;
+ let sales:i64=tx.query_row("SELECT COALESCE(SUM(amount_minor),0) FROM local_payments WHERE cash_session_id=? AND method='cash' AND status='confirmed'",params![id],|r|r.get(0)).map_err(|e|e.to_string())?;
+ let expenses:i64=tx.query_row("SELECT COALESCE(SUM(amount_minor),0) FROM local_expenses WHERE cash_session_id=? AND method='cash'",params![id],|r|r.get(0)).map_err(|e|e.to_string())?;
+ let refunds:i64=tx.query_row("SELECT COALESCE(SUM(amount_minor),0) FROM local_refunds WHERE cash_session_id=? AND method='cash'",params![id],|r|r.get(0)).map_err(|e|e.to_string())?;
+ let expected=float.checked_add(sales).and_then(|v|v.checked_sub(expenses)).and_then(|v|v.checked_sub(refunds)).ok_or("قيمة النقدية المتوقعة تجاوزت الحد المسموح.")?;
  let variance=counted_cash_minor.checked_sub(expected).ok_or("فرق النقدية تجاوز الحد المسموح.")?;
  let changed=tx.execute("UPDATE local_cash_sessions SET closed_by=?,closed_at=?,counted_cash_minor=?,expected_cash_minor=?,variance_minor=? WHERE id=? AND closed_at IS NULL",params![actor,now,counted_cash_minor,expected,variance,id]).map_err(|e|e.to_string())?;
  if changed!=1{return Err("تم إغلاق الوردية بالفعل أو تغيرت حالتها.".into())}
