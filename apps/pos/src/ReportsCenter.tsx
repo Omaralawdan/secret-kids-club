@@ -20,7 +20,7 @@ const reports: { key: ReportKey; label: string; description: string; fields: Fie
   { key: "users", label: "المستخدمون والصلاحيات", description: "حسابات المستخدمين والأدوار والحالة.", fields: [
     {key:"display_name",label:"اسم الموظف"},{key:"username",label:"اسم المستخدم"},{key:"role_codes_json",label:"الأدوار"},{key:"permissions_json",label:"الصلاحيات"},{key:"is_active",label:"الحساب نشط"},{key:"last_authenticated_at",label:"آخر تسجيل دخول"}]},
   { key: "financials", label: "الأرباح والخسائر", description: "تجميع الإيرادات والمصروفات والاستردادات وصافي النتيجة يوميًا أو شهريًا.", fields: [
-    {key:"period",label:"الفترة"},{key:"normal_entry",label:"دخول عادي"},{key:"overtime",label:"وقت إضافي محصل"},{key:"membership",label:"مبيعات الاشتراكات"},{key:"revenue",label:"إجمالي الإيرادات"},{key:"expenses",label:"المصروفات"},{key:"refunds",label:"الاستردادات"},{key:"net",label:"صافي الربح / الخسارة"},{key:"operation_count",label:"عدد العمليات"},{key:"average_transaction",label:"متوسط العملية"}]},
+    {key:"period",label:"الفترة"},{key:"normal_entry",label:"دخول عادي"},{key:"overtime",label:"وقت إضافي محصل"},{key:"membership",label:"مبيعات الاشتراكات"},{key:"other_sales",label:"مبيعات أخرى"},{key:"revenue",label:"إجمالي الإيرادات"},{key:"expenses",label:"المصروفات"},{key:"refunds",label:"الاستردادات"},{key:"net",label:"صافي الربح / الخسارة"},{key:"operation_count",label:"عدد العمليات"},{key:"average_transaction",label:"متوسط العملية"}]},
 ];
 
 const defaultFields: Record<ReportKey, string[]> = {
@@ -30,7 +30,7 @@ const defaultFields: Record<ReportKey, string[]> = {
   shifts:["opened_at","closed_at","opened_by","closed_by","opening_float","cash_sales","electronic_sales","expenses","refunds","expected_cash","counted_cash","variance","variance_reason"],
   audit:["created_at","actor","action","entity_type","entity_id"],
   users:["display_name","username","role_codes_json","is_active","last_authenticated_at"],
-  financials:["period","normal_entry","overtime","membership","revenue","expenses","refunds","net","operation_count","average_transaction"],
+  financials:["period","normal_entry","overtime","membership","other_sales","revenue","expenses","refunds","net","operation_count","average_transaction"],
 };
 
 
@@ -162,20 +162,21 @@ export default function ReportsCenter({ db, language, isAdmin = false, canManage
             CASE WHEN v.id IS NOT NULL THEN MAX(0,p.amount_minor-COALESCE((SELECT SUM(CASE WHEN cp.overtime_collected=1 AND cp.overtime_waived=0 THEN cp.overtime_amount_minor ELSE 0 END) FROM local_visit_child_pricing cp JOIN local_visit_children vc ON vc.id=cp.visit_child_id WHERE vc.visit_id=v.id),0)) ELSE 0 END AS normal_entry,
             CASE WHEN v.id IS NOT NULL THEN COALESCE((SELECT SUM(CASE WHEN cp.overtime_collected=1 AND cp.overtime_waived=0 THEN cp.overtime_amount_minor ELSE 0 END) FROM local_visit_child_pricing cp JOIN local_visit_children vc ON vc.id=cp.visit_child_id WHERE vc.visit_id=v.id),0) ELSE 0 END AS overtime,
             CASE WHEN s.id IS NOT NULL AND EXISTS(SELECT 1 FROM local_sale_items si WHERE si.sale_id=s.id AND si.description_snapshot LIKE 'Membership package:%') THEN p.amount_minor ELSE 0 END AS membership,
+            CASE WHEN s.id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM local_sale_items si WHERE si.sale_id=s.id AND si.description_snapshot LIKE 'Membership package:%') THEN p.amount_minor ELSE 0 END AS other_sales,
             0 AS expenses,0 AS refunds,p.amount_minor AS transaction_amount,1 AS payment_count
           FROM local_payments p LEFT JOIN local_visits v ON v.id=p.visit_id LEFT JOIN local_sales s ON s.id=p.sale_id
           WHERE p.status='confirmed' AND (?='' OR date(p.created_at)>=date(?)) AND (?='' OR date(p.created_at)<=date(?))
         ), expense_rows AS (
-          SELECT date(e.created_at) AS period,0 AS normal_entry,0 AS overtime,0 AS membership,e.amount_minor AS expenses,0 AS refunds,0 AS transaction_amount,0 AS payment_count
+          SELECT date(e.created_at) AS period,0 AS normal_entry,0 AS overtime,0 AS membership,0 AS other_sales,e.amount_minor AS expenses,0 AS refunds,0 AS transaction_amount,0 AS payment_count
           FROM local_expenses e WHERE (?='' OR date(e.created_at)>=date(?)) AND (?='' OR date(e.created_at)<=date(?))
         ), refund_rows AS (
-          SELECT date(r.created_at) AS period,0 AS normal_entry,0 AS overtime,0 AS membership,0 AS expenses,r.amount_minor AS refunds,0 AS transaction_amount,0 AS payment_count
+          SELECT date(r.created_at) AS period,0 AS normal_entry,0 AS overtime,0 AS membership,0 AS other_sales,0 AS expenses,r.amount_minor AS refunds,0 AS transaction_amount,0 AS payment_count
           FROM local_refunds r WHERE (?='' OR date(r.created_at)>=date(?)) AND (?='' OR date(r.created_at)<=date(?))
         ), all_rows AS (SELECT * FROM payment_rows UNION ALL SELECT * FROM expense_rows UNION ALL SELECT * FROM refund_rows)
         SELECT ${periodExpr} AS period,SUM(normal_entry)/100.0 AS normal_entry,SUM(overtime)/100.0 AS overtime,
-          SUM(membership)/100.0 AS membership,(SUM(normal_entry)+SUM(overtime)+SUM(membership))/100.0 AS revenue,
+          SUM(membership)/100.0 AS membership,SUM(other_sales)/100.0 AS other_sales,(SUM(normal_entry)+SUM(overtime)+SUM(membership)+SUM(other_sales))/100.0 AS revenue,
           SUM(expenses)/100.0 AS expenses,SUM(refunds)/100.0 AS refunds,
-          (SUM(normal_entry)+SUM(overtime)+SUM(membership)-SUM(expenses)-SUM(refunds))/100.0 AS net,
+          (SUM(normal_entry)+SUM(overtime)+SUM(membership)+SUM(other_sales)-SUM(expenses)-SUM(refunds))/100.0 AS net,
           COUNT(*) AS operation_count,
           CASE WHEN SUM(payment_count)>0 THEN SUM(transaction_amount)/SUM(payment_count)/100.0 ELSE 0 END AS average_transaction
         FROM all_rows GROUP BY ${periodExpr} ORDER BY period DESC`,
@@ -257,7 +258,7 @@ export default function ReportsCenter({ db, language, isAdmin = false, canManage
     if (key === "is_active") return Number(value) === 1 ? "نشط" : "متوقف";
     if (key === "overtime_collected") return Number(value) === 1 ? "تم التحصيل" : "لم يتم التحصيل";
     if (key === "overtime_waived") return Number(value) === 1 ? "تم الإعفاء" : "لا";
-    if (["base_amount","discount_amount","overtime_amount","total_amount","amount","opening_float","expected_cash","counted_cash","variance","cash_sales","electronic_sales","expenses","refunds","normal_entry","overtime","membership","revenue","net","average_transaction"].includes(key) && value !== null && value !== undefined) return Number(value).toLocaleString("ar-EG",{style:"currency",currency:"EGP"});
+    if (["base_amount","discount_amount","overtime_amount","total_amount","amount","opening_float","expected_cash","counted_cash","variance","cash_sales","electronic_sales","expenses","refunds","normal_entry","overtime","membership","other_sales","revenue","net","average_transaction"].includes(key) && value !== null && value !== undefined) return Number(value).toLocaleString("ar-EG",{style:"currency",currency:"EGP"});
     if (key === "method" || key === "payment_method") return ({cash:"كاش",instapay:"إنستاباي",wallet:"محفظة إلكترونية"} as Record<string,string>)[String(value)] ?? String(value ?? "");
     if (key === "status") return ({active:"نشطة",completed:"مكتملة",cancelled:"ملغاة",confirmed:"تم التحصيل",pending:"معلقة",failed:"فشلت",refunded:"مستردة"} as Record<string,string>)[String(value)] ?? String(value ?? "");
     return String(value ?? "—");
