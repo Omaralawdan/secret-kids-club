@@ -398,6 +398,8 @@ export default function App() {
   }
   async function checkInMember(m:ChildMembership) {
     if(!db)return;
+    const activeShift=await db.select<{id:string}[]>("SELECT id FROM local_cash_sessions WHERE closed_at IS NULL LIMIT 1");
+    if(!activeShift.length){setError(ar?"افتح الوردية قبل تسجيل دخول الطفل.":"Open a cash shift before checking in a child.");return}
     if(m.overtime_rate_minor<=0){setError(ar?"يجب على المدير تحديد سعر ساعة الإضافي لهذه الباقة قبل تسجيل الدخول.":"A manager must set this package's overtime rate before check-in.");return}
     const remaining=m.included_minutes-m.used_minutes;
     if(m.status!=="active"||new Date(m.expires_at)<=new Date()||remaining<=0){setError("الباقة منتهية أو لا يوجد بها وقت متبقٍ.");return}
@@ -417,6 +419,8 @@ export default function App() {
   async function createVisit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!db || saving) return;
+    const activeShift = await db.select<{id:string}[]>("SELECT id FROM local_cash_sessions WHERE closed_at IS NULL LIMIT 1");
+    if (!activeShift.length) { setError(ar ? "افتح الوردية قبل تسجيل دخول الأطفال." : "Open a cash shift before checking in children."); return; }
 
     const cleanChildren = children.map((child) => ({
       ...child,
