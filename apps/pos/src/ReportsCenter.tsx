@@ -26,7 +26,7 @@ const reports: { key: ReportKey; label: string; description: string; fields: Fie
 const defaultFields: Record<ReportKey, string[]> = {
   visits:["visit_number","child_name","guardian_name","phone","checked_in_at","expected_checkout","checked_out_at","duration_minutes","total_amount","status"],
   customers:["guardian_name","phone","child_name","visit_count","last_visit"],
-  payments:["created_at","visit_number","sale_number","sale_description","guardian_name","method","amount","status","received_by"],
+  payments:["created_at","visit_number","sale_number","sale_description","guardian_name","method","amount","status","received_by","cash_session_id"],
   shifts:["opened_at","closed_at","opened_by","closed_by","opening_float","cash_sales","electronic_sales","expenses","refunds","expected_cash","counted_cash","variance","variance_reason"],
   audit:["created_at","actor","action","entity_type","entity_id"],
   users:["display_name","username","role_codes_json","is_active","last_authenticated_at"],
@@ -261,7 +261,7 @@ export default function ReportsCenter({ db, language, isAdmin = false, canManage
     if (key === "is_active") return Number(value) === 1 ? "نشط" : "متوقف";
     if (key === "overtime_collected") return Number(value) === 1 ? "تم التحصيل" : "لم يتم التحصيل";
     if (key === "overtime_waived") return Number(value) === 1 ? "تم الإعفاء" : "لا";
-    if (["base_amount","discount_amount","overtime_amount","total_amount","amount","opening_float","expected_cash","counted_cash","variance","cash_sales","electronic_sales","expenses","refunds","normal_entry","overtime","membership","other_sales","revenue","net","average_transaction"].includes(key) && value !== null && value !== undefined) return Number(value).toLocaleString("ar-EG",{style:"currency",currency:"EGP"});
+    if (["base_amount","discount_amount","overtime_amount","total_amount","amount","opening_float","expected_cash","counted_cash","variance","cash_sales","electronic_sales","expenses","refunds","normal_entry","overtime","membership","other_sales","revenue","net","average_transaction","group_total","group_average"].includes(key) && value !== null && value !== undefined) return Number(value).toLocaleString("ar-EG",{style:"currency",currency:"EGP"});
     if (key === "method" || key === "payment_method") return ({cash:"كاش",instapay:"إنستاباي",wallet:"محفظة إلكترونية"} as Record<string,string>)[String(value)] ?? String(value ?? "");
     if (key === "status") return ({active:"نشطة",completed:"مكتملة",cancelled:"ملغاة",confirmed:"تم التحصيل",pending:"معلقة",failed:"فشلت",refunded:"مستردة"} as Record<string,string>)[String(value)] ?? String(value ?? "");
     return String(value ?? "—");
