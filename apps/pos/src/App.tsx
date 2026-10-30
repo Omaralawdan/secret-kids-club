@@ -8,7 +8,7 @@ import ReportsCenter from "./ReportsCenter";
 import AuthGate, { type AuthUser } from "./AuthGate";
 import AdminTools from "./AdminTools";
 
-type MembershipPlan = { id:string; name:string; price_minor:number; included_minutes:number; validity_days:number; is_active:number };
+type MembershipPlan = { id:string; name:string; price_minor:number; included_minutes:number; validity_days:number; overtime_rate_minor:number; is_active:number };
 type ChildMembership = { id:string; child_name_snapshot:string; guardian_phone_snapshot:string; plan_id:string; plan_name:string; purchased_at:string; expires_at:string; included_minutes:number; used_minutes:number; status:string };
 
 type PricingRule = {
@@ -177,7 +177,7 @@ export default function App() {
   const [ruleDurationHours, setRuleDurationHours] = useState("1");
   const [membershipPlans,setMembershipPlans]=useState<MembershipPlan[]>([]);
   const [memberships,setMemberships]=useState<ChildMembership[]>([]);
-  const [planName,setPlanName]=useState(""); const [planPrice,setPlanPrice]=useState(""); const [planHours,setPlanHours]=useState("20"); const [planValidity,setPlanValidity]=useState("30");
+  const [planName,setPlanName]=useState(""); const [planPrice,setPlanPrice]=useState(""); const [planHours,setPlanHours]=useState("20"); const [planValidity,setPlanValidity]=useState("30"); const [planOvertimeRate,setPlanOvertimeRate]=useState("");
   const [memberName,setMemberName]=useState(""); const [memberPhone,setMemberPhone]=useState(""); const [memberPlanId,setMemberPlanId]=useState(""); const [memberPaymentMethod,setMemberPaymentMethod]=useState<"cash"|"instapay"|"wallet">("cash");
 
   const refreshData = useCallback(async (connection: Database) => {
@@ -189,7 +189,7 @@ export default function App() {
     );
     setRules(loadedRules);
     try {
-      setMembershipPlans(await connection.select<MembershipPlan[]>("SELECT id,name,price_minor,included_minutes,validity_days,is_active FROM local_membership_plans WHERE is_active=1 ORDER BY name"));
+      setMembershipPlans(await connection.select<MembershipPlan[]>("SELECT id,name,price_minor,included_minutes,validity_days,overtime_rate_minor,is_active FROM local_membership_plans WHERE is_active=1 ORDER BY name"));
       setMemberships(await connection.select<ChildMembership[]>("SELECT m.id,m.child_name_snapshot,m.guardian_phone_snapshot,m.plan_id,p.name AS plan_name,m.purchased_at,m.expires_at,m.included_minutes,m.used_minutes,m.status FROM local_child_memberships m JOIN local_membership_plans p ON p.id=m.plan_id ORDER BY m.purchased_at DESC"));
     } catch { /* Membership tables are created by the installed schema migration. */ }
 
@@ -366,9 +366,9 @@ export default function App() {
 
   async function createMembershipPlan(e:FormEvent<HTMLFormElement>) {
     e.preventDefault(); if(!db)return;
-    const hours=Number(planHours), price=Number(planPrice), days=Number(planValidity);
-    if(!planName.trim()||!Number.isFinite(hours)||hours<=0||!Number.isFinite(price)||price<0||![7,30].includes(days)){setError("راجع اسم الباقة والسعر وعدد الساعات.");return}
-    try { await db.execute("INSERT INTO local_membership_plans(id,name,price_minor,included_minutes,validity_days,description,is_active,created_at) VALUES(?,?,?,?,?,NULL,1,?)",[makeId(),planName.trim(),Math.round(price*100),Math.round(hours*60),days,now()]);setPlanName("");setPlanPrice("");await refreshData(db);setMessage("تم حفظ الباقة.");setError("") } catch(e){setError(String(e))}
+    const hours=Number(planHours), price=Number(planPrice), days=Number(planValidity), overtimeRate=Number(planOvertimeRate);
+    if(!planName.trim()||!Number.isFinite(hours)||hours<=0||!Number.isFinite(price)||price<0||![7,30].includes(days)||!Number.isFinite(overtimeRate)||overtimeRate<=0){setError("راجع اسم الباقة والسعر وعدد الساعات وسعر ساعة الإضافي.");return}
+    try { await db.execute("INSERT INTO local_membership_plans(id,name,price_minor,included_minutes,validity_days,overtime_rate_minor,description,is_active,created_at) VALUES(?,?,?,?,?,?,NULL,1,?)",[makeId(),planName.trim(),Math.round(price*100),Math.round(hours*60),days,Math.round(overtimeRate*100),now()]);setPlanName("");setPlanPrice("");setPlanOvertimeRate("");await refreshData(db);setMessage("تم حفظ الباقة.");setError("") } catch(e){setError(String(e))}
   }
   async function enrollMembership(e:FormEvent<HTMLFormElement>) {
     e.preventDefault(); if(!db)return;
@@ -401,7 +401,7 @@ export default function App() {
       const visitNo=numRows[0]?.n||1, guardianName=guardian[0]?.full_name||"ولي الأمر";
       await db.execute("INSERT INTO local_visits(id,visit_number_local,guardian_id,guardian_name_snapshot,guardian_relation,guardian_phone_snapshot,child_count,checked_in_at,checked_out_at,status,pricing_type,amount_before_discount_minor,discount_amount_minor,final_amount_minor,cashier_user_id,sync_state,created_at) VALUES(?,?,?,?,?, ?,1,?,NULL,'active','membership',0,0,0,(SELECT actor_user_id FROM local_session WHERE singleton_id=1),'pending',?)",[visitId,visitNo,guardian[0]?.id||null,guardianName,"Guardian",m.guardian_phone_snapshot,stamp,stamp]);
       await db.execute("INSERT INTO local_visit_children(id,visit_id,child_id,child_name_snapshot) VALUES(?,?,NULL,?)",[childId,visitId,m.child_name_snapshot]);
-      await db.execute("INSERT INTO local_visit_child_pricing(id,visit_child_id,pricing_type,pricing_rule_id,membership_id,base_amount_minor,discount_amount_minor,final_amount_minor,duration_minutes,included_minutes,calculation_json,created_at) VALUES(?,?,'membership',NULL,?,0,0,0,?,?,?,?)",[pricingId,childId,m.id,remaining,remaining,JSON.stringify({membershipId:m.id,membershipPlan:m.plan_name,initialEstimate:true}),stamp]);
+      await db.execute("INSERT INTO local_visit_child_pricing(id,visit_child_id,pricing_type,pricing_rule_id,membership_id,base_amount_minor,discount_amount_minor,final_amount_minor,duration_minutes,included_minutes,calculation_json,created_at) VALUES(?,?,'membership',NULL,?,0,0,0,?,?,?,?)",[pricingId,childId,m.id,remaining,remaining,JSON.stringify({membershipId:m.id,membershipPlan:m.plan_name,initialEstimate:true,overtimeRateMinor:m.overtime_rate_minor}),stamp]);
       await refreshData(db);setMessage("تم تسجيل دخول الطفل على الباقة. الوقت المتاح: "+formatDuration(remaining,language));setError("");setScreen("active");
     } catch(e){setError(String(e))}
   }
@@ -429,8 +429,7 @@ export default function App() {
           child.durationHours < 0.25 ||
           child.durationHours > 12 ||
           !Number.isInteger(child.durationHours * 4) ||
-          (rules.find(rule => rule.id === child.ruleId)?.pricing_type === "hourly" &&
-            (child.hourlyRateMinor === null || !Number.isFinite(child.hourlyRateMinor) || child.hourlyRateMinor <= 0))
+          (child.hourlyRateMinor === null || !Number.isFinite(child.hourlyRateMinor) || child.hourlyRateMinor <= 0)
       )
     ) {
       setError(
@@ -621,7 +620,7 @@ export default function App() {
     if (!window.confirm(confirmMessage)) return;
     const elapsedMinutes = Math.max(0, Math.ceil((Date.now() - new Date(child.checked_in_at).getTime()) / 60000));
     const hourlyRate = readHourlyRate(child.calculation_json);
-    const estimatedOvertimeMinutes = child.pricing_type === "hourly" ? Math.max(0, elapsedMinutes - child.duration_minutes) : 0;
+    const estimatedOvertimeMinutes = Math.max(0, elapsedMinutes - child.duration_minutes);
     let overtimeCollected = true;
     let overtimeCollectionNote: string | null = null;
     if (estimatedOvertimeMinutes > 0 && hourlyRate !== null) {
@@ -839,9 +838,7 @@ export default function App() {
                 const booked = child.duration_minutes;
                 const rate = readHourlyRate(child.calculation_json);
                 const estimatedOvertime =
-                  child.pricing_type === "hourly" &&
-                  rate !== null &&
-                  booked > 0
+                  rate !== null && booked > 0
                     ? Math.max(0, actual - booked)
                     : 0;
 
@@ -963,7 +960,7 @@ export default function App() {
                           : (ar ? "السعر الأساسي ثابت؛ الإضافي بالدقيقة متاح للتسعير بالساعة فقط" : "Base price stays fixed; per-minute overtime is available for hourly pricing only")}
                       </span>
                     </label>
-                    {selected?.pricing_type === "hourly" && <label className="child-pricing">{ar ? "سعر الساعة لهذا الطفل (جنيه)" : "Hourly price for this child (EGP)"}<input type="number" min="0.01" step="0.01" required value={child.hourlyRateMinor === null ? "" : (child.hourlyRateMinor / 100).toFixed(2)} onChange={e => updateChild(child.key, "hourlyRateMinor", e.target.value === "" ? null : Math.round(Number(e.target.value) * 100))} placeholder={ar ? "اكتب سعر الساعة" : "Enter hourly rate"} /><span className="muted">{ar ? "أدخل سعر الساعة لهذا الطفل؛ لا يتم استخدام سعر ثابت تلقائيًا." : "Enter this child's hourly rate. No preset rate is applied."}</span></label>}
+                    {selected && <label className="child-pricing">{ar ? "سعر الساعة / ساعة الإضافي (جنيه)" : "Hourly / overtime rate (EGP)"}<input type="number" min="0.01" step="0.01" required value={child.hourlyRateMinor === null ? "" : (child.hourlyRateMinor / 100).toFixed(2)} onChange={e => updateChild(child.key, "hourlyRateMinor", e.target.value === "" ? null : Math.round(Number(e.target.value) * 100))} placeholder={ar ? "اكتب سعر الساعة" : "Enter hourly rate"} /><span className="muted">{selected.pricing_type === "hourly" ? (ar ? "يُستخدم لحساب السعر الأساسي والوقت الإضافي." : "Used for the booked hourly price and overtime.") : (ar ? "يُستخدم لحساب أي وقت يتجاوز مدة الحجز." : "Used to calculate time beyond the booked duration.")}</span></label>}
                     <div className="child-price">
                       <span>{tr("Price estimate")}</span>
                       <strong>{selected ? money(priceFor(child), language) : "—"}</strong>
@@ -1030,6 +1027,7 @@ export default function App() {
               <label>{ar?"اسم الباقة":"Package name"}<input value={planName} onChange={e=>setPlanName(e.target.value)} required/></label>
               <label>{ar?"السعر بالجنيه":"Price (EGP)"}<input type="number" min="0" step="0.01" value={planPrice} onChange={e=>setPlanPrice(e.target.value)} required/></label>
               <label>{ar?"عدد الساعات":"Included hours"}<input type="number" min="0.25" step="0.25" value={planHours} onChange={e=>setPlanHours(e.target.value)} required/></label>
+              <label>{ar?"سعر ساعة الوقت الإضافي (جنيه)":"Overtime hourly rate (EGP)"}<input type="number" min="0.01" step="0.01" value={planOvertimeRate} onChange={e=>setPlanOvertimeRate(e.target.value)} required/></label>
               <label>{ar?"مدة الباقة":"Validity"}<select value={planValidity} onChange={e=>setPlanValidity(e.target.value)}><option value="7">{ar?"أسبوع (7 أيام)":"Weekly (7 days)"}</option><option value="30">{ar?"شهر (30 يومًا)":"Monthly (30 days)"}</option></select></label>
               <div className="full-width"><button className="primary-button" type="submit">{ar?"حفظ الباقة":"Save package"}</button></div>
             </form>
