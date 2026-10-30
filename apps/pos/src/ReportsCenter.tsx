@@ -8,11 +8,11 @@ type Field = { key: string; label: string };
 
 const reports: { key: ReportKey; label: string; description: string; fields: Field[] }[] = [
   { key: "visits", label: "الزيارات والحجوزات", description: "بيانات الدخول والخروج والمدة والأسعار.", fields: [
-    {key:"visit_number",label:"رقم الزيارة"},{key:"payment_method",label:"طريقة الدفع"},{key:"child_name",label:"اسم الطفل"},{key:"guardian_name",label:"اسم ولي الأمر"},{key:"phone",label:"رقم التليفون"},{key:"checked_in_at",label:"وقت الدخول"},{key:"expected_checkout",label:"وقت الخروج المتوقع"},{key:"checked_out_at",label:"وقت الخروج الفعلي"},{key:"duration_minutes",label:"المدة المحجوزة بالدقائق"},{key:"actual_duration_minutes",label:"المدة الفعلية بالدقائق"},{key:"base_amount",label:"السعر الأساسي"},{key:"discount_amount",label:"الخصم"},{key:"overtime_amount",label:"الإضافي المستحق"},{key:"overtime_collected",label:"تم تحصيل الإضافي؟"},{key:"overtime_collection_note",label:"سبب عدم التحصيل"},{key:"overtime_waived",label:"إعفاء الإضافي؟"},{key:"overtime_waiver_reason",label:"سبب الإعفاء"},{key:"cancellation_reason",label:"سبب الإلغاء"},{key:"cancelled_by",label:"أُلغي بواسطة"},{key:"total_amount",label:"الإجمالي المستحق"},{key:"status",label:"الحالة"}]},
+    {key:"visit_number",label:"رقم الزيارة"},{key:"payment_method",label:"طريقة الدفع"},{key:"child_name",label:"اسم الطفل"},{key:"guardian_name",label:"اسم ولي الأمر"},{key:"phone",label:"رقم التليفون"},{key:"checked_in_at",label:"وقت الدخول"},{key:"expected_checkout",label:"وقت الخروج المتوقع"},{key:"checked_out_at",label:"وقت الخروج الفعلي"},{key:"duration_minutes",label:"المدة المحجوزة بالدقائق"},{key:"actual_duration_minutes",label:"المدة الفعلية بالدقائق"},{key:"base_amount",label:"السعر الأساسي"},{key:"discount_amount",label:"الخصم"},{key:"overtime_amount",label:"الإضافي المستحق"},{key:"overtime_collected",label:"تم تحصيل الإضافي؟"},{key:"overtime_collection_note",label:"سبب عدم التحصيل"},{key:"overtime_waived",label:"إعفاء الإضافي؟"},{key:"overtime_waiver_reason",label:"سبب الإعفاء"},{key:"cancellation_reason",label:"سبب الإلغاء"},{key:"cancelled_by",label:"أُلغي بواسطة"},{key:"total_amount",label:"الإجمالي المستحق"},{key:"group_count",label:"عدد العمليات بالمجموعة"},{key:"group_total",label:"إجمالي المجموعة"},{key:"group_average",label:"متوسط العملية"},{key:"status",label:"الحالة"}]},
   { key: "customers", label: "العملاء والأطفال", description: "بيانات العملاء وعدد الزيارات وآخر زيارة.", fields: [
-    {key:"guardian_name",label:"اسم ولي الأمر"},{key:"phone",label:"رقم التليفون"},{key:"child_name",label:"اسم الطفل"},{key:"visit_count",label:"عدد الزيارات"},{key:"last_visit",label:"آخر زيارة"}]},
+    {key:"guardian_name",label:"اسم ولي الأمر"},{key:"phone",label:"رقم التليفون"},{key:"child_name",label:"اسم الطفل"},{key:"visit_count",label:"عدد الزيارات"},{key:"last_visit",label:"آخر زيارة"},{key:"group_count",label:"عدد السجلات بالمجموعة"},{key:"group_total",label:"إجمالي المجموعة"},{key:"group_average",label:"متوسط العملية"}]},
   { key: "payments", label: "التحصيلات وطرق الدفع", description: "المدفوعات المسجلة في قاعدة البيانات.", fields: [
-    {key:"created_at",label:"التاريخ"},{key:"visit_number",label:"رقم الزيارة"},{key:"sale_number",label:"رقم عملية البيع"},{key:"sale_description",label:"تفاصيل البيع / الباقة"},{key:"guardian_name",label:"اسم ولي الأمر"},{key:"phone",label:"رقم التليفون"},{key:"method",label:"طريقة الدفع"},{key:"amount",label:"المبلغ"},{key:"status",label:"حالة الدفع"},{key:"received_by",label:"المستلم"},{key:"external_reference",label:"رقم مرجعي"}]},
+    {key:"created_at",label:"التاريخ"},{key:"visit_number",label:"رقم الزيارة"},{key:"sale_number",label:"رقم عملية البيع"},{key:"sale_description",label:"تفاصيل البيع / الباقة"},{key:"guardian_name",label:"اسم ولي الأمر"},{key:"phone",label:"رقم التليفون"},{key:"method",label:"طريقة الدفع"},{key:"amount",label:"المبلغ"},{key:"status",label:"حالة الدفع"},{key:"received_by",label:"المستلم"},{key:"cash_session_id",label:"رقم الوردية"},{key:"external_reference",label:"رقم مرجعي"},{key:"group_count",label:"عدد العمليات بالمجموعة"},{key:"group_total",label:"إجمالي المجموعة"},{key:"group_average",label:"متوسط العملية"}]},
   { key: "shifts", label: "الورديات والصندوق", description: "جلسات فتح وإغلاق الصندوق والعجز أو الزيادة.", fields: [
     {key:"opened_at",label:"بداية الوردية"},{key:"closed_at",label:"نهاية الوردية"},{key:"opened_by",label:"فتح بواسطة"},{key:"closed_by",label:"إغلاق بواسطة"},{key:"opening_float",label:"رصيد بداية الوردية"},{key:"expected_cash",label:"النقدية المتوقعة"},{key:"counted_cash",label:"النقدية الفعلية"},{key:"variance",label:"العجز / الزيادة"},{key:"variance_reason",label:"سبب الفرق"},{key:"cash_sales",label:"تحصيلات الكاش"},{key:"electronic_sales",label:"التحصيل الإلكتروني"},{key:"expenses",label:"المصروفات"},{key:"refunds",label:"الاستردادات"}]},
   { key: "audit", label: "سجل العمليات", description: "تغييرات البيانات والعمليات المسجلة في سجل المراجعة.", fields: [
@@ -140,7 +140,7 @@ export default function ReportsCenter({ db, language, isAdmin = false, canManage
           [startDate,startDate,endDate,endDate]);
       } else if (reportKey === "payments") {
         result = await db.select<ReportRow[]>(`SELECT p.created_at, v.visit_number_local AS visit_number,
-          v.guardian_name_snapshot AS guardian_name, v.guardian_phone_snapshot AS phone, s.sale_number_local AS sale_number, (SELECT group_concat(description_snapshot, ', ') FROM local_sale_items si WHERE si.sale_id=s.id) AS sale_description, p.method,
+          v.guardian_name_snapshot AS guardian_name, v.guardian_phone_snapshot AS phone, s.sale_number_local AS sale_number, (SELECT group_concat(description_snapshot, ', ') FROM local_sale_items si WHERE si.sale_id=s.id) AS sale_description, p.method, p.cash_session_id,
           p.amount_minor/100.0 AS amount, p.status, p.received_by, p.external_reference
           FROM local_payments p LEFT JOIN local_visits v ON v.id=p.visit_id LEFT JOIN local_sales s ON s.id=p.sale_id
           WHERE (?='' OR date(p.created_at)>=date(?)) AND (?='' OR date(p.created_at)<=date(?))
@@ -193,9 +193,21 @@ export default function ReportsCenter({ db, language, isAdmin = false, canManage
       const query = search.trim().toLocaleLowerCase();
       if (query) result = result.filter(row => Object.values(row).some(value => String(value ?? "").toLocaleLowerCase().includes(query)));
       if (sortBy === "name_asc") result.sort((a,b) => String(a.guardian_name ?? a.display_name ?? a.child_name ?? "").localeCompare(String(b.guardian_name ?? b.display_name ?? b.child_name ?? ""), "ar"));
-      if (sortBy === "amount_desc") result.sort((a,b) => Number(b.total_amount ?? b.amount ?? 0)-Number(a.total_amount ?? a.amount ?? 0));
-      if (sortBy === "amount_asc") result.sort((a,b) => Number(a.total_amount ?? a.amount ?? 0)-Number(b.total_amount ?? b.amount ?? 0));
-      if (groupBy !== "none" && reportKey !== "financials") result.sort((a,b) => String(a[groupBy] ?? "").localeCompare(String(b[groupBy] ?? ""), "ar"));
+      if (sortBy === "amount_desc") result.sort((a,b) => Number(b.group_total ?? b.total_amount ?? b.amount ?? 0)-Number(a.group_total ?? a.total_amount ?? a.amount ?? 0));
+      if (sortBy === "amount_asc") result.sort((a,b) => Number(a.group_total ?? a.total_amount ?? a.amount ?? 0)-Number(b.group_total ?? b.total_amount ?? b.amount ?? 0));
+      if (groupBy !== "none" && reportKey !== "financials") {
+        const grouped = new Map<string, ReportRow>();
+        for (const row of result) {
+          const raw = groupBy === "method" ? (row.method ?? row.payment_method) : groupBy === "actor" ? (row.actor ?? row.received_by) : row[groupBy];
+          const key = String(raw ?? "—");
+          const current = grouped.get(key) ?? {...row, group_count:0, group_total:0};
+          current.group_count = Number(current.group_count ?? 0) + 1;
+          current.group_total = Number(current.group_total ?? 0) + Number(row.total_amount ?? row.amount ?? row.visit_count ?? 0);
+          current.group_average = Number(current.group_total) / Number(current.group_count);
+          grouped.set(key,current);
+        }
+        result = Array.from(grouped.values()).sort((a,b)=>String(a[groupBy]??"").localeCompare(String(b[groupBy]??""),"ar"));
+      }
       setRows(result); setLoaded(true);
     } catch (e) {
       setError("تعذر إنشاء التقرير. قد تكون بعض البيانات أو الجداول غير متاحة بعد. التفاصيل: " + (e instanceof Error ? e.message : String(e)));
@@ -259,7 +271,7 @@ export default function ReportsCenter({ db, language, isAdmin = false, canManage
       <label>من تاريخ<input type="date" value={startDate} onChange={e=>setStartDate(e.target.value)}/></label>
       <label>إلى تاريخ<input type="date" value={endDate} onChange={e=>setEndDate(e.target.value)}/></label>
       <label>بحث داخل النتائج<input value={search} onChange={e=>setSearch(e.target.value)} placeholder="اسم، تليفون، أو كلمة..."/></label>
-      <label>تجميع حسب<select value={groupBy} onChange={e=>setGroupBy(e.target.value)}><option value="none">بدون تجميع</option><option value="guardian_name">ولي الأمر</option><option value="child_name">الطفل</option><option value="method">طريقة الدفع</option><option value="status">الحالة</option><option value="actor">المستخدم</option><option value="month">شهري</option></select></label>
+      <label>تجميع حسب<select value={groupBy} onChange={e=>setGroupBy(e.target.value)}><option value="none">بدون تجميع</option><option value="guardian_name">ولي الأمر</option><option value="child_name">الطفل</option><option value="method">طريقة الدفع</option><option value="status">الحالة</option><option value="actor">المستخدم</option><option value="received_by">الموظف المستلم</option><option value="month">شهري</option></select></label>
       <label>ترتيب النتائج<select value={sortBy} onChange={e=>setSortBy(e.target.value)}><option value="date_desc">الأحدث أولًا</option><option value="name_asc">الاسم أبجديًا</option><option value="amount_desc">المبلغ الأكبر أولًا</option><option value="amount_asc">المبلغ الأصغر أولًا</option></select></label>
     </div>
     <div className="report-field-panel"><div className="report-field-title"><strong>الأعمدة المطلوبة</strong><div><button type="button" className="secondary-button" onClick={()=>setSelectedFields(current.fields.map(f=>f.key))}>تحديد الكل</button><button type="button" className="secondary-button" onClick={()=>setSelectedFields([])}>مسح الاختيار</button></div></div>
