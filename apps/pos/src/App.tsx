@@ -78,7 +78,7 @@ type ReceiptData = {
   visitNumber: number; guardianName: string; guardianPhone: string; childName: string;
   checkedInAt: string; checkedOutAt?: string | null; expectedCheckoutAt?: string | null; bookedMinutes: number; actualMinutes?: number | null; paymentMethod?: string;
   baseAmountMinor: number; discountAmountMinor: number; overtimeMinutes?: number | null;
-  overtimeAmountMinor?: number | null; totalAmountMinor?: number | null;
+  overtimeAmountMinor?: number | null; overtimeWaived?: boolean; overtimeWaiverReason?: string | null; totalAmountMinor?: number | null;
   venueName: string; venueAddress: string; venuePhone: string; issuer: string;
 };
 
@@ -116,7 +116,7 @@ function buildReceiptHtml(data: ReceiptData, language: Language): string {
   if (data.paymentMethod) html += row(label("Payment method", "طريقة الدفع"), escapeReceipt(({cash:"Cash",instapay:"InstaPay",wallet:"E-Wallet"} as Record<string,string>)[data.paymentMethod] || data.paymentMethod));
   html += amount(label("Base price", "السعر الأساسي"), data.baseAmountMinor);
   html += amount(label("Discount", "الخصم"), data.discountAmountMinor);
-  if (finalReceipt) { html += row(label("Overtime duration", "مدة الوقت الإضافي"), escapeReceipt(formatDuration(data.overtimeMinutes || 0, language))); html += amount(label("Overtime amount", "قيمة الوقت الإضافي"), data.overtimeAmountMinor || 0); }
+  if (finalReceipt) { html += row(label("Overtime duration", "مدة الوقت الإضافي"), escapeReceipt(formatDuration(data.overtimeMinutes || 0, language))); html += amount(label(data.overtimeWaived ? "Overtime amount waived" : "Overtime amount", data.overtimeWaived ? "قيمة الإضافي المعفاة" : "قيمة الوقت الإضافي"), data.overtimeAmountMinor || 0); if (data.overtimeWaived) html += row(label("Waiver reason", "سبب الإعفاء"), escapeReceipt(data.overtimeWaiverReason || "")); }
   html += '<div class="row total"><span>' + label(finalReceipt ? "FINAL TOTAL" : "INITIAL ESTIMATE", finalReceipt ? "الإجمالي النهائي" : "السعر المبدئي") + '</span><strong>' + escapeReceipt(money(finalReceipt ? (data.totalAmountMinor || 0) : (data.baseAmountMinor - data.discountAmountMinor), language)) + '</strong></div>';
   html += '<div class="section">' + label("Receipt details", "بيانات الإيصال") + '</div>' + row(label("Issued by", "مُصدر الإيصال"), escapeReceipt(data.issuer || label("Cashier", "الكاشير")));
   html += '<footer class="foot">' + label("Thank you for visiting! ❤️", "نورتونا في Secret Kids Club ❤️") + '<br>' + label("We loved having you. See you again soon! 🎈", "اتبسطنا بوجودكم، ومستنيينكم تنورونا تاني قريب! 🎈") + '</footer></main></body></html>';
@@ -442,8 +442,8 @@ export default function App() {
     ) {
       setError(
         ar
-          ? "أدخل اسم كل طفل وحدد نوع التسعير وسعر الساعة يدويًا عند اختيار التسعير بالساعة، والمدة من 0.25 إلى 12 ساعة."
-          : "Enter each child's name, pricing type, manual hourly rate when applicable, and duration from 0.25 to 12 hours."
+          ? "أدخل اسم كل طفل وحدد التسعير وسعر ساعة الإضافي يدويًا، والمدة من 0.25 إلى 12 ساعة."
+          : "Enter each child's name, pricing type, manual overtime hourly rate, and duration from 0.25 to 12 hours."
       );
       return;
     }
@@ -672,13 +672,13 @@ export default function App() {
         visit_number: number; guardian_name: string; guardian_phone: string; child_name: string;
         checked_in_at: string; checked_out_at: string; duration_minutes: number;
         actual_duration_minutes: number | null; base_amount_minor: number; discount_amount_minor: number;
-        overtime_minutes: number | null; overtime_amount_minor: number | null; final_amount_minor: number; calculation_json: string;
+        overtime_minutes: number | null; overtime_amount_minor: number | null; overtime_waived: number; overtime_waiver_reason: string | null; final_amount_minor: number; calculation_json: string;
       }[]>(
         `SELECT v.visit_number_local AS visit_number, v.guardian_name_snapshot AS guardian_name,
                 v.guardian_phone_snapshot AS guardian_phone, vc.child_name_snapshot AS child_name,
                 v.checked_in_at, vc.checked_out_at, p.duration_minutes, vc.actual_duration_minutes,
                 p.base_amount_minor, p.discount_amount_minor, p.overtime_minutes,
-                p.overtime_amount_minor, p.final_amount_minor, p.calculation_json
+                p.overtime_amount_minor, p.overtime_waived, p.overtime_waiver_reason, p.final_amount_minor, p.calculation_json
          FROM local_visits v JOIN local_visit_children vc ON vc.visit_id = v.id
          JOIN local_visit_child_pricing p ON p.visit_child_id = vc.id WHERE vc.id = ?`,
         [child.visit_child_id]
@@ -692,6 +692,7 @@ export default function App() {
           bookedMinutes: receipt.duration_minutes, actualMinutes: receipt.actual_duration_minutes || 0,
           baseAmountMinor: receipt.base_amount_minor, discountAmountMinor: receipt.discount_amount_minor,
           overtimeMinutes: receipt.overtime_minutes || 0, overtimeAmountMinor: receipt.overtime_amount_minor || 0,
+          overtimeWaived: receipt.overtime_waived === 1, overtimeWaiverReason: receipt.overtime_waiver_reason,
           totalAmountMinor: receipt.final_amount_minor, venueName, venueAddress, venuePhone, issuer: "Cashier",
         }, language)]);
       }
