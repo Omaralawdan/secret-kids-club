@@ -2,13 +2,13 @@ import { useEffect, useState } from "react";
 import Database from "@tauri-apps/plugin-sql";
 import "./ReportsCenter.css";
 
-type ReportKey = "visits" | "customers" | "payments" | "shifts" | "audit" | "users";
+type ReportKey = "visits" | "customers" | "payments" | "shifts" | "audit" | "users" | "financials";
 type ReportRow = Record<string, string | number | null>;
 type Field = { key: string; label: string };
 
 const reports: { key: ReportKey; label: string; description: string; fields: Field[] }[] = [
   { key: "visits", label: "الزيارات والحجوزات", description: "بيانات الدخول والخروج والمدة والأسعار.", fields: [
-    {key:"visit_number",label:"رقم الزيارة"},{key:"payment_method",label:"طريقة الدفع"},{key:"child_name",label:"اسم الطفل"},{key:"guardian_name",label:"اسم ولي الأمر"},{key:"phone",label:"رقم التليفون"},{key:"checked_in_at",label:"وقت الدخول"},{key:"expected_checkout",label:"وقت الخروج المتوقع"},{key:"checked_out_at",label:"وقت الخروج الفعلي"},{key:"duration_minutes",label:"المدة المحجوزة بالدقائق"},{key:"actual_duration_minutes",label:"المدة الفعلية بالدقائق"},{key:"base_amount",label:"السعر الأساسي"},{key:"discount_amount",label:"الخصم"},{key:"overtime_amount",label:"الإضافي المستحق"},{key:"overtime_collected",label:"تم تحصيل الإضافي؟"},{key:"overtime_collection_note",label:"سبب عدم التحصيل"},{key:"total_amount",label:"الإجمالي المستحق"},{key:"status",label:"الحالة"}]},
+    {key:"visit_number",label:"رقم الزيارة"},{key:"payment_method",label:"طريقة الدفع"},{key:"child_name",label:"اسم الطفل"},{key:"guardian_name",label:"اسم ولي الأمر"},{key:"phone",label:"رقم التليفون"},{key:"checked_in_at",label:"وقت الدخول"},{key:"expected_checkout",label:"وقت الخروج المتوقع"},{key:"checked_out_at",label:"وقت الخروج الفعلي"},{key:"duration_minutes",label:"المدة المحجوزة بالدقائق"},{key:"actual_duration_minutes",label:"المدة الفعلية بالدقائق"},{key:"base_amount",label:"السعر الأساسي"},{key:"discount_amount",label:"الخصم"},{key:"overtime_amount",label:"الإضافي المستحق"},{key:"overtime_collected",label:"تم تحصيل الإضافي؟"},{key:"overtime_collection_note",label:"سبب عدم التحصيل"},{key:"overtime_waived",label:"إعفاء الإضافي؟"},{key:"overtime_waiver_reason",label:"سبب الإعفاء"},{key:"cancellation_reason",label:"سبب الإلغاء"},{key:"cancelled_by",label:"أُلغي بواسطة"},{key:"total_amount",label:"الإجمالي المستحق"},{key:"status",label:"الحالة"}]},
   { key: "customers", label: "العملاء والأطفال", description: "بيانات العملاء وعدد الزيارات وآخر زيارة.", fields: [
     {key:"guardian_name",label:"اسم ولي الأمر"},{key:"phone",label:"رقم التليفون"},{key:"child_name",label:"اسم الطفل"},{key:"visit_count",label:"عدد الزيارات"},{key:"last_visit",label:"آخر زيارة"}]},
   { key: "payments", label: "التحصيلات وطرق الدفع", description: "المدفوعات المسجلة في قاعدة البيانات.", fields: [
@@ -19,6 +19,8 @@ const reports: { key: ReportKey; label: string; description: string; fields: Fie
     {key:"created_at",label:"التاريخ والوقت"},{key:"actor",label:"المستخدم"},{key:"action",label:"العملية"},{key:"entity_type",label:"نوع البيانات"},{key:"entity_id",label:"رقم السجل"},{key:"reason",label:"السبب"},{key:"before_json",label:"قبل التعديل"},{key:"after_json",label:"بعد التعديل"}]},
   { key: "users", label: "المستخدمون والصلاحيات", description: "حسابات المستخدمين والأدوار والحالة.", fields: [
     {key:"display_name",label:"اسم الموظف"},{key:"username",label:"اسم المستخدم"},{key:"role_codes_json",label:"الأدوار"},{key:"permissions_json",label:"الصلاحيات"},{key:"is_active",label:"الحساب نشط"},{key:"last_authenticated_at",label:"آخر تسجيل دخول"}]},
+  { key: "financials", label: "الأرباح والخسائر", description: "تجميع الإيرادات والمصروفات والاستردادات وصافي النتيجة يوميًا أو شهريًا.", fields: [
+    {key:"period",label:"الفترة"},{key:"normal_entry",label:"دخول عادي"},{key:"overtime",label:"وقت إضافي محصل"},{key:"membership",label:"مبيعات الاشتراكات"},{key:"revenue",label:"إجمالي الإيرادات"},{key:"expenses",label:"المصروفات"},{key:"refunds",label:"الاستردادات"},{key:"net",label:"صافي الربح / الخسارة"},{key:"operation_count",label:"عدد العمليات"},{key:"average_transaction",label:"متوسط العملية"}]},
 ];
 
 const defaultFields: Record<ReportKey, string[]> = {
@@ -28,6 +30,7 @@ const defaultFields: Record<ReportKey, string[]> = {
   shifts:["opened_at","closed_at","opened_by","closed_by","expected_cash","counted_cash","variance"],
   audit:["created_at","actor","action","entity_type","entity_id"],
   users:["display_name","username","role_codes_json","is_active","last_authenticated_at"],
+  financials:["period","normal_entry","overtime","membership","revenue","expenses","refunds","net","operation_count","average_transaction"],
 };
 
 
@@ -100,7 +103,7 @@ export default function ReportsCenter({ db, language, isAdmin = false, canManage
   const [savedTemplates, setSavedTemplates] = useState<{name:string; key:ReportKey; fields:string[]}[]>(() => {
     try { return JSON.parse(localStorage.getItem("skc.reportTemplates") || "[]"); } catch { return []; }
   });
-  const availableReports = reports.filter(r => (r.key !== "users" || isAdmin) && (!["shifts","audit"].includes(r.key) || canManage));
+  const availableReports = reports.filter(r => (r.key !== "users" || isAdmin) && (!["shifts","audit","financials"].includes(r.key) || canManage));
   const current = reports.find(r => r.key === reportKey)!;
 
   useEffect(() => {
@@ -122,7 +125,7 @@ export default function ReportsCenter({ db, language, isAdmin = false, canManage
           CASE WHEN p.duration_minutes > 0 THEN strftime('%Y-%m-%dT%H:%M:%fZ', v.checked_in_at, '+' || p.duration_minutes || ' minutes') ELSE NULL END AS expected_checkout,
           vc.checked_out_at, p.duration_minutes, vc.actual_duration_minutes,
           p.base_amount_minor / 100.0 AS base_amount, p.discount_amount_minor / 100.0 AS discount_amount,
-          p.overtime_amount_minor / 100.0 AS overtime_amount, p.overtime_collected, p.overtime_collection_note, p.final_amount_minor / 100.0 AS total_amount, v.status
+          p.overtime_amount_minor / 100.0 AS overtime_amount, p.overtime_collected, p.overtime_collection_note, p.overtime_waived, p.overtime_waiver_reason, v.cancellation_reason, v.cancelled_by, p.final_amount_minor / 100.0 AS total_amount, v.status
           FROM local_visits v JOIN local_visit_children vc ON vc.visit_id=v.id
           JOIN local_visit_child_pricing p ON p.visit_child_id=vc.id
           WHERE (?='' OR date(v.checked_in_at)>=date(?)) AND (?='' OR date(v.checked_in_at)<=date(?))
@@ -145,9 +148,38 @@ export default function ReportsCenter({ db, language, isAdmin = false, canManage
       } else if (reportKey === "shifts") {
         result = await db.select<ReportRow[]>(`SELECT opened_at, closed_at, opened_by, closed_by,
           opening_float_minor/100.0 AS opening_float, expected_cash_minor/100.0 AS expected_cash,
-          counted_cash_minor/100.0 AS counted_cash, variance_minor/100.0 AS variance
+          counted_cash_minor/100.0 AS counted_cash, variance_minor/100.0 AS variance, variance_reason,
+          (SELECT COALESCE(SUM(amount_minor),0)/100.0 FROM local_payments p WHERE p.cash_session_id=local_cash_sessions.id AND p.method='cash' AND p.status='confirmed') AS cash_sales,
+          (SELECT COALESCE(SUM(amount_minor),0)/100.0 FROM local_payments p WHERE p.cash_session_id=local_cash_sessions.id AND p.method<>'cash' AND p.status='confirmed') AS electronic_sales,
+          (SELECT COALESCE(SUM(amount_minor),0)/100.0 FROM local_expenses e WHERE e.cash_session_id=local_cash_sessions.id) AS expenses,
+          (SELECT COALESCE(SUM(amount_minor),0)/100.0 FROM local_refunds r WHERE r.cash_session_id=local_cash_sessions.id) AS refunds
           FROM local_cash_sessions WHERE (?='' OR date(opened_at)>=date(?)) AND (?='' OR date(opened_at)<=date(?))
           ORDER BY opened_at DESC`, [startDate,startDate,endDate,endDate]);
+      } else if (reportKey === "financials") {
+        const periodExpr = groupBy === "month" ? "strftime('%Y-%m',period)" : "period";
+        result = await db.select<ReportRow[]>(`WITH payment_rows AS (
+          SELECT date(p.created_at) AS period,
+            CASE WHEN v.id IS NOT NULL THEN MAX(0,p.amount_minor-COALESCE((SELECT SUM(CASE WHEN cp.overtime_collected=1 AND cp.overtime_waived=0 THEN cp.overtime_amount_minor ELSE 0 END) FROM local_visit_child_pricing cp JOIN local_visit_children vc ON vc.id=cp.visit_child_id WHERE vc.visit_id=v.id),0)) ELSE 0 END AS normal_entry,
+            CASE WHEN v.id IS NOT NULL THEN COALESCE((SELECT SUM(CASE WHEN cp.overtime_collected=1 AND cp.overtime_waived=0 THEN cp.overtime_amount_minor ELSE 0 END) FROM local_visit_child_pricing cp JOIN local_visit_children vc ON vc.id=cp.visit_child_id WHERE vc.visit_id=v.id),0) ELSE 0 END AS overtime,
+            CASE WHEN s.id IS NOT NULL AND EXISTS(SELECT 1 FROM local_sale_items si WHERE si.sale_id=s.id AND si.description_snapshot LIKE 'Membership package:%') THEN p.amount_minor ELSE 0 END AS membership,
+            0 AS expenses,0 AS refunds,p.amount_minor AS transaction_amount,1 AS payment_count
+          FROM local_payments p LEFT JOIN local_visits v ON v.id=p.visit_id LEFT JOIN local_sales s ON s.id=p.sale_id
+          WHERE p.status='confirmed' AND (?='' OR date(p.created_at)>=date(?)) AND (?='' OR date(p.created_at)<=date(?))
+        ), expense_rows AS (
+          SELECT date(e.created_at) AS period,0 AS normal_entry,0 AS overtime,0 AS membership,e.amount_minor AS expenses,0 AS refunds,0 AS transaction_amount,0 AS payment_count
+          FROM local_expenses e WHERE (?='' OR date(e.created_at)>=date(?)) AND (?='' OR date(e.created_at)<=date(?))
+        ), refund_rows AS (
+          SELECT date(r.created_at) AS period,0 AS normal_entry,0 AS overtime,0 AS membership,0 AS expenses,r.amount_minor AS refunds,0 AS transaction_amount,0 AS payment_count
+          FROM local_refunds r WHERE (?='' OR date(r.created_at)>=date(?)) AND (?='' OR date(r.created_at)<=date(?))
+        ), all_rows AS (SELECT * FROM payment_rows UNION ALL SELECT * FROM expense_rows UNION ALL SELECT * FROM refund_rows)
+        SELECT ${periodExpr} AS period,SUM(normal_entry)/100.0 AS normal_entry,SUM(overtime)/100.0 AS overtime,
+          SUM(membership)/100.0 AS membership,(SUM(normal_entry)+SUM(overtime)+SUM(membership))/100.0 AS revenue,
+          SUM(expenses)/100.0 AS expenses,SUM(refunds)/100.0 AS refunds,
+          (SUM(normal_entry)+SUM(overtime)+SUM(membership)-SUM(expenses)-SUM(refunds))/100.0 AS net,
+          COUNT(*) AS operation_count,
+          CASE WHEN SUM(payment_count)>0 THEN SUM(transaction_amount)/SUM(payment_count)/100.0 ELSE 0 END AS average_transaction
+        FROM all_rows GROUP BY ${periodExpr} ORDER BY period DESC`,
+        [startDate,startDate,endDate,endDate,startDate,startDate,endDate,endDate,startDate,startDate,endDate,endDate]);
       } else if (reportKey === "audit") {
         result = await db.select<ReportRow[]>(`SELECT a.created_at, COALESCE(u.display_name,a.actor_user_id) AS actor,
           a.action, a.entity_type, a.entity_id, a.reason, a.before_json, a.after_json
