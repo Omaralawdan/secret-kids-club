@@ -725,7 +725,7 @@ export default function App() {
     }
   }
 
-  async function cancelVisit(visitId: string, childName: string) {
+  async function cancelVisit(visitId: string) {
     if (!db || !canOperate) return;
     if (!window.confirm(ar ? "سيتم إلغاء الزيارة بالكامل مع الاحتفاظ بسجلها والمدفوعات. هل تريد المتابعة؟" : "This will cancel the entire visit while retaining its history and payments. Continue?")) return;
     const reason = window.prompt(ar ? "اكتب سبب إلغاء الزيارة (إجباري):" : "Enter the mandatory visit cancellation reason:", "")?.trim();
@@ -922,7 +922,7 @@ export default function App() {
                         ? (ar ? "جارٍ الخروج..." : "Checking out...")
                         : (ar ? "تسجيل الخروج" : "Check out")}
                     </button>
-                    <button type="button" className="remove-button" disabled={!ready || checkoutId !== ""} onClick={() => void cancelVisit(child.visit_id, child.child_name)}>
+                    <button type="button" className="remove-button" disabled={!ready || checkoutId !== ""} onClick={() => void cancelVisit(child.visit_id)}>
                       {ar ? "إلغاء الزيارة" : "Cancel visit"}
                     </button>
                   </article>
