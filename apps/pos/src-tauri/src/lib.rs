@@ -784,6 +784,7 @@ fn record_membership_payment(app:tauri::AppHandle,membership_id:String,amount_mi
     if membership_id.trim().is_empty()||amount_minor<=0||!["cash","instapay","wallet","visa","other"].contains(&method.as_str()){return Err("راجع الباقة والمبلغ وطريقة الدفع.".into())}
     let mut db=auth_db(&app)?;
     require_permission(&db,"packages")?;
+    require_permission(&db,"shift")?;
     let(actor,_)=require_role(&db,&["admin","manager","cashier"])?;
     let tx=db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
     let (sale_id,plan_price,status):(Option<String>,i64,String)=tx.query_row("SELECT m.sale_id,p.price_minor,m.status FROM local_child_memberships m JOIN local_membership_plans p ON p.id=m.plan_id WHERE m.id=?",params![membership_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(|_|"الاشتراك غير موجود.".to_string())?;
