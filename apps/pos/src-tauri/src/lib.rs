@@ -422,7 +422,7 @@ fn require_permission(db:&Connection,permission:&str)->Result<(String,Vec<String
  if roles.iter().any(|r|r=="admin"){return Ok((id,roles))}
  let stored:String=db.query_row("SELECT permissions_json FROM local_users WHERE id=?",params![id],|r|r.get(0)).map_err(|e|e.to_string())?;
  let parsed:Vec<String>=serde_json::from_str(&stored).unwrap_or_default();
- let allowed=if parsed.iter().any(|p|p=="all"){true}else if parsed.iter().any(|p|p=="__custom__"){parsed.iter().any(|p|p==permission)}else if roles.iter().any(|r|r=="manager"){["reception","active","packages","cafe","reports","shift","pricing","bookings","overtime_waive"].contains(&permission)}else if roles.iter().any(|r|r=="cashier"){["reception","active","packages","cafe","shift","bookings"].contains(&permission)}else if roles.iter().any(|r|r=="viewer"){permission=="reports"}else{false};
+ let allowed=if parsed.iter().any(|p|p=="all"){true}else if parsed.iter().any(|p|p=="__custom__"){parsed.iter().any(|p|p==permission)}else if roles.iter().any(|r|r=="manager"){["reception","active","packages","cafe","reports","shift","pricing","bookings","overtime_waive","discounts"].contains(&permission)}else if roles.iter().any(|r|r=="cashier"){["reception","active","packages","cafe","shift","bookings","discounts"].contains(&permission)}else if roles.iter().any(|r|r=="viewer"){permission=="reports"}else{false};
  if allowed{Ok((id,roles))}else{Err("هذه الوظيفة غير مفعّلة في صلاحيات حسابك.".into())}
 }
 #[tauri::command]
@@ -825,7 +825,7 @@ fn create_membership_sale(
     let mut db=auth_db(&app)?;
     require_permission(&db,"packages")?;
     require_permission(&db,"shift")?;
-    if coupon_code.as_deref().map(|v|!v.trim().is_empty()).unwrap_or(false) { require_permission(&db,"pricing")?; }
+    if coupon_code.as_deref().map(|v|!v.trim().is_empty()).unwrap_or(false) {  require_permission(&db,"discounts")?; }
     let (actor,_)=require_role(&db,&["admin","manager","cashier"])?;
     let tx=db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
     let (plan_name,plan_price,included_minutes,validity_days):(String,i64,i64,i64)=tx.query_row(
@@ -996,7 +996,7 @@ fn list_cafe_recipes(app:tauri::AppHandle)->Result<Vec<Value>,String>{
 #[tauri::command]
 fn create_cafe_sale(app:tauri::AppHandle,items:Vec<Value>,payments:Vec<Value>,coupon_code:Option<String>)->Result<Value,String>{
     if items.is_empty()||payments.is_empty(){return Err("أضف أصنافًا وحدد دفعة واحدة على الأقل.".into())}
-    let mut db=auth_db(&app)?;let(actor,_)=require_role(&db,&["admin","manager","cashier"])?;require_permission(&db,"cafe")?;if coupon_code.as_deref().map(|v|!v.trim().is_empty()).unwrap_or(false){require_permission(&db,"pricing")?;}
+    let mut db=auth_db(&app)?;let(actor,_)=require_role(&db,&["admin","manager","cashier"])?;require_permission(&db,"cafe")?;if coupon_code.as_deref().map(|v|!v.trim().is_empty()).unwrap_or(false){require_permission(&db,"discounts")?;}
     let tx=db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
     let shift_id:String=tx.query_row("SELECT id FROM local_cash_sessions WHERE closed_at IS NULL ORDER BY opened_at DESC LIMIT 1",[],|r|r.get(0)).optional().map_err(|e|e.to_string())?.ok_or("افتح الوردية قبل تسجيل بيع الكافيه.")?;
     let mut prepared:Vec<(String,String,i64,i64,i64,String)>=Vec::new();let mut subtotal:i64=0;
@@ -1089,7 +1089,7 @@ fn consume_expiry_batches(tx:&rusqlite::Transaction<'_>,item_id:&str,quantity_mi
 
 #[tauri::command]
 fn list_coupons(app:tauri::AppHandle)->Result<Vec<Value>,String>{
-    let db=auth_db(&app)?;require_permission(&db,"pricing")?;require_role(&db,&["admin","manager","cashier"])?;
+    let db=auth_db(&app)?;require_permission(&db,"discounts")?;require_role(&db,&["admin","manager","cashier"])?;
     let mut st=db.prepare("SELECT id,code,description,discount_type,discount_value,max_discount_minor,usage_limit,used_count,starts_at,ends_at,is_active FROM local_coupons ORDER BY created_at DESC").map_err(|e|e.to_string())?;
     let rows=st.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"code":r.get::<_,String>(1)?,"description":r.get::<_,String>(2)?,"discountType":r.get::<_,String>(3)?,"discountValue":r.get::<_,i64>(4)?,"maxDiscountMinor":r.get::<_,Option<i64>>(5)?,"usageLimit":r.get::<_,Option<i64>>(6)?,"usedCount":r.get::<_,i64>(7)?,"startsAt":r.get::<_,Option<String>>(8)?,"endsAt":r.get::<_,Option<String>>(9)?,"active":r.get::<_,i64>(10)?==1}))).map_err(|e|e.to_string())?;
     rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())
