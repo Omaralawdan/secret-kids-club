@@ -709,6 +709,7 @@ fn record_refund(app: tauri::AppHandle, payment_id: String, amount_minor: i64, r
     let mut approved=false;
     for row in admin_rows { let (salt,hash)=row.map_err(|e|e.to_string())?; let salt=hex::decode(salt).map_err(|e|e.to_string())?; if hash_password(&admin_password,&salt)==hash { approved=true; break; } }
     if !approved{return Err("كلمة مرور المدير غير صحيحة.".into())}
+    drop(admins);
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
     let original: Option<(i64,String,Option<String>,Option<String>)> = tx.query_row(
         "SELECT amount_minor,method,method_label,sale_id FROM local_payments WHERE id=? AND status='confirmed'",
