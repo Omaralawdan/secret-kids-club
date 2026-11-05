@@ -764,6 +764,56 @@ fn save_monthly_expense(app: tauri::AppHandle, expense_name: String, amount_mino
 }
 
 
+
+#[tauri::command]
+fn create_cafe_sale(app:tauri::AppHandle,items:Vec<Value>,payment_method:String)->Result<Value,String>{
+    if items.is_empty()||!["cash","instapay","wallet"].contains(&payment_method.as_str()){return Err("أضف أصنافًا واختر طريقة دفع صحيحة.".into())}
+    let mut db=auth_db(&app)?;let(actor,_)=require_role(&db,&["admin","manager","cashier"])?;let tx=db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
+    let shift_id:String=tx.query_row("SELECT id FROM local_cash_sessions WHERE closed_at IS NULL ORDER BY opened_at DESC LIMIT 1",[],|r|r.get(0)).optional().map_err(|e|e.to_string())?.ok_or("افتح الوردية قبل تسجيل بيع الكافيه.")?;
+    let mut prepared:Vec<(String,String,i64,i64,i64,String)>=Vec::new();let mut subtotal:i64=0;
+    for line in items.iter(){
+        let item_id=line.get("itemId").and_then(Value::as_str).ok_or("صنف البيع غير محدد.")?;
+        let qty=line.get("quantityMilli").and_then(Value::as_i64).ok_or("كمية البيع غير صحيحة.")?;
+        if qty<=0{return Err("كمية البيع يجب أن تكون أكبر من صفر.".into())}
+        let item:Option<(String,String,i64,i64)>=tx.query_row("SELECT name,item_kind,COALESCE(sale_price_minor,0),is_active FROM local_inventory_items WHERE id=?",params![item_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(|e|e.to_string())?;
+        let (name,kind,price,active)=item.ok_or("أحد أصناف البيع غير موجود.")?;if active!=1||price<=0{return Err(format!("الصنف {} غير نشط أو سعر البيع غير محدد.",name))}
+        let line_total=price.checked_mul(qty).ok_or("إجمالي الصنف كبير جدًا.")?/1000;
+        subtotal=subtotal.checked_add(line_total).ok_or("إجمالي الفاتورة كبير جدًا.")?;
+        let recipe:Option<(String,i64)>=tx.query_row("SELECT id,yield_quantity_milli FROM local_recipes WHERE sellable_item_id=?",params![item_id],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(|e|e.to_string())?;
+        let (recipe_id,yield_qty)=recipe.map(|(id,y)| (id,y)).unwrap_or_default();
+        if !recipe_id.is_empty(){
+            let mut st=tx.prepare("SELECT inventory_item_id,quantity_milli FROM local_recipe_ingredients WHERE recipe_id=?").map_err(|e|e.to_string())?;
+            let ingredients=st.query_map(params![recipe_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?))).map_err(|e|e.to_string())?.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())?;
+            if ingredients.is_empty(){return Err(format!("وصفة {} لا تحتوي على مكونات.",name))}
+            for (ingredient,per_yield) in ingredients{
+                let required=per_yield.checked_mul(qty).ok_or("كمية مكونات الوصفة كبيرة جدًا.")?.checked_add(yield_qty-1).ok_or("كمية مكونات الوصفة كبيرة جدًا.")?/yield_qty;
+                let available:i64=tx.query_row("SELECT COALESCE(SUM(CASE WHEN movement_type IN ('purchase','stock_in','return_in','opening') THEN quantity_milli WHEN movement_type IN ('sale','waste','stock_out','return_supplier') THEN -quantity_milli ELSE 0 END),0) FROM local_stock_movements WHERE inventory_item_id=?",params![ingredient],|r|r.get(0)).map_err(|e|e.to_string())?;
+                if required>available{return Err(format!("المخزون غير كافٍ لأحد مكونات وصفة {}.",name))}
+            }
+        }else{
+            let available:i64=tx.query_row("SELECT COALESCE(SUM(CASE WHEN movement_type IN ('purchase','stock_in','return_in','opening') THEN quantity_milli WHEN movement_type IN ('sale','waste','stock_out','return_supplier') THEN -quantity_milli ELSE 0 END),0) FROM local_stock_movements WHERE inventory_item_id=?",params![item_id],|r|r.get(0)).map_err(|e|e.to_string())?;
+            if qty>available{return Err(format!("المخزون غير كافٍ للصنف {}.",name))}
+        }
+        prepared.push((item_id.to_string(),name,qty,price,line_total,recipe_id));
+    }
+    let sale_id=uuid::Uuid::new_v4().to_string();let now=Utc::now().to_rfc3339();let sale_no:i64=tx.query_row("SELECT COALESCE(MAX(sale_number_local),0)+1 FROM local_sales",[],|r|r.get(0)).map_err(|e|e.to_string())?;
+    tx.execute("INSERT INTO local_sales(id,sale_number_local,visit_id,status,subtotal_minor,discount_minor,total_minor,cashier_user_id,created_at) VALUES(?,?,NULL,'completed',?,0,?,?,?)",params![sale_id,sale_no,subtotal,subtotal,actor,now]).map_err(|e|e.to_string())?;
+    for (item_id,name,qty,price,line_total,recipe_id) in prepared.iter(){
+        tx.execute("INSERT INTO local_sale_items(id,sale_id,item_type,inventory_item_id,description_snapshot,quantity_milli,unit_price_minor,line_total_minor) VALUES(?,?,'cafe_product',?,?,?,?,?)",params![uuid::Uuid::new_v4().to_string(),sale_id,item_id,name,qty,price,line_total]).map_err(|e|e.to_string())?;
+        if recipe_id.is_empty(){
+            tx.execute("INSERT INTO local_stock_movements(id,inventory_item_id,movement_type,quantity_milli,sale_id,reason,created_by,created_at) VALUES(?,?,'sale',?,?,?, ?,?)",params![uuid::Uuid::new_v4().to_string(),item_id,qty,sale_id,"بيع كافيه",actor,now]).map_err(|e|e.to_string())?;
+        }else{
+            let mut st=tx.prepare("SELECT inventory_item_id,quantity_milli FROM local_recipe_ingredients WHERE recipe_id=?").map_err(|e|e.to_string())?;
+            let ingredients=st.query_map(params![recipe_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?))).map_err(|e|e.to_string())?.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())?;
+            let yield_qty:i64=tx.query_row("SELECT yield_quantity_milli FROM local_recipes WHERE id=?",params![recipe_id],|r|r.get(0)).map_err(|e|e.to_string())?;
+            for (ingredient,per_yield) in ingredients{let required=per_yield.checked_mul(*qty).ok_or("كمية الوصفة كبيرة جدًا.")?.checked_add(yield_qty-1).ok_or("كمية الوصفة كبيرة جدًا.")?/yield_qty;tx.execute("INSERT INTO local_stock_movements(id,inventory_item_id,movement_type,quantity_milli,sale_id,reason,created_by,created_at) VALUES(?,?,'sale',?,?,?, ?,?)",params![uuid::Uuid::new_v4().to_string(),ingredient,required,sale_id,format!("استهلاك وصفة {}",name),actor,now]).map_err(|e|e.to_string())?;}
+        }
+    }
+    tx.execute("INSERT INTO local_payments(id,sale_id,visit_id,method,status,amount_minor,received_by,created_at,cash_session_id) VALUES(?,?,NULL,?,'confirmed',?,?,?,?)",params![uuid::Uuid::new_v4().to_string(),sale_id,payment_method,subtotal,actor,now,shift_id]).map_err(|e|e.to_string())?;
+    tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'cafe_sale_created','sale',?,?,?)",params![actor,sale_id,json!({"sale_number":sale_no,"total_minor":subtotal,"payment_method":payment_method,"cash_session_id":shift_id}).to_string(),now]).map_err(|e|e.to_string())?;
+    tx.commit().map_err(|e|e.to_string())?;Ok(json!({"saleId":sale_id,"saleNumber":sale_no,"totalMinor":subtotal,"createdAt":now}))
+}
+
 #[tauri::command]
 fn list_cafe_items(app: tauri::AppHandle) -> Result<Vec<Value>,String> {
     let db=auth_db(&app)?;
@@ -864,7 +914,7 @@ pub fn run() {
                 .add_migrations("sqlite:secret-kids-club.db", migrations)
                 .build(),
         )
-        .invoke_handler(tauri::generate_handler![greet, list_cafe_items, save_cafe_item, adjust_cafe_stock, record_cafe_purchase, save_cafe_supplier, list_cafe_suppliers, record_cash_movement, list_monthly_expenses, save_monthly_expense, checkout_child, cancel_visit, update_membership_overtime_rate, list_refundable_payments, record_expense, record_refund, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_create_user, admin_set_user_active, admin_reset_user_password, admin_update_user_role, admin_delete_user, delete_pricing_rule, create_pricing_rule, get_active_cash_shift, open_cash_shift, close_cash_shift, admin_audit_log])
+        .invoke_handler(tauri::generate_handler![greet, create_cafe_sale, list_cafe_items, save_cafe_item, adjust_cafe_stock, record_cafe_purchase, save_cafe_supplier, list_cafe_suppliers, record_cash_movement, list_monthly_expenses, save_monthly_expense, checkout_child, cancel_visit, update_membership_overtime_rate, list_refundable_payments, record_expense, record_refund, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_create_user, admin_set_user_active, admin_reset_user_password, admin_update_user_role, admin_delete_user, delete_pricing_rule, create_pricing_rule, get_active_cash_shift, open_cash_shift, close_cash_shift, admin_audit_log])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
