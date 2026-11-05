@@ -866,7 +866,9 @@ export default function App() {
         </section>
       )}
 
-      {screen === "bookings" ? (\n        <BookingsCenter />\n      ) :       {screen === "packages" ? (
+      {screen === "bookings" ? (
+        <BookingsCenter />
+      ) : screen === "packages" ? (
         <section className="panel"><h3>{ar?"تسجيل أو تجديد باقة":"Register or renew a package"}</h3>
           <form className="form-grid" onSubmit={enrollMembership}>
             <label>{ar?"اسم الطفل":"Child name"}<input value={memberName} onChange={e=>setMemberName(e.target.value)} required/></label>
