@@ -877,7 +877,8 @@ fn list_cafe_expiry_alerts(app:tauri::AppHandle)->Result<Vec<Value>,String>{
 #[tauri::command]
 fn save_cafe_recipe(app:tauri::AppHandle,sellable_item_id:String,recipe_name:String,yield_quantity_milli:i64,ingredients:Vec<Value>)->Result<(),String>{
     if sellable_item_id.trim().is_empty()||recipe_name.trim().is_empty()||yield_quantity_milli<=0||ingredients.is_empty(){return Err("أدخل اسم الوصفة والمنتج والكمية الناتجة ومكونًا واحدًا على الأقل.".into())}
-    let mut db=auth_db(&app)?;let(actor,_)=require_role(&db,&["admin","manager"])?;let tx=db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
+    let mut db=auth_db(&app)?;let(actor,_)=require_role(&db,&["admin","manager"])?;require_permission(&db,"cafe")?;
+    let tx=db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
     require_permission(&db,"cafe")?;
     let kind:String=tx.query_row("SELECT item_kind FROM local_inventory_items WHERE id=? AND is_active=1",params![sellable_item_id],|r|r.get(0)).map_err(|_|"المنتج غير موجود.".to_string())?;if kind!="ready_product"{return Err("الوصفة يجب أن ترتبط بمنتج جاهز للبيع.".into())}
     let recipe_id:Option<String>=tx.query_row("SELECT id FROM local_recipes WHERE sellable_item_id=?",params![sellable_item_id],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
@@ -904,7 +905,8 @@ fn list_cafe_recipes(app:tauri::AppHandle)->Result<Vec<Value>,String>{
 #[tauri::command]
 fn create_cafe_sale(app:tauri::AppHandle,items:Vec<Value>,payment_method:String)->Result<Value,String>{
     if items.is_empty()||!["cash","instapay","wallet","visa","other"].contains(&payment_method.as_str()){return Err("أضف أصنافًا واختر طريقة دفع صحيحة.".into())}
-    let mut db=auth_db(&app)?;let(actor,_)=require_role(&db,&["admin","manager","cashier"])?;let tx=db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
+    let mut db=auth_db(&app)?;let(actor,_)=require_role(&db,&["admin","manager","cashier"])?;require_permission(&db,"cafe")?;
+    let tx=db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
     require_permission(&db,"cafe")?;
     let shift_id:String=tx.query_row("SELECT id FROM local_cash_sessions WHERE closed_at IS NULL ORDER BY opened_at DESC LIMIT 1",[],|r|r.get(0)).optional().map_err(|e|e.to_string())?.ok_or("افتح الوردية قبل تسجيل بيع الكافيه.")?;
     let mut prepared:Vec<(String,String,i64,i64,i64,String)>=Vec::new();let mut subtotal:i64=0;
@@ -1030,7 +1032,8 @@ fn save_cafe_item(app:tauri::AppHandle,item_id:Option<String>,name:String,sku:Op
 #[tauri::command]
 fn adjust_cafe_stock(app:tauri::AppHandle,item_id:String,movement_type:String,quantity_milli:i64,reason:String)->Result<(),String>{
     if item_id.trim().is_empty()||quantity_milli<=0||!["purchase","stock_in","waste","stock_out","return_in","return_supplier","opening"].contains(&movement_type.as_str())||reason.trim().is_empty(){return Err("راجع الصنف والكمية ونوع الحركة والسبب.".into())}
-    let mut db=auth_db(&app)?;let(actor,_)=require_role(&db,&["admin","manager"])?;let tx=db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
+    let mut db=auth_db(&app)?;let(actor,_)=require_role(&db,&["admin","manager"])?;require_permission(&db,"cafe")?;
+    let tx=db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
     require_permission(&db,"cafe")?;
     let exists:i64=tx.query_row("SELECT COUNT(*) FROM local_inventory_items WHERE id=? AND is_active=1",params![item_id],|r|r.get(0)).map_err(|e|e.to_string())?;if exists==0{return Err("الصنف غير موجود أو غير نشط.".into())}
     let current:i64=tx.query_row("SELECT COALESCE(SUM(CASE WHEN movement_type IN ('purchase','stock_in','return_in','opening') THEN quantity_milli WHEN movement_type IN ('sale','waste','stock_out','return_supplier') THEN -quantity_milli ELSE 0 END),0) FROM local_stock_movements WHERE inventory_item_id=?",params![item_id],|r|r.get(0)).map_err(|e|e.to_string())?;
@@ -1044,7 +1047,8 @@ fn adjust_cafe_stock(app:tauri::AppHandle,item_id:String,movement_type:String,qu
 #[tauri::command]
 fn record_cafe_purchase(app:tauri::AppHandle,supplier_id:Option<String>,document_number:Option<String>,item_id:String,quantity_milli:i64,unit_cost_minor:i64,expiry_date:Option<String>,notes:String)->Result<(),String>{
     if item_id.trim().is_empty()||quantity_milli<=0||unit_cost_minor<0{return Err("راجع الصنف والكمية وتكلفة الوحدة.".into())}
-    let mut db=auth_db(&app)?;let(actor,_)=require_role(&db,&["admin","manager"])?;let tx=db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
+    let mut db=auth_db(&app)?;let(actor,_)=require_role(&db,&["admin","manager"])?;require_permission(&db,"cafe")?;
+    let tx=db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
     require_permission(&db,"cafe")?;
     let item_name:String=tx.query_row("SELECT name FROM local_inventory_items WHERE id=? AND is_active=1",params![item_id],|r|r.get(0)).map_err(|_|"الصنف غير موجود أو غير نشط.".to_string())?;
     if let Some(sid)=supplier_id.as_deref(){let n:i64=tx.query_row("SELECT COUNT(*) FROM local_suppliers WHERE id=? AND is_active=1",params![sid],|r|r.get(0)).map_err(|e|e.to_string())?;if n==0{return Err("المورد غير موجود.".into())}}
