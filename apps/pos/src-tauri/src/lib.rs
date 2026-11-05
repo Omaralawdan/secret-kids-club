@@ -1166,6 +1166,19 @@ fn list_coupons(app:tauri::AppHandle)->Result<Vec<Value>,String>{
     rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())
 }
 #[tauri::command]
+fn set_coupon_active(app:tauri::AppHandle,coupon_id:String,is_active:bool)->Result<(),String>{
+    if coupon_id.trim().is_empty(){return Err("كوبون الخصم غير محدد.".into());}
+    let mut db=auth_db(&app)?;
+    require_permission(&db,"pricing")?;
+    let(actor,_)=require_role(&db,&["admin","manager","cashier"])?;
+    let now=Utc::now().to_rfc3339();
+    let changed=db.execute("UPDATE local_coupons SET is_active=? WHERE id=?",params![if is_active{1}else{0},coupon_id]).map_err(|e|e.to_string())?;
+    if changed!=1{return Err("الكوبون غير موجود.".into());}
+    db.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'coupon_status_changed','coupon',?,?,?)",params![actor,coupon_id,json!({"active":is_active}).to_string(),now]).map_err(|e|e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 fn save_coupon(app:tauri::AppHandle,code:String,description:String,discount_type:String,discount_value:i64,max_discount_minor:Option<i64>,usage_limit:Option<i64>,starts_at:Option<String>,ends_at:Option<String>)->Result<String,String>{
     let normalized=code.trim().to_ascii_uppercase();
     if normalized.len()<3||normalized.len()>32||!normalized.chars().all(|c|c.is_ascii_alphanumeric()||c=='-')||!["percent","fixed"].contains(&discount_type.as_str())||discount_value<=0||(discount_type=="percent"&&discount_value>10000)||max_discount_minor.map(|v|v<=0).unwrap_or(false)||usage_limit.map(|v|v<=0).unwrap_or(false){return Err("راجع كود الخصم ونوعه وقيمته وحدود الاستخدام.".into())}
@@ -1342,7 +1355,7 @@ pub fn run() {
                 .add_migrations("sqlite:secret-kids-club.db", migrations)
                 .build(),
         )
-        .invoke_handler(tauri::generate_handler![greet, list_coupons, save_coupon, apply_visit_coupon, create_membership_sale, list_bookings, save_booking, update_booking_status, list_cafe_stock_movements, record_cafe_stock_count, list_cafe_expiry_alerts, save_cafe_recipe, list_cafe_recipes, create_cafe_sale, list_cafe_items, save_cafe_item, adjust_cafe_stock, record_cafe_purchase, save_cafe_supplier, list_cafe_suppliers, cancel_membership, record_membership_payment, record_cash_movement, list_monthly_expenses, save_monthly_expense, checkout_child, cancel_visit, update_membership_overtime_rate, list_refundable_payments, record_expense, record_refund, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_set_user_permissions, admin_create_user, admin_set_user_active, admin_reset_user_password, admin_update_user_role, admin_delete_user, delete_pricing_rule, create_pricing_rule, get_active_cash_shift, open_cash_shift, close_cash_shift, admin_audit_log])
+        .invoke_handler(tauri::generate_handler![greet, list_coupons, save_coupon, set_coupon_active, apply_visit_coupon, create_membership_sale, list_bookings, save_booking, update_booking_status, list_cafe_stock_movements, record_cafe_stock_count, list_cafe_expiry_alerts, save_cafe_recipe, list_cafe_recipes, create_cafe_sale, list_cafe_items, save_cafe_item, adjust_cafe_stock, record_cafe_purchase, save_cafe_supplier, list_cafe_suppliers, cancel_membership, record_membership_payment, record_cash_movement, list_monthly_expenses, save_monthly_expense, checkout_child, cancel_visit, update_membership_overtime_rate, list_refundable_payments, record_expense, record_refund, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_set_user_permissions, admin_create_user, admin_set_user_active, admin_reset_user_password, admin_update_user_role, admin_delete_user, delete_pricing_rule, create_pricing_rule, get_active_cash_shift, open_cash_shift, close_cash_shift, admin_audit_log])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
