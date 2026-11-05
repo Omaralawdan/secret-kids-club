@@ -30,7 +30,7 @@ type ChildDraft = {
   priceMinor: number | null;
 };
 
-type Screen = "reception" | "active" | "pricing" | "settings" | "reports" | "admin" | "cafe";
+type Screen = "reception" | "active" | "packages" | "pricing" | "settings" | "reports" | "admin" | "cafe";
 
 type ActiveChild = {
   visit_id: string;
@@ -338,10 +338,12 @@ export default function App() {
   const total = children.reduce((sum, child) => sum + priceFor(child), 0);
   const ready = databaseStatus === "Connected" && db !== null;
   const authRoles: string[] = (() => { try { return authUser ? JSON.parse(authUser.roles) : []; } catch { return []; } })();
+  const authPermissionKeys: string[] = (() => { try { const p=authUser?.permissions?JSON.parse(authUser.permissions):[]; if(Array.isArray(p)&&p.includes("all"))return ["all"]; if(Array.isArray(p)&&p.includes("__custom__"))return p.filter((x:string)=>x!=="__custom__"); } catch {} return authRoles.includes("admin")?["all"]:authRoles.includes("manager")?["reception","active","packages","cafe","reports","shift","pricing"]:authRoles.includes("cashier")?["reception","active","packages","cafe","shift"]:authRoles.includes("viewer")?["reports"]:[]; })();
+  const hasPermission = (key:string) => authPermissionKeys.includes("all") || authPermissionKeys.includes(key);
   const isAdmin = authRoles.includes("admin");
   const canManage = isAdmin || authRoles.includes("manager");
   const canOperate = canManage || authRoles.includes("cashier");
-  const reportAccess = canManage || authRoles.includes("viewer");
+  const reportAccess = (canManage || authRoles.includes("viewer")) && hasPermission("reports");
   if (!authUser) return <AuthGate onAuthenticated={(user) => { setAuthUser(user); try { if (JSON.parse(user.roles).includes("viewer")) setScreen("reports"); } catch {} }} databaseReady={ready} />;
 
   async function createRule(event: FormEvent<HTMLFormElement>) {
@@ -770,24 +772,25 @@ export default function App() {
       </header>
 
       <nav className="nav-tabs">
-        {authRoles.some(role => ["admin","manager","cashier"].includes(role)) && <button className={screen === "reception" ? "active" : ""} onClick={() => setScreen("reception")}>
+        {canOperate && hasPermission("reception") && <button className={screen === "reception" ? "active" : ""} onClick={() => setScreen("reception")}>
           {tr("Reception")}
         </button>}
-        {authRoles.some(role => ["admin","manager","cashier"].includes(role)) && <button className={screen === "active" ? "active" : ""} onClick={() => setScreen("active")}>
+        {canOperate && hasPermission("active") && <button className={screen === "active" ? "active" : ""} onClick={() => setScreen("active")}>
           {ar ? "الزيارات النشطة" : "Active visits"}
           {activeChildren.length > 0 ? ` (${activeChildren.length})` : ""}
         </button>}
-        {isAdmin && <button className={screen === "pricing" ? "active" : ""} onClick={() => setScreen("pricing")}>
+        {canOperate && hasPermission("packages") && <button className={screen === "packages" ? "active" : ""} onClick={() => setScreen("packages")}>{ar ? "الباقات" : "Packages"}</button>}
+        {canManage && hasPermission("pricing") && <button className={screen === "pricing" ? "active" : ""} onClick={() => setScreen("pricing")}>
           {tr("Pricing setup")}
         </button>}
-        {isAdmin && <button className={screen === "settings" ? "active" : ""} onClick={() => setScreen("settings")}>
+        {isAdmin && hasPermission("settings") && <button className={screen === "settings" ? "active" : ""} onClick={() => setScreen("settings")}>
           {tr("Settings")}
         </button>}
         {reportAccess && <button className={screen === "reports" ? "active" : ""} onClick={() => setScreen("reports")}>
           {ar ? "التقارير والتصدير" : "Reports & Export"}
         </button>}
-        {canOperate && <button className={screen === "cafe" ? "active" : ""} onClick={() => setScreen("cafe")}>{ar ? "الكافيه والمخزون" : "Café & Inventory"}</button>}
-        {canOperate && <button className={screen === "admin" ? "active" : ""} onClick={() => setScreen("admin")}>
+        {canOperate && hasPermission("cafe") && <button className={screen === "cafe" ? "active" : ""} onClick={() => setScreen("cafe")}>{ar ? "الكافيه والمخزون" : "Café & Inventory"}</button>}
+        {canOperate && hasPermission("shift") && <button className={screen === "admin" ? "active" : ""} onClick={() => setScreen("admin")}>
           {ar ? "الوردية والصندوق" : "Shift & Cash"}
         </button>}
       </nav>
@@ -835,7 +838,12 @@ export default function App() {
         </section>
       )}
 
-      {screen === "cafe" ? (
+      {screen === "packages" ? (
+        <section className="panel"><h3>{ar?"المشتركون وحالة الباقات":"Subscribers and package status"}</h3>
+          <div className="report-table-wrap"><table className="report-table"><thead><tr><th>{ar?"الطفل":"Child"}</th><th>{ar?"الهاتف":"Phone"}</th><th>{ar?"الباقة":"Package"}</th><th>{ar?"المستخدم / الإجمالي":"Used / included"}</th><th>{ar?"المتبقي":"Remaining"}</th><th>{ar?"الانتهاء":"Expires"}</th><th>{ar?"الحالة":"Status"}</th><th>{ar?"إجراء":"Action"}</th></tr></thead><tbody>{memberships.map(m=>{const remaining=Math.max(0,m.included_minutes-m.used_minutes);const status=new Date(m.expires_at)<=new Date()&&m.status==="active"?"expired":m.status;return <tr key={m.id}><td>{m.child_name_snapshot}</td><td>{m.guardian_phone_snapshot}</td><td>{m.plan_name}</td><td>{formatDuration(m.used_minutes,language)} / {formatDuration(m.included_minutes,language)}</td><td>{formatDuration(remaining,language)}</td><td>{formatDate(m.expires_at,language)}</td><td>{status!=="active"||remaining<=0?(ar?"انتهت الباقة":"Package ended"):status}</td><td><button className="primary-button" disabled={!canOperate||status!=="active"||remaining<=0||m.overtime_rate_minor<=0} onClick={()=>void checkInMember(m)}>{ar?"تسجيل دخول":"Check in"}</button></td></tr>})}{memberships.length===0&&<tr><td colSpan={8}>{ar?"لا توجد اشتراكات مسجلة.":"No memberships found."}</td></tr>}</tbody></table></div>
+          {isAdmin&&<button className="secondary-button" onClick={()=>setScreen("pricing")}>{ar?"إدارة وإنشاء الباقات":"Manage and create packages"}</button>}
+        </section>
+      ) :       {screen === "cafe" ? (
         <CafeCenter canManage={canManage} />
       ) : screen === "admin" ? (
         <AdminTools user={authUser} onLogout={() => { void invoke("logout_user").finally(() => setAuthUser(null)); }}  />
