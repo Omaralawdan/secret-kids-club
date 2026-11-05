@@ -8,7 +8,7 @@ type DraftIngredient={key:string;itemId:string;quantity:string};
 type SaleLine={key:string;itemId:string;quantity:string};
 type ExpiryAlert={id:string;itemName:string;quantityMilli:number;expiryDate:string;daysRemaining:number};
 const money=(n:number)=>new Intl.NumberFormat("ar-EG",{style:"currency",currency:"EGP"}).format(n/100);
-const escapeText=(v:unknown)=>String(v??"").replace(/[&<>"\']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;", "\'":"&#39;"} as Record<string,string>)[c]||c);
+const escapeText=(v:unknown)=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"} as Record<string,string>)[c]||c);
 export default function CafeCenter({canManage}:{canManage:boolean}){
  const [items,setItems]=useState<CafeItem[]>([]),[suppliers,setSuppliers]=useState<Supplier[]>([]),[recipes,setRecipes]=useState<Recipe[]>([]),[expiryAlerts,setExpiryAlerts]=useState<ExpiryAlert[]>([]);
  const [error,setError]=useState(""),[message,setMessage]=useState("");
