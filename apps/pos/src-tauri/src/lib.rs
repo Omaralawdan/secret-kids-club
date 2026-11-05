@@ -698,11 +698,17 @@ fn record_expense(app: tauri::AppHandle, amount_minor: i64, category: String, re
 }
 
 #[tauri::command]
-fn record_refund(app: tauri::AppHandle, payment_id: String, amount_minor: i64, reason: String) -> Result<(), String> {
+fn record_refund(app: tauri::AppHandle, payment_id: String, amount_minor: i64, reason: String, admin_password: String) -> Result<(), String> {
     if payment_id.trim().is_empty() || amount_minor <= 0 || reason.trim().is_empty() { return Err("اختر عملية أصلية وأدخل مبلغ الاسترداد وسببه.".into()); }
     let mut db = auth_db(&app)?;
     require_permission(&db,"shift")?;
     let (actor, _) = require_role(&db, &["admin","manager","cashier"])?;
+    if admin_password.is_empty(){return Err("كلمة مرور المدير مطلوبة لاعتماد الاسترداد.".into())}
+    let mut admins=db.prepare("SELECT password_salt,password_hash FROM local_users WHERE is_active=1 AND instr(role_codes_json,'admin')>0").map_err(|e|e.to_string())?;
+    let admin_rows=admins.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).map_err(|e|e.to_string())?;
+    let mut approved=false;
+    for row in admin_rows { let (salt,hash)=row.map_err(|e|e.to_string())?; let salt=hex::decode(salt).map_err(|e|e.to_string())?; if hash_password(&admin_password,&salt)==hash { approved=true; break; } }
+    if !approved{return Err("كلمة مرور المدير غير صحيحة.".into())}
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
     let original: Option<(i64,String,Option<String>,Option<String>)> = tx.query_row(
         "SELECT amount_minor,method,method_label,sale_id FROM local_payments WHERE id=? AND status='confirmed'",
