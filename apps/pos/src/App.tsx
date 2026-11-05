@@ -843,7 +843,7 @@ export default function App() {
           <div className="report-table-wrap"><table className="report-table"><thead><tr><th>{ar?"الطفل":"Child"}</th><th>{ar?"الهاتف":"Phone"}</th><th>{ar?"الباقة":"Package"}</th><th>{ar?"المستخدم / الإجمالي":"Used / included"}</th><th>{ar?"المتبقي":"Remaining"}</th><th>{ar?"الانتهاء":"Expires"}</th><th>{ar?"الحالة":"Status"}</th><th>{ar?"إجراء":"Action"}</th></tr></thead><tbody>{memberships.map(m=>{const remaining=Math.max(0,m.included_minutes-m.used_minutes);const status=new Date(m.expires_at)<=new Date()&&m.status==="active"?"expired":m.status;return <tr key={m.id}><td>{m.child_name_snapshot}</td><td>{m.guardian_phone_snapshot}</td><td>{m.plan_name}</td><td>{formatDuration(m.used_minutes,language)} / {formatDuration(m.included_minutes,language)}</td><td>{formatDuration(remaining,language)}</td><td>{formatDate(m.expires_at,language)}</td><td>{status!=="active"||remaining<=0?(ar?"انتهت الباقة":"Package ended"):status}</td><td><button className="primary-button" disabled={!canOperate||status!=="active"||remaining<=0||m.overtime_rate_minor<=0} onClick={()=>void checkInMember(m)}>{ar?"تسجيل دخول":"Check in"}</button></td></tr>})}{memberships.length===0&&<tr><td colSpan={8}>{ar?"لا توجد اشتراكات مسجلة.":"No memberships found."}</td></tr>}</tbody></table></div>
           {isAdmin&&<button className="secondary-button" onClick={()=>setScreen("pricing")}>{ar?"إدارة وإنشاء الباقات":"Manage and create packages"}</button>}
         </section>
-      ) :       {screen === "cafe" ? (
+      ) : screen === "cafe" ? (
         <CafeCenter canManage={canManage} />
       ) : screen === "admin" ? (
         <AdminTools user={authUser} onLogout={() => { void invoke("logout_user").finally(() => setAuthUser(null)); }}  />
