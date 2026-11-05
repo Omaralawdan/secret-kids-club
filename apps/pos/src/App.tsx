@@ -584,15 +584,16 @@ export default function App() {
       }
 
       await refreshData(db);
-      for (const row of childRows) {
-        setReceiptQueue((current) => [...current, buildReceiptHtml({
-          visitNumber, guardianName: guardianName.trim(), guardianPhone: guardianPhone.trim(),
-          childName: row.child.name, checkedInAt: timestamp, expectedCheckoutAt: new Date(new Date(timestamp).getTime() + Math.round(row.child.durationHours * 60) * 60000).toISOString(), paymentMethod,
-          bookedMinutes: Math.round(row.child.durationHours * 60),
-          baseAmountMinor: priceFor(row.child), discountAmountMinor: 0,
-          venueName, venueAddress, venuePhone, issuer: "Cashier",
-        }, language)]);
-      }
+      const visitExpectedCheckout = new Date(Math.max(...childRows.map(row => new Date(timestamp).getTime() + Math.round(row.child.durationHours * 60) * 60000))).toISOString();
+      setReceiptQueue((current) => [...current, buildReceiptHtml({
+        visitNumber, guardianName: guardianName.trim(), guardianPhone: guardianPhone.trim(),
+        childName: childRows.map(row => row.child.name).join("، "),
+        children: childRows.map(row => ({name:row.child.name,bookedMinutes:Math.round(row.child.durationHours*60),baseAmountMinor:priceFor(row.child),discountAmountMinor:0})),
+        checkedInAt: timestamp, expectedCheckoutAt: visitExpectedCheckout, paymentMethod,
+        bookedMinutes: Math.max(...childRows.map(row => Math.round(row.child.durationHours*60))),
+        baseAmountMinor: amountBeforeDiscount, discountAmountMinor: 0,
+        venueName, venueAddress, venuePhone, issuer: "Cashier",
+      }, language)]);
       setGuardianName("");
       setGuardianPhone("");
       setGuardianRelation("Mother");
@@ -682,32 +683,34 @@ export default function App() {
       });
 
       const receiptRows = await db.select<{
-        visit_number: number; guardian_name: string; guardian_phone: string; child_name: string;
-        checked_in_at: string; checked_out_at: string; duration_minutes: number;
-        actual_duration_minutes: number | null; base_amount_minor: number; discount_amount_minor: number;
-        overtime_minutes: number | null; overtime_amount_minor: number | null; overtime_waived: number; overtime_waiver_reason: string | null; final_amount_minor: number; calculation_json: string;
-      }[]>(
-        `SELECT v.visit_number_local AS visit_number, v.guardian_name_snapshot AS guardian_name,
-                v.guardian_phone_snapshot AS guardian_phone, vc.child_name_snapshot AS child_name,
-                v.checked_in_at, vc.checked_out_at, p.duration_minutes, vc.actual_duration_minutes,
-                p.base_amount_minor, p.discount_amount_minor, p.overtime_minutes,
-                p.overtime_amount_minor, p.overtime_waived, p.overtime_waiver_reason, p.final_amount_minor, p.calculation_json
-         FROM local_visits v JOIN local_visit_children vc ON vc.visit_id = v.id
-         JOIN local_visit_child_pricing p ON p.visit_child_id = vc.id WHERE vc.id = ?`,
-        [child.visit_child_id]
-      );
-      const receipt = receiptRows[0];
-      if (receipt && receipt.checked_out_at) {
-        setReceiptQueue((current) => [...current, buildReceiptHtml({
-          visitNumber: receipt.visit_number, guardianName: receipt.guardian_name,
-          guardianPhone: receipt.guardian_phone, childName: receipt.child_name,
-          checkedInAt: receipt.checked_in_at, checkedOutAt: receipt.checked_out_at, paymentMethod: (() => { try { return JSON.parse(receipt.calculation_json).paymentMethod || "cash"; } catch { return "cash"; } })(),
-          bookedMinutes: receipt.duration_minutes, actualMinutes: receipt.actual_duration_minutes || 0,
-          baseAmountMinor: receipt.base_amount_minor, discountAmountMinor: receipt.discount_amount_minor,
-          overtimeMinutes: receipt.overtime_minutes || 0, overtimeAmountMinor: receipt.overtime_amount_minor || 0,
-          overtimeWaived: receipt.overtime_waived === 1, overtimeWaiverReason: receipt.overtime_waiver_reason,
-          totalAmountMinor: receipt.final_amount_minor, venueName, venueAddress, venuePhone, issuer: "Cashier",
-        }, language)]);
+        visit_number:number; guardian_name:string; guardian_phone:string; child_name:string;
+        checked_in_at:string; checked_out_at:string|null; duration_minutes:number;
+        actual_duration_minutes:number|null; base_amount_minor:number; discount_amount_minor:number;
+        overtime_minutes:number|null; overtime_amount_minor:number|null; overtime_waived:number;
+        overtime_waiver_reason:string|null; final_amount_minor:number; calculation_json:string;
+      }[]>(`SELECT v.visit_number_local AS visit_number,v.guardian_name_snapshot AS guardian_name,
+        v.guardian_phone_snapshot AS guardian_phone,vc.child_name_snapshot AS child_name,v.checked_in_at,
+        vc.checked_out_at,p.duration_minutes,vc.actual_duration_minutes,p.base_amount_minor,p.discount_amount_minor,
+        p.overtime_minutes,p.overtime_amount_minor,p.overtime_waived,p.overtime_waiver_reason,p.final_amount_minor,p.calculation_json
+        FROM local_visits v JOIN local_visit_children vc ON vc.visit_id=v.id
+        JOIN local_visit_child_pricing p ON p.visit_child_id=vc.id WHERE v.id=? ORDER BY vc.rowid`,[child.visit_id]);
+      const stillActive = receiptRows.some(row => !row.checked_out_at);
+      if (receiptRows.length && !stillActive) {
+        const first=receiptRows[0];
+        const methods=receiptRows.map(row=>{try{return JSON.parse(row.calculation_json).paymentMethod||"cash"}catch{return "cash"}}).filter((v,i,a)=>a.indexOf(v)===i).join(", ");
+        const childLines=receiptRows.map(row=>({name:row.child_name,bookedMinutes:row.duration_minutes,baseAmountMinor:row.base_amount_minor,discountAmountMinor:row.discount_amount_minor,overtimeMinutes:row.overtime_minutes||0,overtimeAmountMinor:row.overtime_amount_minor||0,overtimeWaived:row.overtime_waived===1,overtimeWaiverReason:row.overtime_waiver_reason,totalAmountMinor:row.final_amount_minor}));
+        setReceiptQueue(current=>[...current,buildReceiptHtml({
+          visitNumber:first.visit_number,guardianName:first.guardian_name,guardianPhone:first.guardian_phone,
+          childName:childLines.map(x=>x.name).join("، "),children:childLines,
+          checkedInAt:first.checked_in_at,checkedOutAt:receiptRows.map(row=>row.checked_out_at||"").sort().at(-1)||null,
+          paymentMethod:methods,bookedMinutes:Math.max(...childLines.map(x=>x.bookedMinutes)),
+          baseAmountMinor:childLines.reduce((sum,x)=>sum+x.baseAmountMinor,0),
+          discountAmountMinor:childLines.reduce((sum,x)=>sum+x.discountAmountMinor,0),
+          overtimeMinutes:childLines.reduce((sum,x)=>sum+(x.overtimeMinutes||0),0),
+          overtimeAmountMinor:childLines.reduce((sum,x)=>sum+(x.overtimeAmountMinor||0),0),
+          totalAmountMinor:childLines.reduce((sum,x)=>sum+(x.totalAmountMinor||0),0),
+          venueName,venueAddress,venuePhone,issuer:"Cashier"
+        },language)]);
       }
 
       await refreshData(db);
