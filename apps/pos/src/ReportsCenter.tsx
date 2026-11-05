@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import Database from "@tauri-apps/plugin-sql";
 import "./ReportsCenter.css";
 
-type ReportKey = "visits" | "customers" | "payments" | "shifts" | "audit" | "users" | "financials";
+type ReportKey = "visits" | "customers" | "payments" | "shifts" | "expenses" | "audit" | "users" | "financials";
 type ReportRow = Record<string, string | number | null>;
 type Field = { key: string; label: string };
 
@@ -13,6 +13,7 @@ const reports: { key: ReportKey; label: string; description: string; fields: Fie
     {key:"guardian_name",label:"اسم ولي الأمر"},{key:"phone",label:"رقم التليفون"},{key:"child_name",label:"اسم الطفل"},{key:"visit_count",label:"عدد الزيارات"},{key:"last_visit",label:"آخر زيارة"},{key:"group_count",label:"عدد السجلات بالمجموعة"},{key:"group_total",label:"إجمالي المجموعة"},{key:"group_average",label:"متوسط العملية"}]},
   { key: "payments", label: "التحصيلات وطرق الدفع", description: "المدفوعات المسجلة في قاعدة البيانات.", fields: [
     {key:"created_at",label:"التاريخ"},{key:"visit_number",label:"رقم الزيارة"},{key:"sale_number",label:"رقم عملية البيع"},{key:"sale_description",label:"تفاصيل البيع / الباقة"},{key:"guardian_name",label:"اسم ولي الأمر"},{key:"phone",label:"رقم التليفون"},{key:"method",label:"طريقة الدفع"},{key:"amount",label:"المبلغ"},{key:"status",label:"حالة الدفع"},{key:"received_by",label:"المستلم"},{key:"cash_session_id",label:"رقم الوردية"},{key:"external_reference",label:"رقم مرجعي"},{key:"group_count",label:"عدد العمليات بالمجموعة"},{key:"group_total",label:"إجمالي المجموعة"},{key:"group_average",label:"متوسط العملية"}]},
+  { key: "expenses", label: "المصروفات اليومية والشهرية", description: "تفاصيل كل مصروف وتاريخه وطريقة دفعه دون تكرار المصروفات الثابتة.", fields: [{key:"created_at",label:"التاريخ"},{key:"expense_name",label:"اسم المصروف"},{key:"expense_type",label:"نوع المصروف"},{key:"amount",label:"المبلغ"},{key:"method",label:"طريقة الدفع"},{key:"reason",label:"السبب / الملاحظات"},{key:"month",label:"الشهر"},{key:"paid_at",label:"تاريخ الدفع"}]},
   { key: "shifts", label: "الورديات والصندوق", description: "جلسات فتح وإغلاق الصندوق والعجز أو الزيادة.", fields: [
     {key:"opened_at",label:"بداية الوردية"},{key:"closed_at",label:"نهاية الوردية"},{key:"opened_by",label:"فتح بواسطة"},{key:"closed_by",label:"إغلاق بواسطة"},{key:"opening_float",label:"رصيد بداية الوردية"},{key:"expected_cash",label:"النقدية المتوقعة"},{key:"counted_cash",label:"النقدية الفعلية"},{key:"variance",label:"العجز / الزيادة"},{key:"variance_reason",label:"سبب الفرق"},{key:"cash_sales",label:"تحصيلات الكاش"},{key:"electronic_sales",label:"التحصيل الإلكتروني"},{key:"expenses",label:"المصروفات"},{key:"refunds",label:"الاستردادات"},{key:"cash_additions",label:"إضافات الدرج"},{key:"cash_removals",label:"مسحوبات الدرج"},{key:"kids_cash",label:"الأطفال - كاش"},{key:"kids_instapay",label:"الأطفال - InstaPay"},{key:"kids_wallet",label:"الأطفال - محفظة"},{key:"cafe_cash",label:"الكافيه - كاش"},{key:"cafe_instapay",label:"الكافيه - InstaPay"},{key:"cafe_wallet",label:"الكافيه - محفظة"},{key:"kids_visa",label:"الأطفال - فيزا"},{key:"kids_other",label:"الأطفال - أخرى"},{key:"cafe_visa",label:"الكافيه - فيزا"},{key:"cafe_other",label:"الكافيه - أخرى"}]},
   { key: "audit", label: "سجل العمليات", description: "تغييرات البيانات والعمليات المسجلة في سجل المراجعة.", fields: [
@@ -27,6 +28,7 @@ const defaultFields: Record<ReportKey, string[]> = {
   visits:["visit_number","child_name","guardian_name","phone","checked_in_at","expected_checkout","checked_out_at","duration_minutes","total_amount","status"],
   customers:["guardian_name","phone","child_name","visit_count","last_visit"],
   payments:["created_at","visit_number","sale_number","sale_description","guardian_name","method","amount","status","received_by","cash_session_id"],
+  expenses:["created_at","expense_name","expense_type","amount","method","reason","month","paid_at"],
   shifts:["opened_at","closed_at","opened_by","closed_by","opening_float","cash_sales","electronic_sales","expenses","refunds","cash_additions","cash_removals","kids_cash","kids_instapay","kids_wallet","cafe_cash","cafe_instapay","cafe_wallet","kids_visa","kids_other","cafe_visa","cafe_other","expected_cash","counted_cash","variance","variance_reason"],
   audit:["created_at","actor","action","entity_type","entity_id"],
   users:["display_name","username","role_codes_json","is_active","last_authenticated_at"],
@@ -148,6 +150,14 @@ export default function ReportsCenter({ db, language, isAdmin = false, canManage
           LEFT JOIN local_users pay_user ON pay_user.id=p.received_by
           WHERE (?='' OR date(p.created_at)>=date(?)) AND (?='' OR date(p.created_at)<=date(?))
           ORDER BY p.created_at DESC`, [startDate,startDate,endDate,endDate]);
+      } else if (reportKey === "expenses") {
+        result = await db.select<ReportRow[]>(`SELECT * FROM (
+          SELECT e.created_at AS created_at,e.category AS expense_name,'daily' AS expense_type,e.amount_minor/100.0 AS amount,COALESCE(e.method_label,e.method) AS method,e.reason AS reason,date(e.created_at) AS month,NULL AS paid_at
+          FROM local_expenses e WHERE (?='' OR date(e.created_at)>=date(?)) AND (?='' OR date(e.created_at)<=date(?))
+          UNION ALL
+          SELECT COALESCE(m.paid_at,m.expense_month || '-01') AS created_at,m.expense_name AS expense_name,'monthly' AS expense_type,m.amount_minor/100.0 AS amount,m.payment_method AS method,m.notes AS reason,m.expense_month AS month,m.paid_at AS paid_at
+          FROM local_monthly_expenses m WHERE (?='' OR m.expense_month>=strftime('%Y-%m',?)) AND (?='' OR m.expense_month<=strftime('%Y-%m',?))
+        ) ORDER BY created_at DESC`,[startDate,startDate,endDate,endDate,startDate,startDate,endDate,endDate]);
       } else if (reportKey === "shifts") {
         result = await db.select<ReportRow[]>(`SELECT opened_at, closed_at, opened_by, closed_by,
           opening_float_minor/100.0 AS opening_float, expected_cash_minor/100.0 AS expected_cash,
