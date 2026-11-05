@@ -345,23 +345,33 @@ fn checkout_transaction_with_overtime(
             )?;
         }
 
-        let requested_method = calculation.get("paymentMethod").and_then(Value::as_str).unwrap_or("cash");
-        let payment_method_label = if ["cash","instapay","wallet","visa","other"].contains(&requested_method) { requested_method } else { "cash" };
-        let payment_method = if ["cash","instapay","wallet"].contains(&payment_method_label) { payment_method_label } else { "wallet" };
         let collected_total: i64 = tx.query_row(
             "SELECT COALESCE(SUM(MAX(0, p.final_amount_minor - CASE WHEN p.overtime_collected=0 THEN p.overtime_amount_minor ELSE 0 END)),0) FROM local_visit_child_pricing p JOIN local_visit_children vc ON vc.id=p.visit_child_id WHERE vc.visit_id=?",
             params![visit_id], |row| row.get(0)
         )?;
         if collected_total > 0 {
             let actor: String = tx.query_row("SELECT COALESCE(actor_user_id,'system') FROM local_session WHERE singleton_id=1", [], |row| row.get(0))?;
-            let shift_id: String = tx.query_row(
-                "SELECT id FROM local_cash_sessions WHERE closed_at IS NULL ORDER BY opened_at DESC LIMIT 1",
-                [], |row| row.get(0)
-            ).optional()?.ok_or_else(|| io::Error::other("افتح وردية قبل تسجيل أي تحصيل."))?;
-            tx.execute(
-                "INSERT INTO local_payments(id,visit_id,method,method_label,status,amount_minor,received_by,created_at,cash_session_id) VALUES(lower(hex(randomblob(16))),? ,?,?, 'confirmed',?,?,?,?)",
-                params![visit_id, payment_method, payment_method_label, collected_total, actor, checkout_time_string, shift_id],
-            )?;
+            let shift_id: String = tx.query_row("SELECT id FROM local_cash_sessions WHERE closed_at IS NULL ORDER BY opened_at DESC LIMIT 1", [], |row| row.get(0)).optional()?.ok_or_else(|| io::Error::other("افتح وردية قبل تسجيل أي تحصيل."))?;
+            let payment_rows = {
+                let mut stmt = tx.prepare("SELECT p.final_amount_minor,p.overtime_amount_minor,p.overtime_collected,p.calculation_json FROM local_visit_child_pricing p JOIN local_visit_children vc ON vc.id=p.visit_child_id WHERE vc.visit_id=? ORDER BY vc.rowid")?;
+                let rows = stmt.query_map(params![visit_id], |row| Ok((row.get::<_,i64>(0)?,row.get::<_,i64>(1)?,row.get::<_,i64>(2)?,row.get::<_,String>(3)?)))?;
+                rows.collect::<Result<Vec<_>,_>>()?
+            };
+            let mut inserted_total=0i64;
+            for (final_amount,overtime_amount,overtime_collected,calculation_json) in payment_rows {
+                let amount=final_amount.saturating_sub(if overtime_collected==0{overtime_amount}else{0});
+                if amount<=0 { continue; }
+                let child_calculation:Value=serde_json::from_str(&calculation_json)?;
+                let requested=child_calculation.get("paymentMethod").and_then(Value::as_str).unwrap_or("cash");
+                let method_label=if ["cash","instapay","wallet","visa","other"].contains(&requested){requested}else{"cash"};
+                let method=if ["cash","instapay","wallet"].contains(&method_label){method_label}else{"wallet"};
+                tx.execute(
+                    "INSERT INTO local_payments(id,visit_id,method,method_label,status,amount_minor,received_by,created_at,cash_session_id) VALUES(lower(hex(randomblob(16))),?,?,?,?,?,?,?,?)",
+                    params![visit_id,method,method_label,"confirmed",amount,actor,checkout_time_string,shift_id],
+                )?;
+                inserted_total=inserted_total.checked_add(amount).ok_or_else(||io::Error::other("إجمالي التحصيل تجاوز الحد المسموح."))?;
+            }
+            if inserted_total!=collected_total { return Err(io::Error::other("مجموع دفعات الأطفال لا يطابق إجمالي التحصيل.").into()); }
         }
     }
 
