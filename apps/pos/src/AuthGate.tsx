@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import "./AuthGate.css";
-export type AuthUser={id:string;name:string;roles:string};
+export type AuthUser={id:string;name:string;roles:string;permissions?:string};
 export default function AuthGate({onAuthenticated,databaseReady}:{onAuthenticated:(user:AuthUser)=>void;databaseReady:boolean}){
  const [needsSetup,setNeedsSetup]=useState(false),[ready,setReady]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState("");
  const [username,setUsername]=useState(""),[displayName,setDisplayName]=useState(""),[password,setPassword]=useState("");
