@@ -387,7 +387,7 @@ export default function App() {
   async function enrollMembership(e:FormEvent<HTMLFormElement>) {
     e.preventDefault(); if(!db)return;
     const plan=membershipPlans.find(p=>p.id===memberPlanId);
-    if(!plan||!memberName.trim()||!memberPhone.trim()){setError("أدخل اسم الطفل ورقم الهاتف واختار الباقة.");return} if(plan.price_minor<=0){setError("سعر الباقة يجب أن يكون أكبر من صفر لتسجيل التحصيل.");return}
+    if(!plan||!memberName.trim()||!memberPhone.trim()){setError("أدخل اسم الطفل ورقم الهاتف واختار الباقة.");return} if(plan.price_minor<=0){setError("سعر الباقة يجب أن يكون أكبر من صفر لتسجيل التحصيل.");return} const initialPaid=memberPaymentAmount.trim()===""?plan.price_minor:Math.round(Number(memberPaymentAmount)*100); if(!Number.isFinite(initialPaid)||initialPaid<=0||initialPaid>plan.price_minor){setError("المبلغ المدفوع الآن يجب أن يكون أكبر من صفر ولا يتجاوز سعر الباقة.");return}
     const purchased=new Date(), expires=new Date(purchased.getTime()+plan.validity_days*86400000);
     try {
       const membershipId=makeId(), saleId=makeId();
@@ -401,10 +401,10 @@ export default function App() {
       if(!cashSessionId) throw new Error("افتح وردية قبل تسجيل تحصيل الباقة.");
       await db.execute("INSERT INTO local_sales(id,sale_number_local,visit_id,status,subtotal_minor,discount_minor,total_minor,cashier_user_id,created_at,sync_state) VALUES(?, ?, NULL,'completed',?,0,?,?,?,'pending')",[saleId,saleNo,plan.price_minor,plan.price_minor,cashierId,purchased.toISOString()]);
       await db.execute("INSERT INTO local_sale_items(id,sale_id,item_type,inventory_item_id,description_snapshot,quantity_milli,unit_price_minor,line_total_minor) VALUES(?, ?, 'other', NULL, ?,1000,?,?)",[makeId(),saleId,"Membership package: "+plan.name+" - "+memberName.trim(),plan.price_minor,plan.price_minor]);
-      await db.execute("INSERT INTO local_child_memberships(id,child_id,child_name_snapshot,guardian_phone_snapshot,plan_id,purchased_at,starts_at,expires_at,included_minutes,used_minutes,status,sync_state) VALUES(?,NULL,?,?,?,?,?,?,?,0,'active','pending')",[membershipId,memberName.trim(),memberPhone.trim(),plan.id,purchased.toISOString(),purchased.toISOString(),expires.toISOString(),plan.included_minutes]);
+      await db.execute("INSERT INTO local_child_memberships(id,child_id,child_name_snapshot,guardian_phone_snapshot,plan_id,purchased_at,starts_at,expires_at,included_minutes,used_minutes,status,sync_state,sale_id) VALUES(?,NULL,?,?,?,?,?,?,?,0,'active','pending',?)",[membershipId,memberName.trim(),memberPhone.trim(),plan.id,purchased.toISOString(),purchased.toISOString(),expires.toISOString(),plan.included_minutes,saleId]);
       const storedMemberMethod=memberPaymentMethod==="visa"||memberPaymentMethod==="other"?"wallet":memberPaymentMethod;
-       await db.execute("INSERT INTO local_payments(id,sale_id,visit_id,method,method_label,status,amount_minor,received_by,created_at,sync_state,cash_session_id) VALUES(?,?,NULL,?,?,'confirmed',?,?,?,'pending',?)",[makeId(),saleId,storedMemberMethod,memberPaymentMethod,plan.price_minor,cashierId,purchased.toISOString(),cashSessionId]);
-      setMemberName("");setMemberPhone("");await refreshData(db);setMessage("تم تسجيل الطفل في الباقة وتسجيل تحصيل قيمتها.");setError("")
+       await db.execute("INSERT INTO local_payments(id,sale_id,visit_id,method,method_label,status,amount_minor,external_reference,received_by,created_at,sync_state,cash_session_id) VALUES(?,?,NULL,?,?,'confirmed',?,?,?,?, 'pending',?)",[makeId(),saleId,storedMemberMethod,memberPaymentMethod,initialPaid,memberPaymentNote.trim()||null,cashierId,purchased.toISOString(),cashSessionId]);
+      setMemberName("");setMemberPhone("");setMemberPaymentAmount("");setMemberPaymentNote("");await refreshData(db);setMessage(initialPaid<plan.price_minor?"تم تسجيل الباقة مع وجود مبلغ متبقٍ للتحصيل.":"تم تسجيل الطفل في الباقة وتحصيل قيمتها بالكامل.");setError("")
     } catch(e){setError(String(e))}
   }
   async function updateMembershipOvertimeRate(m:ChildMembership) {
