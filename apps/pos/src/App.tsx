@@ -32,7 +32,7 @@ type ChildDraft = {
   priceMinor: number | null;
 };
 
-type Screen = "reception" | "active" | "packages" | "pricing" | "settings" | "reports" | "admin" | "cafe";
+type Screen = "reception" | "active" | "packages" | "pricing" | "settings" | "reports" | "admin" | "cafe" | "bookings";
 
 type ActiveChild = {
   visit_id: string;
