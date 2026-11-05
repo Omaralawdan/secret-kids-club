@@ -707,7 +707,7 @@ export default function App() {
         setReceiptQueue(current=>[...current,buildReceiptHtml({
           visitNumber:first.visit_number,guardianName:first.guardian_name,guardianPhone:first.guardian_phone,
           childName:childLines.map(x=>x.name).join("، "),children:childLines,
-          checkedInAt:first.checked_in_at,checkedOutAt:receiptRows.map(row=>row.checked_out_at||"").sort().at(-1)||null,
+          checkedInAt:first.checked_in_at,checkedOutAt:(()=>{const times=receiptRows.map(row=>row.checked_out_at||"").sort();return times[times.length-1]||null})(),
           paymentMethod:methods,bookedMinutes:Math.max(...childLines.map(x=>x.bookedMinutes)),
           baseAmountMinor:childLines.reduce((sum,x)=>sum+x.baseAmountMinor,0),
           discountAmountMinor:childLines.reduce((sum,x)=>sum+x.discountAmountMinor,0),
@@ -901,8 +901,11 @@ export default function App() {
                     ? Math.max(0, actual - booked)
                     : 0;
 
+                const visitChildrenCount=activeChildren.filter(item=>item.visit_id===child.visit_id).length;
+                const firstInVisit=activeChildren.findIndex(item=>item.visit_id===child.visit_id)===activeChildren.indexOf(child);
                 return (
                   <article className="child-row active-visit-row" key={child.visit_child_id}>
+                    {firstInVisit && <div className="full-width panel"><strong>{ar ? "زيارة واحدة للمرافق" : "Single guardian visit"} · #{child.visit_number}</strong><span className="muted"> · {child.guardian_name} · {child.guardian_phone} · {visitChildrenCount} {ar ? "أطفال" : "children"}</span></div>}
                     <div className="child-number">#{child.visit_number}</div>
                     <div className="child-name">
                       <strong>{child.child_name}</strong>
@@ -915,6 +918,7 @@ export default function App() {
                       <strong>{booked > 0 ? formatDuration(booked, language) : (ar ? "غير محددة" : "Not recorded")}</strong>
                       <span>{ar ? "المدة الفعلية" : "Elapsed time"}</span>
                       <strong>{formatDuration(actual, language)}</strong>
+                      {actual >= booked && booked > 0 && <strong className="notice error">{ar ? "انتهى وقت الطفل — يلزم تمديد أو تسجيل خروج" : "Time expired — extend or check out"}</strong>}
                       <span>{ar ? "مدة الوقت الإضافي" : "Overtime duration"}</span>
                       <strong>{formatDuration(estimatedOvertime, language)}</strong>
                     </div>
