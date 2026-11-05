@@ -11,7 +11,7 @@ type SalePayment={key:string;method:string;amount:string};
 type Coupon={id:string;code:string;description:string;discountType:string;discountValue:number;maxDiscountMinor:number|null;usageLimit:number|null;usedCount:number;active:boolean};
 type ExpiryAlert={id:string;itemName:string;quantityMilli:number;expiryDate:string;daysRemaining:number};
 type StockMovement={id:string;itemName:string;type:string;quantityMilli:number;reason:string;createdBy:string;createdAt:string};
-const money=(n:number)=>new Intl.NumberFormat("ar-EG",{style:"currency",currency:"EGP"}).format(n/100);
+const money=(n:number)=>new Intl.NumberFormat("ar-EG",{style:"currency",currency:"EGP",minimumFractionDigits:0,maximumFractionDigits:2}).format(n/100);
 const escapeText=(v:unknown)=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"} as Record<string,string>)[c]||c);
 export default function CafeCenter({canManage,canManagePricing,canApplyDiscounts}:{canManage:boolean;canManagePricing:boolean;canApplyDiscounts:boolean}){
  const [items,setItems]=useState<CafeItem[]>([]),[suppliers,setSuppliers]=useState<Supplier[]>([]),[recipes,setRecipes]=useState<Recipe[]>([]),[expiryAlerts,setExpiryAlerts]=useState<ExpiryAlert[]>([]),[movements,setMovements]=useState<StockMovement[]>([]),[coupons,setCoupons]=useState<Coupon[]>([]);
