@@ -82,7 +82,7 @@ function formatDuration(minutes: number, language: Language) {
   return language === "ar" ? `${formatted} ساعة` : `${formatted} h`;
 }
 
-type ReceiptChildLine = { name:string; bookedMinutes:number; baseAmountMinor:number; discountAmountMinor:number; overtimeMinutes?:number; overtimeAmountMinor?:number; overtimeWaived?:boolean; overtimeWaiverReason?:string|null; totalAmountMinor?:number };
+type ReceiptChildLine = { name:string; bookedMinutes:number; baseAmountMinor:number; discountAmountMinor:number; extensions?:{minutes:number;amountMinor:number}[]; overtimeMinutes?:number; overtimeAmountMinor?:number; overtimeWaived?:boolean; overtimeWaiverReason?:string|null; totalAmountMinor?:number };
 type ReceiptData = {
   visitNumber: number; guardianName: string; guardianPhone: string; childName: string;
   children?: ReceiptChildLine[];
@@ -120,6 +120,7 @@ function buildReceiptHtml(data: ReceiptData, language: Language): string {
     html += row(label("Children count", "عدد الأطفال"), String(data.children.length));
     for (const child of data.children) {
       html += row(escapeReceipt(child.name), escapeReceipt(formatDuration(child.bookedMinutes, language)) + " · " + escapeReceipt(money(child.baseAmountMinor, language)));
+      for (const extension of child.extensions || []) html += row(label("Extension", "تمديد"), escapeReceipt(formatDuration(extension.minutes, language)) + " · " + escapeReceipt(money(extension.amountMinor, language)));
       if ((child.discountAmountMinor || 0)>0) html += row(label("Child discount","خصم الطفل"),escapeReceipt(money(child.discountAmountMinor || 0,language)));
       if ((child.overtimeAmountMinor || 0)>0) html += row(label("Child overtime","إضافي الطفل"),escapeReceipt(money(child.overtimeAmountMinor || 0,language)));
     }
@@ -839,7 +840,7 @@ export default function App() {
       if (receiptRows.length && !stillActive) {
         const first=receiptRows[0];
         const methods=receiptRows.map(row=>{try{return JSON.parse(row.calculation_json).paymentMethod||"cash"}catch{return "cash"}}).filter((v,i,a)=>a.indexOf(v)===i).join(", ");
-        const childLines=receiptRows.map(row=>({name:row.child_name,bookedMinutes:row.duration_minutes,baseAmountMinor:row.base_amount_minor,discountAmountMinor:row.discount_amount_minor,overtimeMinutes:row.overtime_minutes||0,overtimeAmountMinor:row.overtime_amount_minor||0,overtimeWaived:row.overtime_waived===1,overtimeWaiverReason:row.overtime_waiver_reason,totalAmountMinor:row.final_amount_minor}));
+        const childLines=receiptRows.map(row=>({name:row.child_name,bookedMinutes:row.duration_minutes,baseAmountMinor:row.base_amount_minor,discountAmountMinor:row.discount_amount_minor,extensions:(()=>{try{return (JSON.parse(row.calculation_json).extensions||[]).map((x:{minutes:number;amountMinor:number})=>({minutes:x.minutes,amountMinor:x.amountMinor}))}catch{return []}})(),overtimeMinutes:row.overtime_minutes||0,overtimeAmountMinor:row.overtime_amount_minor||0,overtimeWaived:row.overtime_waived===1,overtimeWaiverReason:row.overtime_waiver_reason,totalAmountMinor:row.final_amount_minor}));
         setReceiptQueue(current=>[...current,buildReceiptHtml({
           visitNumber:first.visit_number,guardianName:first.guardian_name,guardianPhone:first.guardian_phone,
           childName:childLines.map(x=>x.name).join("، "),children:childLines,
