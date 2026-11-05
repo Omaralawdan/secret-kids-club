@@ -1169,6 +1169,7 @@ pub fn run() {
         Migration { version: 15, description: "membership_partial_payments", sql: include_str!("../migrations/015_membership_partial_payments.sql"), kind: MigrationKind::Up },
         Migration { version: 16, description: "bookings_and_birthday_parties", sql: include_str!("../migrations/016_bookings_and_birthday_parties.sql"), kind: MigrationKind::Up },
         Migration { version: 17, description: "coupons", sql: include_str!("../migrations/017_coupons.sql"), kind: MigrationKind::Up },
+        Migration { version: 18, description: "booking_visit_link", sql: include_str!("../migrations/018_booking_visit_link.sql"), kind: MigrationKind::Up },
     ];
 
     tauri::Builder::default()
