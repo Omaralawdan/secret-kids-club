@@ -459,7 +459,7 @@ fn admin_list_users(app:tauri::AppHandle)->Result<Vec<Value>,String>{
 fn admin_set_user_permissions(app:tauri::AppHandle,user_id:String,permissions:Vec<String>)->Result<(),String>{
  let allowed=["reception","active","packages","cafe","reports","shift","pricing","settings","bookings"];
  if permissions.iter().any(|p|!allowed.contains(&p.as_str())){return Err("تم إرسال صلاحية غير معروفة.".into())}
- let mut db=auth_db(&app)?;let(actor,_)=require_role(&db,&["admin","manager"])?;let tx=db.transaction().map_err(|e|e.to_string())?;
+ let mut db=auth_db(&app)?;let(actor,_)=require_role(&db,&["admin","manager"])?;require_permission(&db,"cafe")?;let tx=db.transaction().map_err(|e|e.to_string())?;
  let before:String=tx.query_row("SELECT permissions_json FROM local_users WHERE id=?",params![user_id],|r|r.get(0)).map_err(|_|"الموظف غير موجود.".to_string())?;
  let mut saved=permissions.clone();saved.push("__custom__".to_string());tx.execute("UPDATE local_users SET permissions_json=? WHERE id=?",params![json!(saved).to_string(),user_id]).map_err(|e|e.to_string())?;
  tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,before_json,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'user_permissions_changed','user',?,?,?,?)",params![actor,user_id,before,json!(saved).to_string(),Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
