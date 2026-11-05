@@ -59,6 +59,8 @@ const money = (minor: number, language: Language = "en") =>
   new Intl.NumberFormat(language === "ar" ? "ar-EG" : "en-EG", {
     style: "currency",
     currency: "EGP",
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
   }).format(minor / 100);
 
 function formatDate(value: string, language: Language) {
