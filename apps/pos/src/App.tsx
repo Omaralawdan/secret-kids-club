@@ -9,7 +9,7 @@ import ReportsCenter from "./ReportsCenter";
 import AuthGate, { type AuthUser } from "./AuthGate";
 import AdminTools from "./AdminTools";
 import CafeCenter from "./CafeCenter";
-import BookingsCenter from "./BookingsCenter";
+import BookingsCenter, { type Booking } from "./BookingsCenter";
 
 type MembershipPlan = { id:string; name:string; price_minor:number; included_minutes:number; validity_days:number; overtime_rate_minor:number; is_active:number };
 type ChildMembership = { id:string; child_name_snapshot:string; guardian_phone_snapshot:string; plan_id:string; plan_name:string; purchased_at:string; expires_at:string; included_minutes:number; used_minutes:number; overtime_rate_minor:number; status:string; sale_id:string|null; paid_minor:number; remaining_minor:number };
@@ -176,6 +176,7 @@ export default function App() {
   const [receiptPreviewHtml, setReceiptPreviewHtml] = useState("");
   const receiptFrameRef = useRef<HTMLIFrameElement>(null);
 
+  const [selectedBookingId, setSelectedBookingId] = useState<string | null>(null);
   const [guardianName, setGuardianName] = useState("");
   const [guardianRelation, setGuardianRelation] = useState("Mother");
   const [guardianPhone, setGuardianPhone] = useState("");
