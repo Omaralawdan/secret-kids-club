@@ -811,7 +811,7 @@ export default function App() {
         </button>}
         {canOperate && hasPermission("bookings") && <button className={screen === "bookings" ? "active" : ""} onClick={() => setScreen("bookings")}>{ar ? "الحجوزات" : "Bookings"}</button>}
         {canOperate && hasPermission("packages") && <button className={screen === "packages" ? "active" : ""} onClick={() => setScreen("packages")}>{ar ? "الباقات" : "Packages"}</button>}
-        {canManage && hasPermission("pricing") && <button className={screen === "pricing" ? "active" : ""} onClick={() => setScreen("pricing")}>
+        {canOperate && hasPermission("pricing") && <button className={screen === "pricing" ? "active" : ""} onClick={() => setScreen("pricing")}>
           {tr("Pricing setup")}
         </button>}
         {isAdmin && hasPermission("settings") && <button className={screen === "settings" ? "active" : ""} onClick={() => setScreen("settings")}>
