@@ -765,6 +765,28 @@ fn save_monthly_expense(app: tauri::AppHandle, expense_name: String, amount_mino
 
 
 
+
+#[tauri::command]
+fn save_cafe_recipe(app:tauri::AppHandle,sellable_item_id:String,recipe_name:String,yield_quantity_milli:i64,ingredients:Vec<Value>)->Result<(),String>{
+    if sellable_item_id.trim().is_empty()||recipe_name.trim().is_empty()||yield_quantity_milli<=0||ingredients.is_empty(){return Err("أدخل اسم الوصفة والمنتج والكمية الناتجة ومكونًا واحدًا على الأقل.".into())}
+    let mut db=auth_db(&app)?;let(actor,_)=require_role(&db,&["admin","manager"])?;let tx=db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
+    let kind:String=tx.query_row("SELECT item_kind FROM local_inventory_items WHERE id=? AND is_active=1",params![sellable_item_id],|r|r.get(0)).map_err(|_|"المنتج غير موجود.".to_string())?;if kind!="ready_product"{return Err("الوصفة يجب أن ترتبط بمنتج جاهز للبيع.".into())}
+    let recipe_id:Option<String>=tx.query_row("SELECT id FROM local_recipes WHERE sellable_item_id=?",params![sellable_item_id],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
+    let id=recipe_id.unwrap_or_else(||uuid::Uuid::new_v4().to_string());
+    tx.execute("INSERT INTO local_recipes(id,sellable_item_id,name,yield_quantity_milli) VALUES(?,?,?,?) ON CONFLICT(sellable_item_id) DO UPDATE SET name=excluded.name,yield_quantity_milli=excluded.yield_quantity_milli",params![id,sellable_item_id,recipe_name.trim(),yield_quantity_milli]).map_err(|e|e.to_string())?;
+    let actual_id:String=tx.query_row("SELECT id FROM local_recipes WHERE sellable_item_id=?",params![sellable_item_id],|r|r.get(0)).map_err(|e|e.to_string())?;
+    tx.execute("DELETE FROM local_recipe_ingredients WHERE recipe_id=?",params![actual_id]).map_err(|e|e.to_string())?;
+    let mut seen=std::collections::HashSet::new();
+    for line in ingredients.iter(){let item=line.get("itemId").and_then(Value::as_str).ok_or("مكون الوصفة غير محدد.")?;let qty=line.get("quantityMilli").and_then(Value::as_i64).ok_or("كمية مكون الوصفة غير صحيحة.")?;if qty<=0||item==sellable_item_id||!seen.insert(item.to_string()){return Err("راجع مكونات الوصفة؛ يجب أن تكون الكميات موجبة والمكونات غير مكررة.".into())}let exists:i64=tx.query_row("SELECT COUNT(*) FROM local_inventory_items WHERE id=? AND is_active=1",params![item],|r|r.get(0)).map_err(|e|e.to_string())?;if exists==0{return Err("أحد مكونات الوصفة غير موجود.".into())}tx.execute("INSERT INTO local_recipe_ingredients(id,recipe_id,inventory_item_id,quantity_milli) VALUES(?,?,?,?)",params![uuid::Uuid::new_v4().to_string(),actual_id,item,qty]).map_err(|e|e.to_string())?;}
+    tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'cafe_recipe_saved','recipe',?,?,?)",params![actor,actual_id,json!({"product_id":sellable_item_id,"name":recipe_name,"yield_quantity_milli":yield_quantity_milli,"ingredients":ingredients}).to_string(),Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
+    tx.commit().map_err(|e|e.to_string())?;Ok(())
+}
+
+#[tauri::command]
+fn list_cafe_recipes(app:tauri::AppHandle)->Result<Vec<Value>,String>{
+    let db=auth_db(&app)?;require_role(&db,&["admin","manager","cashier"])?;let mut st=db.prepare("SELECT r.id,r.name,r.sellable_item_id,i.name,r.yield_quantity_milli,(SELECT COUNT(*) FROM local_recipe_ingredients ri WHERE ri.recipe_id=r.id) FROM local_recipes r JOIN local_inventory_items i ON i.id=r.sellable_item_id ORDER BY r.name").map_err(|e|e.to_string())?;let rows=st.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?,"productId":r.get::<_,String>(2)?,"productName":r.get::<_,String>(3)?,"yieldQuantityMilli":r.get::<_,i64>(4)?,"ingredientCount":r.get::<_,i64>(5)?}))).map_err(|e|e.to_string())?;rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())
+}
+
 #[tauri::command]
 fn create_cafe_sale(app:tauri::AppHandle,items:Vec<Value>,payment_method:String)->Result<Value,String>{
     if items.is_empty()||!["cash","instapay","wallet"].contains(&payment_method.as_str()){return Err("أضف أصنافًا واختر طريقة دفع صحيحة.".into())}
@@ -914,7 +936,7 @@ pub fn run() {
                 .add_migrations("sqlite:secret-kids-club.db", migrations)
                 .build(),
         )
-        .invoke_handler(tauri::generate_handler![greet, create_cafe_sale, list_cafe_items, save_cafe_item, adjust_cafe_stock, record_cafe_purchase, save_cafe_supplier, list_cafe_suppliers, record_cash_movement, list_monthly_expenses, save_monthly_expense, checkout_child, cancel_visit, update_membership_overtime_rate, list_refundable_payments, record_expense, record_refund, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_create_user, admin_set_user_active, admin_reset_user_password, admin_update_user_role, admin_delete_user, delete_pricing_rule, create_pricing_rule, get_active_cash_shift, open_cash_shift, close_cash_shift, admin_audit_log])
+        .invoke_handler(tauri::generate_handler![greet, save_cafe_recipe, list_cafe_recipes, create_cafe_sale, list_cafe_items, save_cafe_item, adjust_cafe_stock, record_cafe_purchase, save_cafe_supplier, list_cafe_suppliers, record_cash_movement, list_monthly_expenses, save_monthly_expense, checkout_child, cancel_visit, update_membership_overtime_rate, list_refundable_payments, record_expense, record_refund, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_create_user, admin_set_user_active, admin_reset_user_password, admin_update_user_role, admin_delete_user, delete_pricing_rule, create_pricing_rule, get_active_cash_shift, open_cash_shift, close_cash_shift, admin_audit_log])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
