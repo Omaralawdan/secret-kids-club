@@ -803,6 +803,8 @@ export default function App() {
             ? tr("New visit")
             : screen === "active"
               ? ar ? "الزيارات النشطة" : "Active visits"
+              : screen === "packages"
+                ? (ar ? "الباقات والاشتراكات" : "Packages & Memberships")
               : screen === "pricing"
                 ? tr("Pricing rules")
                 : screen === "reports"
@@ -818,6 +820,8 @@ export default function App() {
               ? ar
                 ? "تابع الأطفال الموجودين وسجّل خروج كل طفل عند مغادرته."
                 : "Track children currently in the club and check each child out individually."
+              : screen === "packages"
+                ? (ar ? "متابعة أرصدة الباقات وحالة اشتراك كل طفل." : "View package balances and membership status.")
               : screen === "pricing"
                 ? tr("Configure the prices available to cashiers. No prices are preloaded.")
                 : screen === "reports"
