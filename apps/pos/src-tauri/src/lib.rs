@@ -1200,7 +1200,7 @@ fn save_booking(app:tauri::AppHandle,booking_type:String,guardian_name:String,gu
 
 #[tauri::command]
 fn update_booking_status(app:tauri::AppHandle,booking_id:String,status:String,reason:String)->Result<(),String>{
-    if !["confirmed","completed","cancelled"].contains(&status.as_str())||booking_id.trim().is_empty(){return Err("حالة الحجز غير صحيحة.".into())}
+    if !["confirmed","cancelled"].contains(&status.as_str())||booking_id.trim().is_empty(){return Err("حالة الحجز غير صحيحة.".into())}
     if status=="cancelled"&&reason.trim().is_empty(){return Err("سبب إلغاء الحجز مطلوب.".into())}
     let mut db=auth_db(&app)?;require_permission(&db,"bookings")?;let(actor,_)=require_role(&db,&["admin","manager","cashier"])?;
     let changed=db.execute("UPDATE local_bookings SET status=? WHERE id=? AND status IN ('booked','confirmed')",params![status,booking_id]).map_err(|e|e.to_string())?;
