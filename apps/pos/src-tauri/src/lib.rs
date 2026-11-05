@@ -480,7 +480,7 @@ fn admin_set_user_active(app:tauri::AppHandle,user_id:String,is_active:bool)->Re
 #[tauri::command]
 fn admin_reset_user_password(app: tauri::AppHandle, user_id: String, new_password: String) -> Result<(), String> {
     if new_password.chars().count() < 12 { return Err("كلمة المرور يجب أن تكون 12 حرفًا على الأقل.".into()); }
-    let mut db=auth_db(&app)?; let (actor,_)=require_role(&db,&["admin"])?;
+    let mut db=auth_db(&app)?; require_permission(&db,"pricing")?; let (actor,_)=require_role(&db,&["admin","manager","cashier"])?;
     let mut salt=[0u8;16]; rand::thread_rng().fill_bytes(&mut salt);
     let tx=db.transaction().map_err(|e|e.to_string())?;
     let exists:i64=tx.query_row("SELECT COUNT(*) FROM local_users WHERE id=?",params![user_id],|r|r.get(0)).map_err(|e|e.to_string())?;
@@ -548,7 +548,8 @@ fn create_pricing_rule(
     if duration_minutes < 25 || duration_minutes > 720 { return Err("مدة الحجز يجب أن تكون من 25 دقيقة إلى 12 ساعة.".into()); }
 
     let mut db = auth_db(&app)?;
-    let (actor, _) = require_role(&db, &["admin", "manager"])?;
+    require_permission(&db,"pricing")?;
+    let (actor, _) = require_role(&db, &["admin", "manager", "cashier"])?;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
     let id = uuid::Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
@@ -647,7 +648,8 @@ fn admin_audit_log(app:tauri::AppHandle,limit:i64)->Result<Vec<Value>,String>{
 fn update_membership_overtime_rate(app: tauri::AppHandle, plan_id: String, overtime_rate_minor: i64) -> Result<(), String> {
     if plan_id.trim().is_empty() || overtime_rate_minor <= 0 { return Err("أدخل سعر ساعة إضافي صحيحًا.".into()); }
     let mut db = auth_db(&app)?;
-    let (actor, _) = require_role(&db, &["admin"])?;
+    require_permission(&db,"pricing")?;
+    let (actor, _) = require_role(&db, &["admin","manager","cashier"])?;
     let now = Utc::now().to_rfc3339();
     let tx = db.transaction().map_err(|e| e.to_string())?;
     let previous: i64 = tx.query_row("SELECT overtime_rate_minor FROM local_membership_plans WHERE id=?",params![plan_id],|r|r.get(0)).map_err(|_| "الباقة غير موجودة.".to_string())?;
@@ -1007,7 +1009,7 @@ fn save_coupon(app:tauri::AppHandle,code:String,description:String,discount_type
     let normalized=code.trim().to_ascii_uppercase();
     if normalized.len()<3||normalized.len()>32||!normalized.chars().all(|c|c.is_ascii_alphanumeric()||c=='-')||!["percent","fixed"].contains(&discount_type.as_str())||discount_value<=0||(discount_type=="percent"&&discount_value>10000)||max_discount_minor.map(|v|v<=0).unwrap_or(false)||usage_limit.map(|v|v<=0).unwrap_or(false){return Err("راجع كود الخصم ونوعه وقيمته وحدود الاستخدام.".into())}
     if let (Some(start),Some(end))=(&starts_at,&ends_at){if start>=end{return Err("تاريخ انتهاء الكوبون يجب أن يكون بعد تاريخ البداية.".into())}}
-    let mut db=auth_db(&app)?;require_permission(&db,"pricing")?;let(actor,_)=require_role(&db,&["admin","manager"])?;
+    let mut db=auth_db(&app)?;require_permission(&db,"pricing")?;let(actor,_)=require_role(&db,&["admin","manager","cashier"])?;
     let id=uuid::Uuid::new_v4().to_string();let now=Utc::now().to_rfc3339();
     db.execute("INSERT INTO local_coupons(id,code,description,discount_type,discount_value,max_discount_minor,usage_limit,starts_at,ends_at,is_active,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?,1,?,?)",params![id,normalized,description.trim(),discount_type,discount_value,max_discount_minor,usage_limit,starts_at,ends_at,actor,now]).map_err(|e|if e.to_string().contains("UNIQUE"){"كود الخصم مستخدم بالفعل.".to_string()}else{e.to_string()})?;
     db.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'coupon_created','coupon',?,?,?)",params![actor,id,json!({"code":normalized,"discount_type":discount_type,"discount_value":discount_value}).to_string(),now]).map_err(|e|e.to_string())?;
