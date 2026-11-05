@@ -807,6 +807,85 @@ fn cancel_membership(app:tauri::AppHandle,membership_id:String,reason:String)->R
 }
 
 #[tauri::command]
+fn create_membership_sale(
+    app: tauri::AppHandle,
+    plan_id: String,
+    child_name: String,
+    guardian_phone: String,
+    amount_paid_minor: Option<i64>,
+    method: String,
+    note: String,
+    coupon_code: Option<String>,
+) -> Result<Value, String> {
+    if plan_id.trim().is_empty() || child_name.trim().is_empty() || guardian_phone.trim().is_empty()
+        || !["cash","instapay","wallet","visa","other"].contains(&method.as_str())
+        || amount_paid_minor.map(|v|v<=0).unwrap_or(false) {
+        return Err("راجع بيانات الطفل والباقة ومبلغ التحصيل وطريقة الدفع.".into());
+    }
+    let mut db=auth_db(&app)?;
+    require_permission(&db,"packages")?;
+    require_permission(&db,"shift")?;
+    if coupon_code.as_deref().map(|v|!v.trim().is_empty()).unwrap_or(false) { require_permission(&db,"pricing")?; }
+    let (actor,_)=require_role(&db,&["admin","manager","cashier"])?;
+    let tx=db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
+    let (plan_name,plan_price,included_minutes,validity_days):(String,i64,i64,i64)=tx.query_row(
+        "SELECT name,price_minor,included_minutes,validity_days FROM local_membership_plans WHERE id=? AND is_active=1",
+        params![plan_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))
+    ).optional().map_err(|e|e.to_string())?.ok_or("الباقة غير موجودة أو غير نشطة.")?;
+    if plan_price<=0 { return Err("سعر الباقة يجب أن يكون أكبر من صفر.".into()); }
+    let shift_id:String=tx.query_row("SELECT id FROM local_cash_sessions WHERE closed_at IS NULL ORDER BY opened_at DESC LIMIT 1",[],|r|r.get(0)).optional().map_err(|e|e.to_string())?.ok_or("افتح الوردية قبل تسجيل بيع الباقة.")?;
+    let now=Utc::now().to_rfc3339();
+    let mut coupon_id:Option<String>=None;
+    let mut discount_minor=0i64;
+    let normalized_coupon=coupon_code.as_deref().map(str::trim).filter(|v|!v.is_empty()).map(|v|v.to_ascii_uppercase());
+    if let Some(code)=normalized_coupon.as_deref() {
+        let coupon:Option<(String,String,i64,Option<i64>,Option<i64>,i64,Option<String>,Option<String>,i64)>=tx.query_row(
+            "SELECT id,discount_type,discount_value,max_discount_minor,usage_limit,used_count,starts_at,ends_at,is_active FROM local_coupons WHERE code=? COLLATE NOCASE",
+            params![code],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?))
+        ).optional().map_err(|e|e.to_string())?;
+        let (id,kind,value,cap,limit,used,start,end,active)=coupon.ok_or("كود الخصم غير موجود.")?;
+        if active!=1 || limit.map(|n|used>=n).unwrap_or(false) { return Err("الكوبون غير نشط أو استنفد عدد مرات استخدامه.".into()); }
+        if start.as_deref().map(|v|now.as_str()<v).unwrap_or(false)||end.as_deref().map(|v|now.as_str()>v).unwrap_or(false) { return Err("الكوبون خارج فترة الصلاحية.".into()); }
+        discount_minor=if kind=="percent" { plan_price.checked_mul(value).ok_or("قيمة الخصم كبيرة جدًا.")?/10000 } else if kind=="fixed" { value.min(plan_price) } else { return Err("نوع الخصم غير صالح.".into()); };
+        if let Some(maximum)=cap { discount_minor=discount_minor.min(maximum); }
+        coupon_id=Some(id);
+    }
+    let total_minor=plan_price.checked_sub(discount_minor).ok_or("حساب الخصم غير صحيح.")?;
+    let paid=amount_paid_minor.unwrap_or(total_minor);
+    if paid<=0 || paid>total_minor { return Err(format!("المدفوع يجب أن يكون أكبر من صفر ولا يتجاوز صافي الباقة: {} جنيه.",total_minor as f64/100.0)); }
+    let sale_id=uuid::Uuid::new_v4().to_string();
+    let sale_number:i64=tx.query_row("SELECT COALESCE(MAX(sale_number_local),0)+1 FROM local_sales",[],|r|r.get(0)).map_err(|e|e.to_string())?;
+    tx.execute(
+        "INSERT INTO local_sales(id,sale_number_local,visit_id,status,subtotal_minor,discount_minor,total_minor,cashier_user_id,created_at,sync_state,coupon_id) VALUES(?,?,NULL,'completed',?,?,?,?,?,'pending',?)",
+        params![sale_id,sale_number,plan_price,discount_minor,total_minor,actor,now,coupon_id]
+    ).map_err(|e|e.to_string())?;
+    tx.execute(
+        "INSERT INTO local_sale_items(id,sale_id,item_type,inventory_item_id,description_snapshot,quantity_milli,unit_price_minor,line_total_minor) VALUES(?,?,'other',NULL,?,1000,?,?)",
+        params![uuid::Uuid::new_v4().to_string(),sale_id,format!("Membership package: {} - {}",plan_name,child_name.trim()),plan_price,plan_price]
+    ).map_err(|e|e.to_string())?;
+    let membership_id=uuid::Uuid::new_v4().to_string();
+    let purchased=Utc::now();
+    let expires=(purchased+chrono::Duration::days(validity_days)).to_rfc3339();
+    let purchased_at=purchased.to_rfc3339();
+    tx.execute(
+        "INSERT INTO local_child_memberships(id,child_id,child_name_snapshot,guardian_phone_snapshot,plan_id,purchased_at,starts_at,expires_at,included_minutes,used_minutes,status,sync_state,sale_id) VALUES(?,NULL,?,?,?,?,?,?,?,0,'active','pending',?)",
+        params![membership_id,child_name.trim(),guardian_phone.trim(),plan_id,purchased_at,purchased_at,expires,included_minutes,sale_id]
+    ).map_err(|e|e.to_string())?;
+    let stored_method=if ["visa","other"].contains(&method.as_str()){"wallet"}else{method.as_str()};
+    tx.execute(
+        "INSERT INTO local_payments(id,sale_id,visit_id,method,method_label,status,amount_minor,external_reference,received_by,created_at,sync_state,cash_session_id) VALUES(?,?,NULL,?,?,'confirmed',?,?,?,?, 'pending',?)",
+        params![uuid::Uuid::new_v4().to_string(),sale_id,stored_method,method,paid,note.trim(),actor,purchased_at,shift_id]
+    ).map_err(|e|e.to_string())?;
+    if let Some(id)=coupon_id.as_deref(){tx.execute("UPDATE local_coupons SET used_count=used_count+1 WHERE id=?",params![id]).map_err(|e|e.to_string())?;}
+    tx.execute(
+        "INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,reason,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'membership_sale_created','membership',?,?,?,?)",
+        params![actor,membership_id,note.trim(),json!({"sale_id":sale_id,"sale_number":sale_number,"plan_id":plan_id,"subtotal_minor":plan_price,"discount_minor":discount_minor,"coupon_code":normalized_coupon,"total_minor":total_minor,"paid_minor":paid,"remaining_minor":total_minor-paid,"method":method,"cash_session_id":shift_id}).to_string(),now]
+    ).map_err(|e|e.to_string())?;
+    tx.commit().map_err(|e|e.to_string())?;
+    Ok(json!({"membershipId":membership_id,"saleId":sale_id,"saleNumber":sale_number,"subtotalMinor":plan_price,"discountMinor":discount_minor,"totalMinor":total_minor,"paidMinor":paid,"remainingMinor":total_minor-paid,"couponCode":normalized_coupon}))
+}
+
+#[tauri::command]
 fn record_membership_payment(app:tauri::AppHandle,membership_id:String,amount_minor:i64,method:String,note:String)->Result<Value,String>{
     if membership_id.trim().is_empty()||amount_minor<=0||!["cash","instapay","wallet","visa","other"].contains(&method.as_str()){return Err("راجع الباقة والمبلغ وطريقة الدفع.".into())}
     let mut db=auth_db(&app)?;
@@ -814,17 +893,17 @@ fn record_membership_payment(app:tauri::AppHandle,membership_id:String,amount_mi
     require_permission(&db,"shift")?;
     let(actor,_)=require_role(&db,&["admin","manager","cashier"])?;
     let tx=db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
-    let (sale_id,plan_price,status):(Option<String>,i64,String)=tx.query_row("SELECT m.sale_id,p.price_minor,m.status FROM local_child_memberships m JOIN local_membership_plans p ON p.id=m.plan_id WHERE m.id=?",params![membership_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(|_|"الاشتراك غير موجود.".to_string())?;
+    let (sale_id,sale_total,status):(Option<String>,i64,String)=tx.query_row("SELECT m.sale_id,COALESCE(s.total_minor,p.price_minor),m.status FROM local_child_memberships m JOIN local_membership_plans p ON p.id=m.plan_id LEFT JOIN local_sales s ON s.id=m.sale_id WHERE m.id=?",params![membership_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(|_|"الاشتراك غير موجود.".to_string())?;
     let sale_id=sale_id.ok_or("هذا الاشتراك غير مرتبط بفاتورة تحصيل.")?;
     if status=="cancelled"{return Err("لا يمكن التحصيل على اشتراك ملغي.".into())}
     let paid:i64=tx.query_row("SELECT COALESCE(SUM(amount_minor),0) FROM local_payments WHERE sale_id=? AND status='confirmed'",params![sale_id],|r|r.get(0)).map_err(|e|e.to_string())?;
-    let remaining=plan_price.saturating_sub(paid);
+    let remaining=sale_total.saturating_sub(paid);
     if amount_minor>remaining{return Err(format!("المبلغ أكبر من المتبقي على الباقة: {} جنيه.",remaining as f64/100.0))}
     let shift_id:String=tx.query_row("SELECT id FROM local_cash_sessions WHERE closed_at IS NULL ORDER BY opened_at DESC LIMIT 1",[],|r|r.get(0)).optional().map_err(|e|e.to_string())?.ok_or("افتح وردية قبل تسجيل دفعة الباقة.")?;
     let stored_method=if ["visa","other"].contains(&method.as_str()){"wallet"}else{method.as_str()};
     let now=Utc::now().to_rfc3339();
     tx.execute("INSERT INTO local_payments(id,sale_id,visit_id,method,method_label,status,amount_minor,external_reference,received_by,created_at,cash_session_id) VALUES(?,?,NULL,?,?,'confirmed',?,?,?,?,?)",params![uuid::Uuid::new_v4().to_string(),sale_id,stored_method,method,amount_minor,note.trim(),actor,now,shift_id]).map_err(|e|e.to_string())?;
-    let new_paid=paid.saturating_add(amount_minor);let new_remaining=plan_price.saturating_sub(new_paid);
+    let new_paid=paid.saturating_add(amount_minor);let new_remaining=sale_total.saturating_sub(new_paid);
     tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,reason,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'membership_payment_recorded','membership',?,?,?,?)",params![actor,membership_id,note.trim(),json!({"sale_id":sale_id,"amount_minor":amount_minor,"method":method,"paid_minor":new_paid,"remaining_minor":new_remaining,"cash_session_id":shift_id}).to_string(),now]).map_err(|e|e.to_string())?;
     tx.commit().map_err(|e|e.to_string())?;
     Ok(json!({"paidMinor":new_paid,"remainingMinor":new_remaining}))
@@ -1191,7 +1270,7 @@ pub fn run() {
                 .add_migrations("sqlite:secret-kids-club.db", migrations)
                 .build(),
         )
-        .invoke_handler(tauri::generate_handler![greet, list_coupons, save_coupon, list_bookings, save_booking, update_booking_status, list_cafe_stock_movements, record_cafe_stock_count, list_cafe_expiry_alerts, save_cafe_recipe, list_cafe_recipes, create_cafe_sale, list_cafe_items, save_cafe_item, adjust_cafe_stock, record_cafe_purchase, save_cafe_supplier, list_cafe_suppliers, cancel_membership, record_membership_payment, record_cash_movement, list_monthly_expenses, save_monthly_expense, checkout_child, cancel_visit, update_membership_overtime_rate, list_refundable_payments, record_expense, record_refund, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_set_user_permissions, admin_create_user, admin_set_user_active, admin_reset_user_password, admin_update_user_role, admin_delete_user, delete_pricing_rule, create_pricing_rule, get_active_cash_shift, open_cash_shift, close_cash_shift, admin_audit_log])
+        .invoke_handler(tauri::generate_handler![greet, list_coupons, save_coupon, create_membership_sale, list_bookings, save_booking, update_booking_status, list_cafe_stock_movements, record_cafe_stock_count, list_cafe_expiry_alerts, save_cafe_recipe, list_cafe_recipes, create_cafe_sale, list_cafe_items, save_cafe_item, adjust_cafe_stock, record_cafe_purchase, save_cafe_supplier, list_cafe_suppliers, cancel_membership, record_membership_payment, record_cash_movement, list_monthly_expenses, save_monthly_expense, checkout_child, cancel_visit, update_membership_overtime_rate, list_refundable_payments, record_expense, record_refund, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_set_user_permissions, admin_create_user, admin_set_user_active, admin_reset_user_password, admin_update_user_role, admin_delete_user, delete_pricing_rule, create_pricing_rule, get_active_cash_shift, open_cash_shift, close_cash_shift, admin_audit_log])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
