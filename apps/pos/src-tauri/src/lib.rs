@@ -848,8 +848,12 @@ fn save_cafe_recipe(app:tauri::AppHandle,sellable_item_id:String,recipe_name:Str
 
 #[tauri::command]
 fn list_cafe_recipes(app:tauri::AppHandle)->Result<Vec<Value>,String>{
-    let db=auth_db(&app)?;require_role(&db,&["admin","manager","cashier"])?;let mut st=db.prepare("SELECT r.id,r.name,r.sellable_item_id,i.name,r.yield_quantity_milli,(SELECT COUNT(*) FROM local_recipe_ingredients ri WHERE ri.recipe_id=r.id) FROM local_recipes r JOIN local_inventory_items i ON i.id=r.sellable_item_id ORDER BY r.name").map_err(|e|e.to_string())?;let rows=st.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?,"productId":r.get::<_,String>(2)?,"productName":r.get::<_,String>(3)?,"yieldQuantityMilli":r.get::<_,i64>(4)?,"ingredientCount":r.get::<_,i64>(5)?}))).map_err(|e|e.to_string())?;rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())
+    let db=auth_db(&app)?;
     require_permission(&db,"cafe")?;
+    require_role(&db,&["admin","manager","cashier"])?;
+    let mut st=db.prepare("SELECT r.id,r.name,r.sellable_item_id,i.name,r.yield_quantity_milli,(SELECT COUNT(*) FROM local_recipe_ingredients ri WHERE ri.recipe_id=r.id) FROM local_recipes r JOIN local_inventory_items i ON i.id=r.sellable_item_id ORDER BY r.name").map_err(|e|e.to_string())?;
+    let rows=st.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?,"productId":r.get::<_,String>(2)?,"productName":r.get::<_,String>(3)?,"yieldQuantityMilli":r.get::<_,i64>(4)?,"ingredientCount":r.get::<_,i64>(5)?}))).map_err(|e|e.to_string())?;
+    rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())
 }
 
 #[tauri::command]
@@ -969,14 +973,24 @@ fn record_cafe_purchase(app:tauri::AppHandle,supplier_id:Option<String>,document
 
 #[tauri::command]
 fn save_cafe_supplier(app:tauri::AppHandle,supplier_id:Option<String>,name:String,phone:Option<String>,notes:Option<String>)->Result<String,String>{
-    if name.trim().is_empty(){return Err("اسم المورد مطلوب.".into())}let mut db=auth_db(&app)?;let(actor,_)=require_role(&db,&["admin","manager"])?;let id=supplier_id.unwrap_or_else(||uuid::Uuid::new_v4().to_string());db.execute("INSERT INTO local_suppliers(id,name,phone,notes,is_active,created_at) VALUES(?,?,?,?,1,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,phone=excluded.phone,notes=excluded.notes",params![id,name.trim(),phone.as_deref(),notes.as_deref(),Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;db.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'supplier_saved','supplier',?,?,?)",params![actor,id,json!({"name":name,"phone":phone}).to_string(),Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;Ok(id)
+    if name.trim().is_empty(){return Err("اسم المورد مطلوب.".into())}
+    let mut db=auth_db(&app)?;
     require_permission(&db,"cafe")?;
+    let(actor,_)=require_role(&db,&["admin","manager"])?;
+    let id=supplier_id.unwrap_or_else(||uuid::Uuid::new_v4().to_string());
+    db.execute("INSERT INTO local_suppliers(id,name,phone,notes,is_active,created_at) VALUES(?,?,?,?,1,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,phone=excluded.phone,notes=excluded.notes",params![id,name.trim(),phone.as_deref(),notes.as_deref(),Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
+    db.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'supplier_saved','supplier',?,?,?)",params![actor,id,json!({"name":name,"phone":phone}).to_string(),Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
+    Ok(id)
 }
 
 #[tauri::command]
 fn list_cafe_suppliers(app:tauri::AppHandle)->Result<Vec<Value>,String>{
-    let db=auth_db(&app)?;require_role(&db,&["admin","manager","cashier"])?;let mut st=db.prepare("SELECT id,name,phone,notes,is_active FROM local_suppliers WHERE is_active=1 ORDER BY name").map_err(|e|e.to_string())?;let rows=st.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?,"phone":r.get::<_,Option<String>>(2)?,"notes":r.get::<_,Option<String>>(3)?,"active":r.get::<_,i64>(4)?}))).map_err(|e|e.to_string())?;rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())
+    let db=auth_db(&app)?;
     require_permission(&db,"cafe")?;
+    require_role(&db,&["admin","manager","cashier"])?;
+    let mut st=db.prepare("SELECT id,name,phone,notes,is_active FROM local_suppliers WHERE is_active=1 ORDER BY name").map_err(|e|e.to_string())?;
+    let rows=st.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?,"phone":r.get::<_,Option<String>>(2)?,"notes":r.get::<_,Option<String>>(3)?,"active":r.get::<_,i64>(4)?}))).map_err(|e|e.to_string())?;
+    rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())
 }
 
 #[tauri::command]
