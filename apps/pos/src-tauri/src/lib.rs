@@ -943,7 +943,7 @@ fn create_cafe_sale(app:tauri::AppHandle,items:Vec<Value>,payments:Vec<Value>,co
         let (id,kind,value,max_discount,usage_limit,used,start,end,active)=coupon.ok_or("كود الخصم غير موجود.")?;
         if active!=1{return Err("كود الخصم غير نشط.".into())}
         if usage_limit.map(|limit|used>=limit).unwrap_or(false){return Err("تم استنفاد عدد مرات استخدام الكوبون.".into())}
-        if start.as_deref().map(|v|now<v).unwrap_or(false)||end.as_deref().map(|v|now>v).unwrap_or(false){return Err("الكوبون خارج فترة الصلاحية.".into())}
+        if start.as_deref().map(|v|now.as_str()<v).unwrap_or(false)||end.as_deref().map(|v|now.as_str()>v).unwrap_or(false){return Err("الكوبون خارج فترة الصلاحية.".into())}
         discount_minor=if kind=="percent"{subtotal.checked_mul(value).ok_or("قيمة الخصم كبيرة جدًا.")?/10000}else if kind=="fixed"{value.min(subtotal)}else{return Err("نوع الخصم غير صالح.".into())};
         if let Some(cap)=max_discount{discount_minor=discount_minor.min(cap)}
         coupon_id=Some(id);
