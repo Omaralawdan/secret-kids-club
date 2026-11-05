@@ -962,7 +962,7 @@ fn create_cafe_sale(app:tauri::AppHandle,items:Vec<Value>,payments:Vec<Value>)->
         tx.execute("INSERT INTO local_payments(id,sale_id,visit_id,method,method_label,status,amount_minor,received_by,created_at,cash_session_id) VALUES(?,?,NULL,?,?,'confirmed',?,?,?,?)",params![uuid::Uuid::new_v4().to_string(),sale_id,stored_method,method,amount,actor,now,shift_id]).map_err(|e|e.to_string())?;
     }
     tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'cafe_sale_created','sale',?,?,?)",params![actor,sale_id,json!({"sale_number":sale_no,"total_minor":subtotal,"payments":normalized_payments.iter().map(|(method,amount)|json!({"method":method,"amount_minor":amount})).collect::<Vec<_>>(),"cash_session_id":shift_id}).to_string(),now]).map_err(|e|e.to_string())?;
-    tx.commit().map_err(|e|e.to_string())?;Ok(json!({"saleId":sale_id,"saleNumber":sale_no,"totalMinor":subtotal,"createdAt":now,"items":prepared.iter().map(|(_,name,qty,_,line_total,_)|json!({"name":name,"quantityMilli":qty,"lineTotalMinor":line_total})).collect::<Vec<_>>()}))
+    tx.commit().map_err(|e|e.to_string())?;Ok(json!({"saleId":sale_id,"saleNumber":sale_no,"totalMinor":subtotal,"createdAt":now,"payments":normalized_payments.iter().map(|(method,amount)|json!({"method":method,"amountMinor":amount})).collect::<Vec<_>>(),"items":prepared.iter().map(|(_,name,qty,_,line_total,_)|json!({"name":name,"quantityMilli":qty,"lineTotalMinor":line_total})).collect::<Vec<_>>()}))
 }
 
 
