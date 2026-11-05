@@ -31,6 +31,7 @@ type ChildDraft = {
   durationHours: number;
   hourlyRateMinor: number | null;
   priceMinor: number | null;
+  paymentMethod: "cash" | "instapay" | "wallet" | "visa" | "other";
 };
 
 type Screen = "reception" | "active" | "packages" | "pricing" | "settings" | "reports" | "admin" | "cafe" | "bookings";
@@ -129,7 +130,7 @@ function buildReceiptHtml(data: ReceiptData, language: Language): string {
   html += row(label("Booked duration", "المدة المحجوزة"), escapeReceipt(formatDuration(data.bookedMinutes, language)));
   // Actual elapsed duration is intentionally not shown on the customer receipt.
   html += '<div class="section">' + label("Payment details", "تفاصيل الحساب") + '</div>';
-  if (data.paymentMethod) html += row(label("Payment method", "طريقة الدفع"), escapeReceipt(({cash:"Cash",instapay:"InstaPay",wallet:"E-Wallet",visa:"Visa",other:"Other"} as Record<string,string>)[data.paymentMethod] || data.paymentMethod));
+  if (data.paymentMethod) { const methodNames:Record<string,string>={cash:"Cash",instapay:"InstaPay",wallet:"E-Wallet",visa:"Visa",other:"Other"}; const displayMethods=data.paymentMethod.split(",").map(method=>methodNames[method.trim()]||method.trim()).join(", "); html += row(label("Payment method", "طريقة الدفع"), escapeReceipt(displayMethods)); }
   if (data.children?.length) {
     html += amount(label("Children subtotal", "إجمالي أسعار الأطفال"), data.children.reduce((sum, child) => sum + child.baseAmountMinor, 0));
     html += amount(label("Total discount", "إجمالي الخصم"), data.children.reduce((sum, child) => sum + child.discountAmountMinor, 0));
@@ -189,7 +190,7 @@ export default function App() {
   const [previousChildren, setPreviousChildren] = useState<{name:string;lastVisit:string}[]>([]);
   const [guardianSuggestions, setGuardianSuggestions] = useState<{phone:string;name:string}[]>([]);
   const [children, setChildren] = useState<ChildDraft[]>([
-    { key: makeId(), name: "", ruleId: "", durationHours: 1, hourlyRateMinor: null, priceMinor: null },
+    { key: makeId(), name: "", ruleId: "", durationHours: 1, hourlyRateMinor: null, priceMinor: null, paymentMethod },
   ]);
 
   const [ruleName, setRuleName] = useState("");
@@ -326,7 +327,7 @@ export default function App() {
   function addChild() {
     setChildren((current) => [
       ...current,
-      { key: makeId(), name: "", ruleId: "", durationHours: 1, hourlyRateMinor: null, priceMinor: null },
+      { key: makeId(), name: "", ruleId: "", durationHours: 1, hourlyRateMinor: null, priceMinor: null, paymentMethod },
     ]);
   }
 
@@ -642,7 +643,7 @@ export default function App() {
               ruleName: selectedRule.name,
               pricingType: selectedRule.pricing_type,
               initialEstimate: selectedRule.pricing_type === "hourly",
-              paymentMethod,
+              paymentMethod: row.child.paymentMethod,
               bookedDurationMinutes: bookedMinutes,
               hourlyRateMinor: row.child.hourlyRateMinor,
             }),
@@ -665,7 +666,7 @@ export default function App() {
         visitNumber, guardianName: guardianName.trim(), guardianPhone: guardianPhone.trim(),
         childName: childRows.map(row => row.child.name).join("، "),
         children: childRows.map(row => ({name:row.child.name,bookedMinutes:Math.round(row.child.durationHours*60),baseAmountMinor:priceFor(row.child),discountAmountMinor:appliedVisitCoupon?.allocations.find(x=>x.visitChildId===row.id)?.discountMinor||0})),
-        checkedInAt: timestamp, expectedCheckoutAt: visitExpectedCheckout, paymentMethod,
+        checkedInAt: timestamp, expectedCheckoutAt: visitExpectedCheckout, paymentMethod: [...new Set(childRows.map(row=>row.child.paymentMethod))].join(", "),
         bookedMinutes: Math.max(...childRows.map(row => Math.round(row.child.durationHours*60))),
         baseAmountMinor: amountBeforeDiscount, discountAmountMinor: appliedVisitCoupon?.discountMinor||0,
         venueName, venueAddress, venuePhone, issuer: "Cashier",
@@ -1107,9 +1108,9 @@ export default function App() {
                 {guardianSuggestions.length>0 && <div className="rule-list">{guardianSuggestions.map((g,i)=><button type="button" className="secondary-button" key={g.phone+i} onMouseDown={e=>e.preventDefault()} onClick={()=>{setGuardianPhone(g.phone);setGuardianName(g.name);setGuardianSuggestions([]);void (async()=>{if(!db)return;const history=await db.select<{name:string;lastVisit:string}[]>(`SELECT vc.child_name_snapshot AS name,MAX(v.checked_in_at) AS lastVisit FROM local_visits v JOIN local_visit_children vc ON vc.visit_id=v.id WHERE v.guardian_phone_snapshot=? GROUP BY vc.child_name_snapshot ORDER BY MAX(v.checked_in_at) DESC LIMIT 20`,[g.phone]);setPreviousChildren(history);setCustomerLookupMessage(ar?"تم تحميل بيانات المرافق والأطفال السابقين.":"Guardian and previous children loaded.");})().catch(()=>{});}}>{g.phone} · {g.name}</button>)}</div>}
                 {customerLookupMessage && <span className="muted">{customerLookupMessage}</span>}
               </label>
-              {previousChildren.length>0 && <div className="full-width panel"><strong>{ar ? "الأطفال المسجلون سابقًا لنفس رقم الهاتف" : "Children previously registered to this phone"}</strong><div className="rule-list">{previousChildren.map((item,i)=><button type="button" className="secondary-button" key={item.name+i} onClick={()=>{setChildren(current=>[...current,{key:makeId(),name:item.name,ruleId:rules[0]?.id||"",durationHours:1,hourlyRateMinor:rules[0]?.pricing_type==="hourly"?rules[0].amount_minor:null,priceMinor:null}]);setMessage(ar ? "تمت إضافة الطفل؛ يمكنك تعديل الاسم والمدة والسعر." : "Child added. You can edit the name, duration and price.");}}>{item.name} · {formatDate(item.lastVisit,language)} · {ar ? "إضافة" : "Add"}</button>)}</div></div>}
+              {previousChildren.length>0 && <div className="full-width panel"><strong>{ar ? "الأطفال المسجلون سابقًا لنفس رقم الهاتف" : "Children previously registered to this phone"}</strong><div className="rule-list">{previousChildren.map((item,i)=><button type="button" className="secondary-button" key={item.name+i} onClick={()=>{setChildren(current=>[...current,{key:makeId(),name:item.name,ruleId:rules[0]?.id||"",durationHours:1,hourlyRateMinor:rules[0]?.pricing_type==="hourly"?rules[0].amount_minor:null,priceMinor:null,paymentMethod}]);setMessage(ar ? "تمت إضافة الطفل؛ يمكنك تعديل الاسم والمدة والسعر." : "Child added. You can edit the name, duration and price.");}}>{item.name} · {formatDate(item.lastVisit,language)} · {ar ? "إضافة" : "Add"}</button>)}</div></div>}
               <label className="full-width">{ar ? "طريقة الدفع" : "Payment method"}
-                <select value={paymentMethod} onChange={e => setPaymentMethod(e.target.value as "cash"|"instapay"|"wallet"|"visa"|"other")}><option value="cash">{ar ? "كاش" : "Cash"}</option><option value="instapay">InstaPay</option><option value="wallet">{ar ? "محفظة إلكترونية" : "E-Wallet"}</option><option value="visa">{ar ? "فيزا" : "Visa"}</option><option value="other">{ar ? "أخرى" : "Other"}</option></select>
+                <select value={paymentMethod} onChange={e => {const method=e.target.value as "cash"|"instapay"|"wallet"|"visa"|"other";setPaymentMethod(method);setChildren(current=>current.map(child=>({...child,paymentMethod:method})));}}><option value="cash">{ar ? "كاش" : "Cash"}</option><option value="instapay">InstaPay</option><option value="wallet">{ar ? "محفظة إلكترونية" : "E-Wallet"}</option><option value="visa">{ar ? "فيزا" : "Visa"}</option><option value="other">{ar ? "أخرى" : "Other"}</option></select>
               </label>
             </div>
           </section>
@@ -1141,7 +1142,7 @@ export default function App() {
                         {rules.map((rule) => <option key={rule.id} value={rule.id}>{rule.name} · {tr(rule.pricing_type)}</option>)}
                       </select>
                     </label>
-                    <label className="child-pricing">{ar ? "سعر الطفل (جنيه)" : "Child price (EGP)"}<input type="text" inputMode="decimal" required value={child.priceMinor === null ? "" : (child.priceMinor / 100).toFixed(2)} onChange={e => updateChild(child.key, "priceMinor", e.target.value === "" ? null : tryEgpToMinor(e.target.value))} placeholder={ar ? "اكتب سعر هذا الطفل" : "Enter this child's price"} /></label>
+                    <label className="child-pricing">{ar ? "طريقة دفع الطفل" : "Child payment method"}<select value={child.paymentMethod} onChange={e=>updateChild(child.key,"paymentMethod",e.target.value as ChildDraft["paymentMethod"])}><option value="cash">{ar?"كاش":"Cash"}</option><option value="instapay">InstaPay</option><option value="wallet">{ar?"محفظة":"E-Wallet"}</option><option value="visa">{ar?"فيزا":"Visa"}</option><option value="other">{ar?"أخرى":"Other"}</option></select></label><label className="child-pricing">{ar ? "سعر الطفل (جنيه)" : "Child price (EGP)"}<input type="text" inputMode="decimal" required value={child.priceMinor === null ? "" : (child.priceMinor / 100).toFixed(2)} onChange={e => updateChild(child.key, "priceMinor", e.target.value === "" ? null : tryEgpToMinor(e.target.value))} placeholder={ar ? "اكتب سعر هذا الطفل" : "Enter this child's price"} /></label>
                     <label className="booked-hours-field">
                       {ar ? "مدة الحجز (بالساعات)" : "Booked duration (hours)"}
                       <input
