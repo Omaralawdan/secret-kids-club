@@ -904,7 +904,7 @@ fn list_cafe_recipes(app:tauri::AppHandle)->Result<Vec<Value>,String>{
 #[tauri::command]
 fn create_cafe_sale(app:tauri::AppHandle,items:Vec<Value>,payments:Vec<Value>,coupon_code:Option<String>)->Result<Value,String>{
     if items.is_empty()||payments.is_empty(){return Err("أضف أصنافًا وحدد دفعة واحدة على الأقل.".into())}
-    let mut db=auth_db(&app)?;let(actor,_)=require_role(&db,&["admin","manager","cashier"])?;require_permission(&db,"cafe")?;
+    let mut db=auth_db(&app)?;let(actor,_)=require_role(&db,&["admin","manager","cashier"])?;require_permission(&db,"cafe")?;if coupon_code.as_deref().map(|v|!v.trim().is_empty()).unwrap_or(false){require_permission(&db,"pricing")?;}
     let tx=db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
     let shift_id:String=tx.query_row("SELECT id FROM local_cash_sessions WHERE closed_at IS NULL ORDER BY opened_at DESC LIMIT 1",[],|r|r.get(0)).optional().map_err(|e|e.to_string())?.ok_or("افتح الوردية قبل تسجيل بيع الكافيه.")?;
     let mut prepared:Vec<(String,String,i64,i64,i64,String)>=Vec::new();let mut subtotal:i64=0;
@@ -938,7 +938,6 @@ fn create_cafe_sale(app:tauri::AppHandle,items:Vec<Value>,payments:Vec<Value>,co
     let mut coupon_id:Option<String>=None;
     let mut discount_minor:i64=0;
     if let Some(raw_code)=coupon_code.as_deref().filter(|v|!v.trim().is_empty()){
-        require_permission(&db,"pricing")?;
         let code=raw_code.trim().to_ascii_uppercase();
         let coupon:Option<(String,String,i64,Option<i64>,Option<i64>,i64,Option<String>,Option<String>,i64)>=tx.query_row("SELECT id,discount_type,discount_value,max_discount_minor,usage_limit,used_count,starts_at,ends_at,is_active FROM local_coupons WHERE code=? COLLATE NOCASE",params![code],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?))).optional().map_err(|e|e.to_string())?;
         let (id,kind,value,max_discount,usage_limit,used,start,end,active)=coupon.ok_or("كود الخصم غير موجود.")?;
