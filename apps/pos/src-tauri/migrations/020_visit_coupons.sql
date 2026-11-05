@@ -13,7 +13,7 @@ WHEN NOT EXISTS (
  WHERE s.singleton_id=1 AND u.is_active=1 AND (
    u.role_codes_json LIKE '%admin%' OR u.role_codes_json LIKE '%manager%' OR
    (u.role_codes_json LIKE '%cashier%' AND json_extract(NEW.calculation_json,'$.checkoutCalculatedAt') IS NOT NULL) OR
-   (v.status='active' AND (u.permissions_json LIKE '%"discounts"%' OR u.permissions_json LIKE '%"pricing"%' OR u.permissions_json LIKE '%"all"%'))
+   (v.status='active' AND (u.permissions_json LIKE '%"discounts"%' OR u.permissions_json LIKE '%"pricing"%' OR u.permissions_json LIKE '%"all"%' OR (u.role_codes_json LIKE '%cashier%' AND u.permissions_json NOT LIKE '%"__custom__"%')))
  )
 )
 BEGIN SELECT RAISE(ABORT,'تعديل الأسعار والخصومات يتطلب الصلاحية المناسبة.'); END;
