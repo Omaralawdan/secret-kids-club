@@ -411,11 +411,11 @@ fn auth_status(app:tauri::AppHandle)->Result<Value,String>{
  let count:i64=db.query_row("SELECT COUNT(*) FROM local_users WHERE username IS NOT NULL AND password_hash IS NOT NULL",[],|r|r.get(0)).map_err(|e|e.to_string())?;
  // Read the current local session without mutating it. The previous implementation
  // silently logged the user out whenever the UI rechecked authentication status.
- let user:Option<(String,String,String)>=db.query_row(
-  "SELECT u.id,u.display_name,u.role_codes_json FROM local_session s JOIN local_users u ON u.id=s.actor_user_id WHERE s.singleton_id=1 AND u.is_active=1",
-  [],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))
+ let user:Option<(String,String,String,String)>=db.query_row(
+  "SELECT u.id,u.display_name,u.role_codes_json,u.permissions_json FROM local_session s JOIN local_users u ON u.id=s.actor_user_id WHERE s.singleton_id=1 AND u.is_active=1",
+  [],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))
  ).optional().map_err(|e|e.to_string())?;
- let user_json=user.map(|(id,name,roles)|json!({"id":id,"name":name,"roles":roles}));
+ let user_json=user.map(|(id,name,roles,permissions)|json!({"id":id,"name":name,"roles":roles,"permissions":permissions}));
  Ok(json!({"needsSetup":count==0,"user":user_json}))
 }
 #[tauri::command]
@@ -431,7 +431,7 @@ fn login_user(app:tauri::AppHandle,username:String,password:String)->Result<Valu
  let mut db=auth_db(&app)?;let row:Option<(String,String,String,String,i64)>=db.query_row("SELECT id,display_name,password_salt,password_hash,is_active FROM local_users WHERE username=? COLLATE NOCASE",params![username.trim()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional().map_err(|e|e.to_string())?;
  let(id,name,salt,expected,active)=row.ok_or("اسم المستخدم أو كلمة المرور غير صحيحة.")?;let salt=hex::decode(salt).map_err(|e|e.to_string())?;if active!=1||hash_password(&password,&salt)!=expected{return Err("اسم المستخدم أو كلمة المرور غير صحيحة.".into())}
  let now=Utc::now().to_rfc3339();let tx=db.transaction().map_err(|e|e.to_string())?;tx.execute("UPDATE local_session SET actor_user_id=?,authenticated_at=? WHERE singleton_id=1",params![id,now]).map_err(|e|e.to_string())?;tx.execute("UPDATE local_users SET last_authenticated_at=? WHERE id=?",params![now,id]).map_err(|e|e.to_string())?;tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,created_at) VALUES(lower(hex(randomblob(16))),?,'login','user',?,?)",params![id,id,now]).map_err(|e|e.to_string())?;tx.commit().map_err(|e|e.to_string())?;
- let roles:String=db.query_row("SELECT role_codes_json FROM local_users WHERE id=?",params![id],|r|r.get(0)).map_err(|e|e.to_string())?;Ok(json!({"id":id,"name":name,"roles":roles}))
+ let (roles,permissions):(String,String)=db.query_row("SELECT role_codes_json,permissions_json FROM local_users WHERE id=?",params![id],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|e|e.to_string())?;Ok(json!({"id":id,"name":name,"roles":roles,"permissions":permissions}))
 }
 #[tauri::command]
 fn logout_user(app:tauri::AppHandle)->Result<(),String>{let db=auth_db(&app)?;db.execute("UPDATE local_session SET actor_user_id=NULL,authenticated_at=NULL WHERE singleton_id=1",[]).map_err(|e|e.to_string())?;Ok(())}
@@ -443,8 +443,18 @@ fn change_own_password(app:tauri::AppHandle,current_password:String,new_password
 }
 #[tauri::command]
 fn admin_list_users(app:tauri::AppHandle)->Result<Vec<Value>,String>{
- let db=auth_db(&app)?;require_role(&db,&["admin"])?;let mut st=db.prepare("SELECT id,username,display_name,role_codes_json,is_active,created_at,last_authenticated_at FROM local_users ORDER BY display_name").map_err(|e|e.to_string())?;
- let rows=st.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"username":r.get::<_,Option<String>>(1)?,"name":r.get::<_,String>(2)?,"roles":r.get::<_,String>(3)?,"active":r.get::<_,i64>(4)?,"createdAt":r.get::<_,Option<String>>(5)?,"lastLogin":r.get::<_,Option<String>>(6)?}))).map_err(|e|e.to_string())?;rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())
+ let db=auth_db(&app)?;require_role(&db,&["admin","manager"])?;let mut st=db.prepare("SELECT id,username,display_name,role_codes_json,permissions_json,is_active,created_at,last_authenticated_at FROM local_users ORDER BY display_name").map_err(|e|e.to_string())?;
+ let rows=st.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"username":r.get::<_,Option<String>>(1)?,"name":r.get::<_,String>(2)?,"roles":r.get::<_,String>(3)?,"permissions":r.get::<_,String>(4)?,"active":r.get::<_,i64>(5)?,"createdAt":r.get::<_,Option<String>>(6)?,"lastLogin":r.get::<_,Option<String>>(7)?}))).map_err(|e|e.to_string())?;rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())
+}
+#[tauri::command]
+fn admin_set_user_permissions(app:tauri::AppHandle,user_id:String,permissions:Vec<String>)->Result<(),String>{
+ let allowed=["reception","active","packages","cafe","reports","shift","pricing","settings"];
+ if permissions.iter().any(|p|!allowed.contains(&p.as_str())){return Err("تم إرسال صلاحية غير معروفة.".into())}
+ let mut db=auth_db(&app)?;let(actor,_)=require_role(&db,&["admin","manager"])?;let tx=db.transaction().map_err(|e|e.to_string())?;
+ let before:String=tx.query_row("SELECT permissions_json FROM local_users WHERE id=?",params![user_id],|r|r.get(0)).map_err(|_|"الموظف غير موجود.".to_string())?;
+ tx.execute("UPDATE local_users SET permissions_json=? WHERE id=?",params![json!(permissions).to_string(),user_id]).map_err(|e|e.to_string())?;
+ tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,before_json,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'user_permissions_changed','user',?,?,?,?)",params![actor,user_id,before,json!(permissions).to_string(),Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
+ tx.commit().map_err(|e|e.to_string())?;Ok(())
 }
 #[tauri::command]
 fn admin_create_user(app:tauri::AppHandle,username:String,display_name:String,password:String,role:String)->Result<(),String>{
@@ -967,7 +977,7 @@ pub fn run() {
         Migration { version: 9, description: "waivers_and_visit_cancellations", sql: include_str!("../migrations/009_waivers_and_visit_cancellations.sql"), kind: MigrationKind::Up },
         Migration { version: 10, description: "shift_payments_expenses_refunds", sql: include_str!("../migrations/010_shift_payments_expenses_refunds.sql"), kind: MigrationKind::Up },
         Migration { version: 11, description: "shift_variance_reason", sql: include_str!("../migrations/011_shift_variance_reason.sql"), kind: MigrationKind::Up },
-        Migration { version: 12, description: "operations_inventory_and_fixed_expenses", sql: include_str!("../migrations/012_operations_inventory_and_fixed_expenses.sql"), kind: MigrationKind::Up },
+        Migration { version: 12, description: "operations_inventory_and_fixed_expenses", sql: include_str!("../migrations/012_operations_inventory_and_fixed_expenses.sql"), kind: MigrationKind::Up },\n        Migration { version: 13, description: "custom_employee_permissions", sql: include_str!("../migrations/013_custom_employee_permissions.sql"), kind: MigrationKind::Up },
     ];
 
     tauri::Builder::default()
@@ -977,7 +987,7 @@ pub fn run() {
                 .add_migrations("sqlite:secret-kids-club.db", migrations)
                 .build(),
         )
-        .invoke_handler(tauri::generate_handler![greet, record_cafe_stock_count, list_cafe_expiry_alerts, save_cafe_recipe, list_cafe_recipes, create_cafe_sale, list_cafe_items, save_cafe_item, adjust_cafe_stock, record_cafe_purchase, save_cafe_supplier, list_cafe_suppliers, record_cash_movement, list_monthly_expenses, save_monthly_expense, checkout_child, cancel_visit, update_membership_overtime_rate, list_refundable_payments, record_expense, record_refund, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_create_user, admin_set_user_active, admin_reset_user_password, admin_update_user_role, admin_delete_user, delete_pricing_rule, create_pricing_rule, get_active_cash_shift, open_cash_shift, close_cash_shift, admin_audit_log])
+        .invoke_handler(tauri::generate_handler![greet, record_cafe_stock_count, list_cafe_expiry_alerts, save_cafe_recipe, list_cafe_recipes, create_cafe_sale, list_cafe_items, save_cafe_item, adjust_cafe_stock, record_cafe_purchase, save_cafe_supplier, list_cafe_suppliers, record_cash_movement, list_monthly_expenses, save_monthly_expense, checkout_child, cancel_visit, update_membership_overtime_rate, list_refundable_payments, record_expense, record_refund, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_set_user_permissions, admin_create_user, admin_set_user_active, admin_reset_user_password, admin_update_user_role, admin_delete_user, delete_pricing_rule, create_pricing_rule, get_active_cash_shift, open_cash_shift, close_cash_shift, admin_audit_log])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
