@@ -555,13 +555,15 @@ fn get_active_cash_shift(app: tauri::AppHandle) -> Result<Value, String> {
           COALESCE((SELECT SUM(p.amount_minor) FROM local_payments p WHERE p.cash_session_id=s.id AND p.method='cash' AND p.status='confirmed'),0),
           COALESCE((SELECT SUM(p.amount_minor) FROM local_payments p WHERE p.cash_session_id=s.id AND p.method<>'cash' AND p.status='confirmed'),0),
           COALESCE((SELECT SUM(e.amount_minor) FROM local_expenses e WHERE e.cash_session_id=s.id AND e.method='cash'),0),
-          COALESCE((SELECT SUM(r.amount_minor) FROM local_refunds r WHERE r.cash_session_id=s.id AND r.method='cash'),0)
+          COALESCE((SELECT SUM(r.amount_minor) FROM local_refunds r WHERE r.cash_session_id=s.id AND r.method='cash'),0),
+          COALESCE((SELECT SUM(m.amount_minor) FROM local_cash_movements m WHERE m.cash_session_id=s.id AND m.movement_type='cash_added'),0),
+          COALESCE((SELECT SUM(m.amount_minor) FROM local_cash_movements m WHERE m.cash_session_id=s.id AND m.movement_type='cash_removed'),0)
          FROM local_cash_sessions s LEFT JOIN local_users u ON u.id=s.opened_by
          WHERE s.closed_at IS NULL ORDER BY s.opened_at DESC LIMIT 1",
         [], |row| {
             let opening:i64=row.get(1)?; let cash:i64=row.get(4)?; let electronic:i64=row.get(5)?;
-            let expenses:i64=row.get(6)?; let refunds:i64=row.get(7)?;
-            Ok(json!({"id":row.get::<_,String>(0)?,"openingFloatMinor":opening,"openedAt":row.get::<_,String>(2)?,"openedBy":row.get::<_,String>(3)?,"cashSalesMinor":cash,"electronicSalesMinor":electronic,"cashExpensesMinor":expenses,"cashRefundsMinor":refunds,"expectedCashMinor":opening.saturating_add(cash).saturating_sub(expenses).saturating_sub(refunds)}))
+            let expenses:i64=row.get(6)?; let refunds:i64=row.get(7)?; let additions:i64=row.get(8)?; let removals:i64=row.get(9)?;
+            Ok(json!({"id":row.get::<_,String>(0)?,"openingFloatMinor":opening,"openedAt":row.get::<_,String>(2)?,"openedBy":row.get::<_,String>(3)?,"cashSalesMinor":cash,"electronicSalesMinor":electronic,"cashExpensesMinor":expenses,"cashRefundsMinor":refunds,"cashAdditionsMinor":additions,"cashRemovalsMinor":removals,"expectedCashMinor":opening.saturating_add(cash).saturating_add(additions).saturating_sub(removals).saturating_sub(expenses).saturating_sub(refunds)}))
         }
     ).optional().map_err(|e| e.to_string())?;
     Ok(shift.unwrap_or(Value::Null))
@@ -594,7 +596,9 @@ fn close_cash_shift(app:tauri::AppHandle,counted_cash_minor:i64,variance_reason:
  let sales:i64=tx.query_row("SELECT COALESCE(SUM(amount_minor),0) FROM local_payments WHERE cash_session_id=? AND method='cash' AND status='confirmed'",params![id],|r|r.get(0)).map_err(|e|e.to_string())?;
  let expenses:i64=tx.query_row("SELECT COALESCE(SUM(amount_minor),0) FROM local_expenses WHERE cash_session_id=? AND method='cash'",params![id],|r|r.get(0)).map_err(|e|e.to_string())?;
  let refunds:i64=tx.query_row("SELECT COALESCE(SUM(amount_minor),0) FROM local_refunds WHERE cash_session_id=? AND method='cash'",params![id],|r|r.get(0)).map_err(|e|e.to_string())?;
- let expected=float.checked_add(sales).and_then(|v|v.checked_sub(expenses)).and_then(|v|v.checked_sub(refunds)).ok_or("قيمة النقدية المتوقعة تجاوزت الحد المسموح.")?;
+ let additions:i64=tx.query_row("SELECT COALESCE(SUM(amount_minor),0) FROM local_cash_movements WHERE cash_session_id=? AND movement_type='cash_added'",params![id],|r|r.get(0)).map_err(|e|e.to_string())?;
+ let removals:i64=tx.query_row("SELECT COALESCE(SUM(amount_minor),0) FROM local_cash_movements WHERE cash_session_id=? AND movement_type='cash_removed'",params![id],|r|r.get(0)).map_err(|e|e.to_string())?;
+ let expected=float.checked_add(sales).and_then(|v|v.checked_add(additions)).and_then(|v|v.checked_sub(removals)).and_then(|v|v.checked_sub(expenses)).and_then(|v|v.checked_sub(refunds)).ok_or("قيمة النقدية المتوقعة تجاوزت الحد المسموح.")?;
  let variance=counted_cash_minor.checked_sub(expected).ok_or("فرق النقدية تجاوز الحد المسموح.")?;
  if variance != 0 && variance_reason.trim().is_empty() { return Err("يجب تسجيل سبب العجز أو الزيادة قبل إغلاق الوردية.".into()); }
  let changed=tx.execute("UPDATE local_cash_sessions SET closed_by=?,closed_at=?,counted_cash_minor=?,expected_cash_minor=?,variance_minor=?,variance_reason=? WHERE id=? AND closed_at IS NULL",params![actor,now,counted_cash_minor,expected,variance,variance_reason.trim(),id]).map_err(|e|e.to_string())?;
