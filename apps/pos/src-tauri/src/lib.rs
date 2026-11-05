@@ -334,8 +334,9 @@ fn checkout_transaction_with_overtime(
             .into());
         }
 
-        let payment_method = calculation.get("paymentMethod").and_then(Value::as_str).unwrap_or("cash");
-        let payment_method = if ["cash", "instapay", "wallet"].contains(&payment_method) { payment_method } else { "cash" };
+        let requested_method = calculation.get("paymentMethod").and_then(Value::as_str).unwrap_or("cash");
+        let payment_method_label = if ["cash","instapay","wallet","visa","other"].contains(&requested_method) { requested_method } else { "cash" };
+        let payment_method = if ["cash","instapay","wallet"].contains(&payment_method_label) { payment_method_label } else { "wallet" };
         let collected_total: i64 = tx.query_row(
             "SELECT COALESCE(SUM(MAX(0, p.final_amount_minor - CASE WHEN p.overtime_collected=0 THEN p.overtime_amount_minor ELSE 0 END)),0) FROM local_visit_child_pricing p JOIN local_visit_children vc ON vc.id=p.visit_child_id WHERE vc.visit_id=?",
             params![visit_id], |row| row.get(0)
@@ -347,8 +348,8 @@ fn checkout_transaction_with_overtime(
                 [], |row| row.get(0)
             ).optional()?.ok_or_else(|| io::Error::other("افتح وردية قبل تسجيل أي تحصيل."))?;
             tx.execute(
-                "INSERT INTO local_payments(id,visit_id,method,status,amount_minor,received_by,created_at,cash_session_id) VALUES(lower(hex(randomblob(16))),? ,?,'confirmed',?,?,?,?)",
-                params![visit_id, payment_method, collected_total, actor, checkout_time_string, shift_id],
+                "INSERT INTO local_payments(id,visit_id,method,method_label,status,amount_minor,received_by,created_at,cash_session_id) VALUES(lower(hex(randomblob(16))),? ,?,?, 'confirmed',?,?,?,?)",
+                params![visit_id, payment_method, payment_method_label, collected_total, actor, checkout_time_string, shift_id],
             )?;
         }
     }
@@ -657,7 +658,7 @@ fn list_refundable_payments(app: tauri::AppHandle) -> Result<Vec<Value>, String>
     let db = auth_db(&app)?;
     require_role(&db, &["admin", "manager", "cashier"])?;
     let mut statement = db.prepare(
-        "SELECT p.id,p.amount_minor,p.method,p.created_at,p.visit_id,p.sale_id,
+        "SELECT p.id,p.amount_minor,COALESCE(p.method_label,p.method),p.created_at,p.visit_id,p.sale_id,
           COALESCE(v.visit_number_local,0),COALESCE(s.sale_number_local,0),
           p.amount_minor-COALESCE((SELECT SUM(r.amount_minor) FROM local_refunds r WHERE r.payment_id=p.id),0)
          FROM local_payments p
@@ -678,6 +679,7 @@ fn list_refundable_payments(app: tauri::AppHandle) -> Result<Vec<Value>, String>
 fn record_expense(app: tauri::AppHandle, amount_minor: i64, category: String, reason: String, method: String) -> Result<(), String> {
     if amount_minor <= 0 || category.trim().is_empty() || reason.trim().is_empty() { return Err("أدخل مبلغًا صحيحًا وتصنيفًا وسببًا للمصروف.".into()); }
     if !["cash","instapay","wallet"].contains(&method.as_str()) { return Err("طريقة الدفع غير صحيحة.".into()); }
+    let stored_method=if ["visa","other"].contains(&method.as_str()){"wallet"}else{method.as_str()};
     let mut db = auth_db(&app)?;
     require_permission(&db,"shift")?;
     let (actor, _) = require_role(&db, &["admin","manager","cashier"])?;
@@ -685,7 +687,7 @@ fn record_expense(app: tauri::AppHandle, amount_minor: i64, category: String, re
     let shift_id: String = tx.query_row("SELECT id FROM local_cash_sessions WHERE closed_at IS NULL ORDER BY opened_at DESC LIMIT 1",[],|r|r.get(0)).optional().map_err(|e|e.to_string())?.ok_or("افتح وردية قبل تسجيل المصروف.")?;
     let id = uuid::Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
-    tx.execute("INSERT INTO local_expenses(id,cash_session_id,amount_minor,category,reason,method,created_by,created_at) VALUES(?,?,?,?,?,?,?,?)",params![id,shift_id,amount_minor,category.trim(),reason.trim(),method,actor,now]).map_err(|e|e.to_string())?;
+    tx.execute("INSERT INTO local_expenses(id,cash_session_id,amount_minor,category,reason,method,method_label,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?)",params![id,shift_id,amount_minor,category.trim(),reason.trim(),stored_method,method,actor,now]).map_err(|e|e.to_string())?;
     tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,reason,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'expense_recorded','expense',?,?,?,?)",params![actor,id,reason.trim(),json!({"amount_minor":amount_minor,"category":category,"method":method,"cash_session_id":shift_id}).to_string(),now]).map_err(|e|e.to_string())?;
     tx.commit().map_err(|e|e.to_string())?;
     Ok(())
@@ -698,18 +700,18 @@ fn record_refund(app: tauri::AppHandle, payment_id: String, amount_minor: i64, r
     require_permission(&db,"shift")?;
     let (actor, _) = require_role(&db, &["admin","manager","cashier"])?;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
-    let original: Option<(i64,String,Option<String>)> = tx.query_row(
-        "SELECT amount_minor,method,sale_id FROM local_payments WHERE id=? AND status='confirmed'",
-        params![payment_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))
+    let original: Option<(i64,String,Option<String>,Option<String>)> = tx.query_row(
+        "SELECT amount_minor,method,method_label,sale_id FROM local_payments WHERE id=? AND status='confirmed'",
+        params![payment_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))
     ).optional().map_err(|e|e.to_string())?;
-    let (original_amount,method,sale_id) = original.ok_or("عملية التحصيل الأصلية غير متاحة للاسترداد.")?;
+    let (original_amount,method,method_label,sale_id) = original.ok_or("عملية التحصيل الأصلية غير متاحة للاسترداد.")?;
     let refunded: i64 = tx.query_row("SELECT COALESCE(SUM(amount_minor),0) FROM local_refunds WHERE payment_id=?",params![payment_id],|r|r.get(0)).map_err(|e|e.to_string())?;
     let new_total = refunded.checked_add(amount_minor).ok_or("مبلغ الاسترداد تجاوز الحد المسموح.")?;
     if new_total > original_amount { return Err("مبلغ الاسترداد أكبر من المبلغ المتبقي من العملية الأصلية.".into()); }
     let shift_id: String = tx.query_row("SELECT id FROM local_cash_sessions WHERE closed_at IS NULL ORDER BY opened_at DESC LIMIT 1",[],|r|r.get(0)).optional().map_err(|e|e.to_string())?.ok_or("افتح وردية قبل تسجيل الاسترداد.")?;
     let id = uuid::Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
-    tx.execute("INSERT INTO local_refunds(id,payment_id,cash_session_id,amount_minor,reason,method,refunded_by,created_at) VALUES(?,?,?,?,?,?,?,?)",params![id,payment_id,shift_id,amount_minor,reason.trim(),method,actor,now]).map_err(|e|e.to_string())?;
+    tx.execute("INSERT INTO local_refunds(id,payment_id,cash_session_id,amount_minor,reason,method,method_label,refunded_by,created_at) VALUES(?,?,?,?,?,?,?,?,?)",params![id,payment_id,shift_id,amount_minor,reason.trim(),method,method_label,actor,now]).map_err(|e|e.to_string())?;
     if let Some(sale_id) = sale_id {
         let paid_total:i64 = tx.query_row("SELECT COALESCE(SUM(amount_minor),0) FROM local_payments WHERE sale_id=? AND status IN ('confirmed','refunded')",params![sale_id],|r|r.get(0)).map_err(|e|e.to_string())?;
         let refunded_total:i64 = tx.query_row("SELECT COALESCE(SUM(r.amount_minor),0) FROM local_refunds r JOIN local_payments p ON p.id=r.payment_id WHERE p.sale_id=?",params![sale_id],|r|r.get(0)).map_err(|e|e.to_string())?;
@@ -848,7 +850,7 @@ fn list_cafe_recipes(app:tauri::AppHandle)->Result<Vec<Value>,String>{
 
 #[tauri::command]
 fn create_cafe_sale(app:tauri::AppHandle,items:Vec<Value>,payment_method:String)->Result<Value,String>{
-    if items.is_empty()||!["cash","instapay","wallet"].contains(&payment_method.as_str()){return Err("أضف أصنافًا واختر طريقة دفع صحيحة.".into())}
+    if items.is_empty()||!["cash","instapay","wallet","visa","other"].contains(&payment_method.as_str()){return Err("أضف أصنافًا واختر طريقة دفع صحيحة.".into())}
     let mut db=auth_db(&app)?;let(actor,_)=require_role(&db,&["admin","manager","cashier"])?;let tx=db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
     require_permission(&db,"cafe")?;
     let shift_id:String=tx.query_row("SELECT id FROM local_cash_sessions WHERE closed_at IS NULL ORDER BY opened_at DESC LIMIT 1",[],|r|r.get(0)).optional().map_err(|e|e.to_string())?.ok_or("افتح الوردية قبل تسجيل بيع الكافيه.")?;
@@ -891,7 +893,8 @@ fn create_cafe_sale(app:tauri::AppHandle,items:Vec<Value>,payment_method:String)
             for (ingredient,per_yield) in ingredients{let required=per_yield.checked_mul(*qty).ok_or("كمية الوصفة كبيرة جدًا.")?.checked_add(yield_qty-1).ok_or("كمية الوصفة كبيرة جدًا.")?/yield_qty;tx.execute("INSERT INTO local_stock_movements(id,inventory_item_id,movement_type,quantity_milli,sale_id,reason,created_by,created_at) VALUES(?,?,'sale',?,?,?, ?,?)",params![uuid::Uuid::new_v4().to_string(),ingredient,required,sale_id,format!("استهلاك وصفة {}",name),actor,now]).map_err(|e|e.to_string())?;consume_expiry_batches(&tx,&ingredient,required)?;}
         }
     }
-    tx.execute("INSERT INTO local_payments(id,sale_id,visit_id,method,status,amount_minor,received_by,created_at,cash_session_id) VALUES(?,?,NULL,?,'confirmed',?,?,?,?)",params![uuid::Uuid::new_v4().to_string(),sale_id,payment_method,subtotal,actor,now,shift_id]).map_err(|e|e.to_string())?;
+    let stored_method=if ["visa","other"].contains(&payment_method.as_str()){"wallet"}else{payment_method.as_str()};
+    tx.execute("INSERT INTO local_payments(id,sale_id,visit_id,method,method_label,status,amount_minor,received_by,created_at,cash_session_id) VALUES(?,?,NULL,?,?,'confirmed',?,?,?,?)",params![uuid::Uuid::new_v4().to_string(),sale_id,stored_method,payment_method,subtotal,actor,now,shift_id]).map_err(|e|e.to_string())?;
     tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'cafe_sale_created','sale',?,?,?)",params![actor,sale_id,json!({"sale_number":sale_no,"total_minor":subtotal,"payment_method":payment_method,"cash_session_id":shift_id}).to_string(),now]).map_err(|e|e.to_string())?;
     tx.commit().map_err(|e|e.to_string())?;Ok(json!({"saleId":sale_id,"saleNumber":sale_no,"totalMinor":subtotal,"createdAt":now}))
 }
@@ -1004,7 +1007,9 @@ pub fn run() {
         Migration { version: 9, description: "waivers_and_visit_cancellations", sql: include_str!("../migrations/009_waivers_and_visit_cancellations.sql"), kind: MigrationKind::Up },
         Migration { version: 10, description: "shift_payments_expenses_refunds", sql: include_str!("../migrations/010_shift_payments_expenses_refunds.sql"), kind: MigrationKind::Up },
         Migration { version: 11, description: "shift_variance_reason", sql: include_str!("../migrations/011_shift_variance_reason.sql"), kind: MigrationKind::Up },
-        Migration { version: 12, description: "operations_inventory_and_fixed_expenses", sql: include_str!("../migrations/012_operations_inventory_and_fixed_expenses.sql"), kind: MigrationKind::Up },\n        Migration { version: 13, description: "custom_employee_permissions", sql: include_str!("../migrations/013_custom_employee_permissions.sql"), kind: MigrationKind::Up },
+        Migration { version: 12, description: "operations_inventory_and_fixed_expenses", sql: include_str!("../migrations/012_operations_inventory_and_fixed_expenses.sql"), kind: MigrationKind::Up },
+        Migration { version: 13, description: "custom_employee_permissions", sql: include_str!("../migrations/013_custom_employee_permissions.sql"), kind: MigrationKind::Up },
+        Migration { version: 14, description: "extended_payment_methods", sql: include_str!("../migrations/014_extended_payment_methods.sql"), kind: MigrationKind::Up },
     ];
 
     tauri::Builder::default()
