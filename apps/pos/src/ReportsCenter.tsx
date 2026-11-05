@@ -105,7 +105,7 @@ export default function ReportsCenter({ db, language, isAdmin = false, canManage
   const [savedTemplates, setSavedTemplates] = useState<{name:string; key:ReportKey; fields:string[]}[]>(() => {
     try { return JSON.parse(localStorage.getItem("skc.reportTemplates") || "[]"); } catch { return []; }
   });
-  const availableReports = reports.filter(r => (r.key !== "users" || isAdmin) && (!["shifts","audit","financials"].includes(r.key) || canManage));
+  const availableReports = reports.filter(r => (r.key !== "users" || isAdmin) && (!["shifts","expenses","audit","financials"].includes(r.key) || canManage));
   const current = reports.find(r => r.key === reportKey)!;
 
   useEffect(() => {
