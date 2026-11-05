@@ -2,13 +2,14 @@ import { useEffect, useState } from "react";
 import Database from "@tauri-apps/plugin-sql";
 import "./ReportsCenter.css";
 
-type ReportKey = "visits" | "customers" | "payments" | "shifts" | "expenses" | "audit" | "users" | "financials";
+type ReportKey = "visits" | "bookings" | "customers" | "payments" | "shifts" | "expenses" | "audit" | "users" | "financials";
 type ReportRow = Record<string, string | number | null>;
 type Field = { key: string; label: string };
 
 const reports: { key: ReportKey; label: string; description: string; fields: Field[] }[] = [
   { key: "visits", label: "الزيارات والحجوزات", description: "بيانات الدخول والخروج والمدة والأسعار.", fields: [
     {key:"visit_number",label:"رقم الزيارة"},{key:"payment_method",label:"طريقة الدفع"},{key:"child_name",label:"اسم الطفل"},{key:"guardian_name",label:"اسم ولي الأمر"},{key:"phone",label:"رقم التليفون"},{key:"checked_in_at",label:"وقت الدخول"},{key:"expected_checkout",label:"وقت الخروج المتوقع"},{key:"checked_out_at",label:"وقت الخروج الفعلي"},{key:"duration_minutes",label:"المدة المحجوزة بالدقائق"},{key:"actual_duration_minutes",label:"المدة الفعلية بالدقائق"},{key:"base_amount",label:"السعر الأساسي"},{key:"discount_amount",label:"الخصم"},{key:"overtime_amount",label:"الإضافي المستحق"},{key:"overtime_collected",label:"تم تحصيل الإضافي؟"},{key:"overtime_collection_note",label:"سبب عدم التحصيل"},{key:"overtime_waived",label:"إعفاء الإضافي؟"},{key:"overtime_waiver_reason",label:"سبب الإعفاء"},{key:"cancellation_reason",label:"سبب الإلغاء"},{key:"cancelled_by",label:"أُلغي بواسطة"},{key:"cancelled_at",label:"وقت الإلغاء"},{key:"total_amount",label:"الإجمالي المستحق"},{key:"group_count",label:"عدد العمليات بالمجموعة"},{key:"group_total",label:"إجمالي المجموعة"},{key:"group_average",label:"متوسط العملية"},{key:"status",label:"الحالة"}]},
+  { key: "bookings", label: "الحجوزات وأعياد الميلاد", description: "مواعيد الزيارات والحفلات وحالات التأكيد والإلغاء.", fields: [{key:"booking_type",label:"نوع الحجز"},{key:"guardian_name",label:"اسم المرافق"},{key:"guardian_phone",label:"رقم الهاتف"},{key:"scheduled_at",label:"موعد الحجز"},{key:"duration_minutes",label:"المدة بالدقائق"},{key:"child_count",label:"عدد الأطفال"},{key:"guest_count",label:"عدد المدعوين"},{key:"status",label:"الحالة"},{key:"notes",label:"ملاحظات"},{key:"created_by",label:"سجل بواسطة"},{key:"created_at",label:"تاريخ التسجيل"}]},
   { key: "customers", label: "العملاء والأطفال", description: "بيانات العملاء وعدد الزيارات وآخر زيارة.", fields: [
     {key:"guardian_name",label:"اسم ولي الأمر"},{key:"phone",label:"رقم التليفون"},{key:"child_name",label:"اسم الطفل"},{key:"visit_count",label:"عدد الزيارات"},{key:"last_visit",label:"آخر زيارة"},{key:"group_count",label:"عدد السجلات بالمجموعة"},{key:"group_total",label:"إجمالي المجموعة"},{key:"group_average",label:"متوسط العملية"}]},
   { key: "payments", label: "التحصيلات وطرق الدفع", description: "المدفوعات المسجلة في قاعدة البيانات.", fields: [
@@ -26,6 +27,7 @@ const reports: { key: ReportKey; label: string; description: string; fields: Fie
 
 const defaultFields: Record<ReportKey, string[]> = {
   visits:["visit_number","child_name","guardian_name","phone","checked_in_at","expected_checkout","checked_out_at","duration_minutes","total_amount","status"],
+  bookings:["booking_type","guardian_name","guardian_phone","scheduled_at","duration_minutes","child_count","guest_count","status","notes"],
   customers:["guardian_name","phone","child_name","visit_count","last_visit"],
   payments:["created_at","visit_number","sale_number","sale_description","guardian_name","method","amount","status","received_by","cash_session_id"],
   expenses:["created_at","expense_name","expense_type","amount","method","reason","month","paid_at"],
@@ -105,7 +107,7 @@ export default function ReportsCenter({ db, language, isAdmin = false, canManage
   const [savedTemplates, setSavedTemplates] = useState<{name:string; key:ReportKey; fields:string[]}[]>(() => {
     try { return JSON.parse(localStorage.getItem("skc.reportTemplates") || "[]"); } catch { return []; }
   });
-  const availableReports = reports.filter(r => (r.key !== "users" || isAdmin) && (!["shifts","expenses","audit","financials"].includes(r.key) || canManage));
+  const availableReports = reports.filter(r => (r.key !== "users" || isAdmin) && (!["shifts","expenses","audit","financials","bookings"].includes(r.key) || canManage));
   const current = reports.find(r => r.key === reportKey)!;
 
   useEffect(() => {
@@ -134,6 +136,14 @@ export default function ReportsCenter({ db, language, isAdmin = false, canManage
           LEFT JOIN local_users cancel_user ON cancel_user.id=v.cancelled_by
           WHERE (?='' OR date(v.checked_in_at)>=date(?)) AND (?='' OR date(v.checked_in_at)<=date(?))
           ORDER BY v.checked_in_at DESC`, [startDate,startDate,endDate,endDate]);
+      } else if (reportKey === "bookings") {
+        result = await db.select<ReportRow[]>(`SELECT CASE booking_type WHEN 'birthday' THEN 'عيد ميلاد' ELSE 'زيارة' END AS booking_type,
+          guardian_name,guardian_phone,scheduled_at,duration_minutes,child_count,guest_count,
+          CASE status WHEN 'booked' THEN 'محجوز' WHEN 'confirmed' THEN 'مؤكد' WHEN 'completed' THEN 'مكتمل' WHEN 'cancelled' THEN 'ملغي' ELSE status END AS status,
+          notes,COALESCE(u.display_name,b.created_by) AS created_by,b.created_at
+          FROM local_bookings b LEFT JOIN local_users u ON u.id=b.created_by
+          WHERE (?='' OR date(b.scheduled_at)>=date(?)) AND (?='' OR date(b.scheduled_at)<=date(?))
+          ORDER BY b.scheduled_at DESC`,[startDate,startDate,endDate,endDate]);
       } else if (reportKey === "customers") {
         result = await db.select<ReportRow[]>(`SELECT g.full_name AS guardian_name, g.phone, c.child_name_snapshot AS child_name,
           COUNT(DISTINCT v.id) AS visit_count, MAX(v.checked_in_at) AS last_visit
