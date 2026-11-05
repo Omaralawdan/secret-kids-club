@@ -1283,7 +1283,7 @@ fn list_bookings(app:tauri::AppHandle)->Result<Vec<Value>,String>{
 
 #[tauri::command]
 fn save_booking(app:tauri::AppHandle,booking_type:String,guardian_name:String,guardian_phone:String,scheduled_at:String,duration_minutes:i64,child_count:i64,guest_count:i64,notes:String)->Result<String,String>{
-    if !["visit","birthday"].contains(&booking_type.as_str())||guardian_name.trim().is_empty()||guardian_phone.trim().is_empty()||scheduled_at.trim().is_empty()||duration_minutes<=0||child_count<=0||guest_count<0{return Err("راجع نوع الحجز وبيانات المرافق والتاريخ والمدة والأعداد.".into())}
+    if !["visit","birthday"].contains(&booking_type.as_str())||guardian_name.trim().is_empty()||guardian_phone.trim().is_empty()||scheduled_at.trim().is_empty()||duration_minutes<15||duration_minutes%15!=0||child_count<=0||guest_count<0{return Err("راجع نوع الحجز وبيانات المرافق والتاريخ والمدة والأعداد.".into())}
     let mut db=auth_db(&app)?;
     require_permission(&db,"bookings")?;
     let(actor,_)=require_role(&db,&["admin","manager","cashier"])?;
