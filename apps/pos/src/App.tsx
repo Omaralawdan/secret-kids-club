@@ -687,7 +687,7 @@ export default function App() {
       return;
     }
     if (estimatedOvertimeMinutes > 0 && hourlyRate !== null) {
-      if (canManage) {
+      if (hasPermission("overtime_waive")) {
         overtimeWaived = window.confirm(ar
           ? "هل المدير سيعفي الطفل من قيمة الوقت الإضافي؟ موافق = إعفاء، إلغاء = متابعة التحصيل."
           : "Manager: waive this child's overtime charge? OK = waive, Cancel = continue to collection.");
