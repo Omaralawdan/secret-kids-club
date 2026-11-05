@@ -906,7 +906,6 @@ fn create_cafe_sale(app:tauri::AppHandle,items:Vec<Value>,payment_method:String)
     if items.is_empty()||!["cash","instapay","wallet","visa","other"].contains(&payment_method.as_str()){return Err("أضف أصنافًا واختر طريقة دفع صحيحة.".into())}
     let mut db=auth_db(&app)?;let(actor,_)=require_role(&db,&["admin","manager","cashier"])?;require_permission(&db,"cafe")?;
     let tx=db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
-    require_permission(&db,"cafe")?;
     let shift_id:String=tx.query_row("SELECT id FROM local_cash_sessions WHERE closed_at IS NULL ORDER BY opened_at DESC LIMIT 1",[],|r|r.get(0)).optional().map_err(|e|e.to_string())?.ok_or("افتح الوردية قبل تسجيل بيع الكافيه.")?;
     let mut prepared:Vec<(String,String,i64,i64,i64,String)>=Vec::new();let mut subtotal:i64=0;
     for line in items.iter(){
@@ -1022,7 +1021,6 @@ fn list_cafe_items(app: tauri::AppHandle) -> Result<Vec<Value>,String> {
 fn save_cafe_item(app:tauri::AppHandle,item_id:Option<String>,name:String,sku:Option<String>,barcode:Option<String>,item_kind:String,base_unit:String,purchase_price_minor:i64,sale_price_minor:i64,minimum_stock_milli:i64)->Result<String,String>{
     if name.trim().is_empty()||base_unit.trim().is_empty()||!["ingredient","ready_product","packaging","other"].contains(&item_kind.as_str())||purchase_price_minor<0||sale_price_minor<0||minimum_stock_milli<0{return Err("راجع اسم الصنف والوحدة والأسعار والحد الأدنى للمخزون.".into())}
     let mut db=auth_db(&app)?;let(actor,_)=require_role(&db,&["admin","manager"])?;let tx=db.transaction().map_err(|e|e.to_string())?;let id=item_id.unwrap_or_else(||uuid::Uuid::new_v4().to_string());
-    require_permission(&db,"cafe")?;
     tx.execute("INSERT INTO local_inventory_items(id,name,sku,barcode,item_kind,base_unit,purchase_price_minor,sale_price_minor,minimum_stock_milli,is_active) VALUES(?,?,?,?,?,?,?,?,?,1) ON CONFLICT(id) DO UPDATE SET name=excluded.name,sku=excluded.sku,barcode=excluded.barcode,item_kind=excluded.item_kind,base_unit=excluded.base_unit,purchase_price_minor=excluded.purchase_price_minor,sale_price_minor=excluded.sale_price_minor,minimum_stock_milli=excluded.minimum_stock_milli",params![id,name.trim(),sku.as_deref(),barcode.as_deref(),item_kind,base_unit.trim(),purchase_price_minor,sale_price_minor,minimum_stock_milli]).map_err(|e|e.to_string())?;
     tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'cafe_item_saved','inventory_item',?,?,?)",params![actor,id,json!({"name":name,"kind":item_kind,"unit":base_unit,"purchase_price_minor":purchase_price_minor,"sale_price_minor":sale_price_minor}).to_string(),Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
     tx.commit().map_err(|e|e.to_string())?;Ok(id)
@@ -1033,7 +1031,6 @@ fn adjust_cafe_stock(app:tauri::AppHandle,item_id:String,movement_type:String,qu
     if item_id.trim().is_empty()||quantity_milli<=0||!["purchase","stock_in","waste","stock_out","return_in","return_supplier","opening"].contains(&movement_type.as_str())||reason.trim().is_empty(){return Err("راجع الصنف والكمية ونوع الحركة والسبب.".into())}
     let mut db=auth_db(&app)?;let(actor,_)=require_role(&db,&["admin","manager"])?;require_permission(&db,"cafe")?;
     let tx=db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
-    require_permission(&db,"cafe")?;
     let exists:i64=tx.query_row("SELECT COUNT(*) FROM local_inventory_items WHERE id=? AND is_active=1",params![item_id],|r|r.get(0)).map_err(|e|e.to_string())?;if exists==0{return Err("الصنف غير موجود أو غير نشط.".into())}
     let current:i64=tx.query_row("SELECT COALESCE(SUM(CASE WHEN movement_type IN ('purchase','stock_in','return_in','opening') THEN quantity_milli WHEN movement_type IN ('sale','waste','stock_out','return_supplier') THEN -quantity_milli ELSE 0 END),0) FROM local_stock_movements WHERE inventory_item_id=?",params![item_id],|r|r.get(0)).map_err(|e|e.to_string())?;
     if ["waste","stock_out","return_supplier"].contains(&movement_type.as_str())&&quantity_milli>current{return Err("الكمية أكبر من المخزون المتاح.".into())}
@@ -1048,7 +1045,6 @@ fn record_cafe_purchase(app:tauri::AppHandle,supplier_id:Option<String>,document
     if item_id.trim().is_empty()||quantity_milli<=0||unit_cost_minor<0{return Err("راجع الصنف والكمية وتكلفة الوحدة.".into())}
     let mut db=auth_db(&app)?;let(actor,_)=require_role(&db,&["admin","manager"])?;require_permission(&db,"cafe")?;
     let tx=db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
-    require_permission(&db,"cafe")?;
     let item_name:String=tx.query_row("SELECT name FROM local_inventory_items WHERE id=? AND is_active=1",params![item_id],|r|r.get(0)).map_err(|_|"الصنف غير موجود أو غير نشط.".to_string())?;
     if let Some(sid)=supplier_id.as_deref(){let n:i64=tx.query_row("SELECT COUNT(*) FROM local_suppliers WHERE id=? AND is_active=1",params![sid],|r|r.get(0)).map_err(|e|e.to_string())?;if n==0{return Err("المورد غير موجود.".into())}}
     let now=Utc::now().to_rfc3339();let purchase_id=uuid::Uuid::new_v4().to_string();let total=quantity_milli.checked_mul(unit_cost_minor).ok_or("قيمة الشراء كبيرة جدًا.")?/1000;
