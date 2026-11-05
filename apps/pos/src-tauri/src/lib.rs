@@ -572,15 +572,15 @@ fn get_active_cash_shift(app: tauri::AppHandle) -> Result<Value, String> {
     require_role(&db, &["admin", "manager", "cashier"])?;
     let shift: Option<Value> = db.query_row(
         "SELECT s.id,s.opening_float_minor,s.opened_at,COALESCE(u.display_name,s.opened_by),
-          COALESCE((SELECT SUM(p.amount_minor) FROM local_payments p WHERE p.cash_session_id=s.id AND p.method='cash' AND p.status='confirmed'),0),
+          COALESCE((SELECT SUM(p.amount_minor) FROM local_payments p WHERE p.cash_session_id=s.id AND COALESCE(p.method_label,p.method)='cash' AND p.status='confirmed'),0),
           COALESCE((SELECT SUM(p.amount_minor) FROM local_payments p WHERE p.cash_session_id=s.id AND p.method<>'cash' AND p.status='confirmed'),0),
           COALESCE((SELECT SUM(e.amount_minor) FROM local_expenses e WHERE e.cash_session_id=s.id AND e.method='cash'),0),
           COALESCE((SELECT SUM(r.amount_minor) FROM local_refunds r WHERE r.cash_session_id=s.id AND r.method='cash'),0),
           COALESCE((SELECT SUM(m.amount_minor) FROM local_cash_movements m WHERE m.cash_session_id=s.id AND m.movement_type='cash_added'),0),
           COALESCE((SELECT SUM(m.amount_minor) FROM local_cash_movements m WHERE m.cash_session_id=s.id AND m.movement_type='cash_removed'),0),
           COALESCE((SELECT SUM(p.amount_minor) FROM local_payments p WHERE p.cash_session_id=s.id AND p.visit_id IS NOT NULL AND p.method='cash' AND p.status='confirmed'),0),
-          COALESCE((SELECT SUM(p.amount_minor) FROM local_payments p WHERE p.cash_session_id=s.id AND p.visit_id IS NOT NULL AND p.method='instapay' AND p.status='confirmed'),0),
-          COALESCE((SELECT SUM(p.amount_minor) FROM local_payments p WHERE p.cash_session_id=s.id AND p.visit_id IS NOT NULL AND p.method='wallet' AND p.status='confirmed'),0),
+          COALESCE((SELECT SUM(p.amount_minor) FROM local_payments p WHERE p.cash_session_id=s.id AND p.visit_id IS NOT NULL AND COALESCE(p.method_label,p.method)='instapay' AND p.status='confirmed'),0),
+          COALESCE((SELECT SUM(p.amount_minor) FROM local_payments p WHERE p.cash_session_id=s.id AND p.visit_id IS NOT NULL AND COALESCE(p.method_label,p.method)='wallet' AND p.status='confirmed'),0),
           COALESCE((SELECT SUM(p.amount_minor) FROM local_payments p WHERE p.cash_session_id=s.id AND p.sale_id IS NOT NULL AND p.method='cash' AND p.status='confirmed'),0),
           COALESCE((SELECT SUM(p.amount_minor) FROM local_payments p WHERE p.cash_session_id=s.id AND p.sale_id IS NOT NULL AND p.method='instapay' AND p.status='confirmed'),0),
           COALESCE((SELECT SUM(p.amount_minor) FROM local_payments p WHERE p.cash_session_id=s.id AND p.sale_id IS NOT NULL AND p.method='wallet' AND p.status='confirmed'),0)
@@ -678,7 +678,7 @@ fn list_refundable_payments(app: tauri::AppHandle) -> Result<Vec<Value>, String>
 #[tauri::command]
 fn record_expense(app: tauri::AppHandle, amount_minor: i64, category: String, reason: String, method: String) -> Result<(), String> {
     if amount_minor <= 0 || category.trim().is_empty() || reason.trim().is_empty() { return Err("أدخل مبلغًا صحيحًا وتصنيفًا وسببًا للمصروف.".into()); }
-    if !["cash","instapay","wallet"].contains(&method.as_str()) { return Err("طريقة الدفع غير صحيحة.".into()); }
+    if !["cash","instapay","wallet","visa","other"].contains(&method.as_str()) { return Err("طريقة الدفع غير صحيحة.".into()); }
     let stored_method=if ["visa","other"].contains(&method.as_str()){"wallet"}else{method.as_str()};
     let mut db = auth_db(&app)?;
     require_permission(&db,"shift")?;
