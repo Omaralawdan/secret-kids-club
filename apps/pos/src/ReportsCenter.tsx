@@ -156,7 +156,7 @@ export default function ReportsCenter({ db, language, isAdmin = false, canManage
           [startDate,startDate,endDate,endDate]);
       } else if (reportKey === "payments") {
         result = await db.select<ReportRow[]>(`SELECT p.created_at, v.visit_number_local AS visit_number,
-          v.guardian_name_snapshot AS guardian_name, v.guardian_phone_snapshot AS phone, s.sale_number_local AS sale_number, (SELECT group_concat(description_snapshot, ', ') FROM local_sale_items si WHERE si.sale_id=s.id) AS sale_description, COALESCE(s.discount_minor,0)/100.0 AS sale_discount, c.code AS coupon_code, COALESCE(p.method_label,p.method) AS method, p.cash_session_id,
+          v.guardian_name_snapshot AS guardian_name, v.guardian_phone_snapshot AS phone, s.sale_number_local AS sale_number, (SELECT group_concat(description_snapshot, ', ') FROM local_sale_items si WHERE si.sale_id=s.id) AS sale_description, COALESCE(s.discount_minor,0)/100.0 AS sale_discount, COALESCE(c.code,v.coupon_code_snapshot) AS coupon_code, COALESCE(p.method_label,p.method) AS method, p.cash_session_id,
           p.amount_minor/100.0 AS amount, p.status, COALESCE(pay_user.display_name,p.received_by) AS received_by, p.external_reference
           FROM local_payments p LEFT JOIN local_visits v ON v.id=p.visit_id LEFT JOIN local_sales s ON s.id=p.sale_id LEFT JOIN local_coupons c ON c.id=s.coupon_id
           LEFT JOIN local_users pay_user ON pay_user.id=p.received_by
