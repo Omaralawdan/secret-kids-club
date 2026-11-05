@@ -196,7 +196,7 @@ export default function App() {
   const [membershipPlans,setMembershipPlans]=useState<MembershipPlan[]>([]);
   const [memberships,setMemberships]=useState<ChildMembership[]>([]);
   const [planName,setPlanName]=useState(""); const [planPrice,setPlanPrice]=useState(""); const [planHours,setPlanHours]=useState("20"); const [planValidity,setPlanValidity]=useState("30"); const [planOvertimeRate,setPlanOvertimeRate]=useState("");
-  const [memberName,setMemberName]=useState(""); const [memberPhone,setMemberPhone]=useState(""); const [memberPlanId,setMemberPlanId]=useState(""); const [memberPaymentMethod,setMemberPaymentMethod]=useState<"cash"|"instapay"|"wallet"|"visa"|"other">("cash"); const [memberPaymentAmount,setMemberPaymentAmount]=useState(""); const [memberPaymentNote,setMemberPaymentNote]=useState(""); const [membershipPaymentHistory,setMembershipPaymentHistory]=useState<Record<string,MembershipPayment[]>>({});
+  const [memberName,setMemberName]=useState(""); const [memberPhone,setMemberPhone]=useState(""); const [memberPlanId,setMemberPlanId]=useState(""); const [memberPaymentMethod,setMemberPaymentMethod]=useState<"cash"|"instapay"|"wallet"|"visa"|"other">("cash"); const [memberPaymentAmount,setMemberPaymentAmount]=useState(""); const [memberPaymentNote,setMemberPaymentNote]=useState(""); const [memberCouponCode,setMemberCouponCode]=useState(""); const [membershipPaymentHistory,setMembershipPaymentHistory]=useState<Record<string,MembershipPayment[]>>({});
 
   const refreshData = useCallback(async (connection: Database) => {
     const loadedRules = await connection.select<PricingRule[]>(
@@ -208,7 +208,7 @@ export default function App() {
     setRules(loadedRules);
     try {
       setMembershipPlans(await connection.select<MembershipPlan[]>("SELECT id,name,price_minor,included_minutes,validity_days,overtime_rate_minor,is_active FROM local_membership_plans WHERE is_active=1 ORDER BY name"));
-      setMemberships(await connection.select<ChildMembership[]>("SELECT m.id,m.child_name_snapshot,m.guardian_phone_snapshot,m.plan_id,p.name AS plan_name,m.purchased_at,m.expires_at,m.included_minutes,m.used_minutes,p.overtime_rate_minor,m.status,m.sale_id,COALESCE((SELECT SUM(pay.amount_minor) FROM local_payments pay WHERE pay.sale_id=m.sale_id AND pay.status='confirmed'),0) AS paid_minor,MAX(0,p.price_minor-COALESCE((SELECT SUM(pay.amount_minor) FROM local_payments pay WHERE pay.sale_id=m.sale_id AND pay.status='confirmed'),0)) AS remaining_minor FROM local_child_memberships m JOIN local_membership_plans p ON p.id=m.plan_id ORDER BY m.purchased_at DESC"));
+      setMemberships(await connection.select<ChildMembership[]>("SELECT m.id,m.child_name_snapshot,m.guardian_phone_snapshot,m.plan_id,p.name AS plan_name,m.purchased_at,m.expires_at,m.included_minutes,m.used_minutes,p.overtime_rate_minor,m.status,m.sale_id,COALESCE((SELECT SUM(pay.amount_minor) FROM local_payments pay WHERE pay.sale_id=m.sale_id AND pay.status='confirmed'),0) AS paid_minor,MAX(0,COALESCE((SELECT sale.total_minor FROM local_sales sale WHERE sale.id=m.sale_id),p.price_minor)-COALESCE((SELECT SUM(pay.amount_minor) FROM local_payments pay WHERE pay.sale_id=m.sale_id AND pay.status='confirmed'),0)) AS remaining_minor FROM local_child_memberships m JOIN local_membership_plans p ON p.id=m.plan_id ORDER BY m.purchased_at DESC"));
     } catch { /* Membership tables are created by the installed schema migration. */ }
 
     const counts = await connection.select<{ total: number }[]>(
@@ -395,24 +395,22 @@ export default function App() {
   async function enrollMembership(e:FormEvent<HTMLFormElement>) {
     e.preventDefault(); if(!db)return;
     const plan=membershipPlans.find(p=>p.id===memberPlanId);
-    if(!plan||!memberName.trim()||!memberPhone.trim()){setError("أدخل اسم الطفل ورقم الهاتف واختار الباقة.");return} if(plan.price_minor<=0){setError("سعر الباقة يجب أن يكون أكبر من صفر لتسجيل التحصيل.");return} const initialPaid=memberPaymentAmount.trim()===""?plan.price_minor:egpToMinor(memberPaymentAmount); if(!Number.isFinite(initialPaid)||initialPaid<=0||initialPaid>plan.price_minor){setError("المبلغ المدفوع الآن يجب أن يكون أكبر من صفر ولا يتجاوز سعر الباقة.");return}
-    const purchased=new Date(), expires=new Date(purchased.getTime()+plan.validity_days*86400000);
+    if(!plan||!memberName.trim()||!memberPhone.trim()){setError("أدخل اسم الطفل ورقم الهاتف واختار الباقة.");return}
+    let paidMinor:number|null=null;
+    if(memberPaymentAmount.trim()!==""){
+      paidMinor=tryEgpToMinor(memberPaymentAmount);
+      if(paidMinor===null||paidMinor<=0){setError("أدخل مبلغًا صحيحًا بالجنيه.");return}
+    }
     try {
-      const membershipId=makeId(), saleId=makeId();
-      const saleNoRows=await db.select<{n:number}[]>("SELECT COALESCE(MAX(sale_number_local),0)+1 AS n FROM local_sales");
-      const saleNo=saleNoRows[0]?.n||1;
-      const cashierRows=await db.select<{id:string}[]>("SELECT actor_user_id AS id FROM local_session WHERE singleton_id=1");
-      const cashierId=cashierRows[0]?.id;
-      if(!cashierId) throw new Error("يجب تسجيل الدخول قبل تسجيل بيع الباقة.");
-      const shiftRows=await db.select<{id:string}[]>("SELECT id FROM local_cash_sessions WHERE closed_at IS NULL ORDER BY opened_at DESC LIMIT 1");
-      const cashSessionId=shiftRows[0]?.id;
-      if(!cashSessionId) throw new Error("افتح وردية قبل تسجيل تحصيل الباقة.");
-      await db.execute("INSERT INTO local_sales(id,sale_number_local,visit_id,status,subtotal_minor,discount_minor,total_minor,cashier_user_id,created_at,sync_state) VALUES(?, ?, NULL,'completed',?,0,?,?,?,'pending')",[saleId,saleNo,plan.price_minor,plan.price_minor,cashierId,purchased.toISOString()]);
-      await db.execute("INSERT INTO local_sale_items(id,sale_id,item_type,inventory_item_id,description_snapshot,quantity_milli,unit_price_minor,line_total_minor) VALUES(?, ?, 'other', NULL, ?,1000,?,?)",[makeId(),saleId,"Membership package: "+plan.name+" - "+memberName.trim(),plan.price_minor,plan.price_minor]);
-      await db.execute("INSERT INTO local_child_memberships(id,child_id,child_name_snapshot,guardian_phone_snapshot,plan_id,purchased_at,starts_at,expires_at,included_minutes,used_minutes,status,sync_state,sale_id) VALUES(?,NULL,?,?,?,?,?,?,?,0,'active','pending',?)",[membershipId,memberName.trim(),memberPhone.trim(),plan.id,purchased.toISOString(),purchased.toISOString(),expires.toISOString(),plan.included_minutes,saleId]);
-      const storedMemberMethod=memberPaymentMethod==="visa"||memberPaymentMethod==="other"?"wallet":memberPaymentMethod;
-       await db.execute("INSERT INTO local_payments(id,sale_id,visit_id,method,method_label,status,amount_minor,external_reference,received_by,created_at,sync_state,cash_session_id) VALUES(?,?,NULL,?,?,'confirmed',?,?,?,?, 'pending',?)",[makeId(),saleId,storedMemberMethod,memberPaymentMethod,initialPaid,memberPaymentNote.trim()||null,cashierId,purchased.toISOString(),cashSessionId]);
-      setMemberName("");setMemberPhone("");setMemberPaymentAmount("");setMemberPaymentNote("");await refreshData(db);setMessage(initialPaid<plan.price_minor?"تم تسجيل الباقة مع وجود مبلغ متبقٍ للتحصيل.":"تم تسجيل الطفل في الباقة وتحصيل قيمتها بالكامل.");setError("")
+      const result=await invoke<{membershipId:string;totalMinor:number;paidMinor:number;remainingMinor:number}>("create_membership_sale",{
+        planId:plan.id,childName:memberName.trim(),guardianPhone:memberPhone.trim(),
+        amountPaidMinor:paidMinor,method:memberPaymentMethod,note:memberPaymentNote.trim(),
+        couponCode:memberCouponCode.trim()||null,
+      });
+      setMemberName("");setMemberPhone("");setMemberPaymentAmount("");setMemberPaymentNote("");setMemberCouponCode("");
+      await refreshData(db);
+      setMessage(result.remainingMinor>0?"تم تسجيل الباقة بعد الخصم، والمتبقي للتحصيل: "+money(result.remainingMinor,language):"تم تسجيل الباقة وتحصيل صافي قيمتها بالكامل بعد الخصم.");
+      setError("");
     } catch(e){setError(String(e))}
   }
   async function cancelMembership(m:ChildMembership){
@@ -894,7 +892,7 @@ export default function App() {
             <label>{ar?"رقم هاتف المرافق":"Guardian phone"}<input value={memberPhone} onChange={e=>setMemberPhone(e.target.value)} required/></label>
             <label>{ar?"الباقة":"Package"}<select value={memberPlanId} onChange={e=>setMemberPlanId(e.target.value)} required><option value="">{ar?"اختر الباقة":"Choose package"}</option>{membershipPlans.map(p=><option key={p.id} value={p.id}>{p.name} — {money(p.price_minor,language)}</option>)}</select></label>
             <label>{ar?"طريقة الدفع":"Payment method"}<select value={memberPaymentMethod} onChange={e=>setMemberPaymentMethod(e.target.value as "cash"|"instapay"|"wallet"|"visa"|"other")}><option value="cash">Cash</option><option value="instapay">InstaPay</option><option value="wallet">E-Wallet</option><option value="visa">Visa</option><option value="other">{ar?"أخرى":"Other"}</option></select></label>
-            <label>{ar?"المدفوع الآن (اختياري)":"Amount paid now (optional)"}<input type="number" min="0.01" step="0.01" value={memberPaymentAmount} onChange={e=>setMemberPaymentAmount(e.target.value)} placeholder={ar?"فارغ = كامل السعر":"Blank = full price"}/></label>
+            <label>{ar?"المدفوع الآن (اختياري)":"Amount paid now (optional)"}<input type="number" min="0.01" step="0.01" value={memberPaymentAmount} onChange={e=>setMemberPaymentAmount(e.target.value)} placeholder={ar?"فارغ = كامل السعر":"Blank = full price"}/></label><label>كود خصم الباقة (اختياري)<input value={memberCouponCode} onChange={e=>setMemberCouponCode(e.target.value.toUpperCase())} placeholder="KIDS10"/></label>
             <label>{ar?"ملاحظة الدفعة":"Payment note"}<input value={memberPaymentNote} onChange={e=>setMemberPaymentNote(e.target.value)}/></label>
             <div className="full-width"><button className="primary-button" disabled={!membershipPlans.length}>{ar?"تسجيل الباقة وتحصيل الدفعة":"Register package and collect payment"}</button></div>
           </form>
@@ -1177,7 +1175,7 @@ export default function App() {
             <form className="form-grid" onSubmit={enrollMembership}>
               <label>{ar?"اسم الطفل":"Child name"}<input value={memberName} onChange={e=>setMemberName(e.target.value)} required/></label>
               <label>{ar?"رقم هاتف ولي الأمر":"Guardian phone"}<input value={memberPhone} onChange={e=>setMemberPhone(e.target.value)} required inputMode="tel"/></label>
-              <label>{ar?"الباقة":"Package"}<select value={memberPlanId} onChange={e=>setMemberPlanId(e.target.value)} required><option value="">{ar?"اختار الباقة":"Choose a package"}</option>{membershipPlans.map(p=><option key={p.id} value={p.id}>{p.name} · {p.validity_days===7?(ar?"أسبوع":"Weekly"):(ar?"شهر":"Monthly")} · {money(p.price_minor,language)} · {formatDuration(p.included_minutes,language)}</option>)}</select></label><label>{ar?"طريقة تحصيل الباقة":"Package payment method"}<select value={memberPaymentMethod} onChange={e=>setMemberPaymentMethod(e.target.value as "cash"|"instapay"|"wallet")}><option value="cash">{ar?"كاش":"Cash"}</option><option value="instapay">InstaPay</option><option value="wallet">{ar?"محفظة إلكترونية":"E-Wallet"}</option><option value="visa">{ar?"فيزا":"Visa"}</option><option value="other">{ar?"أخرى":"Other"}</option></select></label><label>{ar?"المدفوع الآن (اتركه فارغًا للتحصيل الكامل)":"Amount paid now (leave blank for full payment)"}<input type="number" min="0.01" step="0.01" value={memberPaymentAmount} onChange={e=>setMemberPaymentAmount(e.target.value)} placeholder={ar?"يمكن تحصيل جزء من قيمة الباقة":"Partial payment is allowed"}/></label><label>{ar?"ملاحظة الدفعة":"Payment note"}<input value={memberPaymentNote} onChange={e=>setMemberPaymentNote(e.target.value)} placeholder={ar?"اختياري":"Optional"}/></label>
+              <label>{ar?"الباقة":"Package"}<select value={memberPlanId} onChange={e=>setMemberPlanId(e.target.value)} required><option value="">{ar?"اختار الباقة":"Choose a package"}</option>{membershipPlans.map(p=><option key={p.id} value={p.id}>{p.name} · {p.validity_days===7?(ar?"أسبوع":"Weekly"):(ar?"شهر":"Monthly")} · {money(p.price_minor,language)} · {formatDuration(p.included_minutes,language)}</option>)}</select></label><label>{ar?"طريقة تحصيل الباقة":"Package payment method"}<select value={memberPaymentMethod} onChange={e=>setMemberPaymentMethod(e.target.value as "cash"|"instapay"|"wallet")}><option value="cash">{ar?"كاش":"Cash"}</option><option value="instapay">InstaPay</option><option value="wallet">{ar?"محفظة إلكترونية":"E-Wallet"}</option><option value="visa">{ar?"فيزا":"Visa"}</option><option value="other">{ar?"أخرى":"Other"}</option></select></label><label>{ar?"المدفوع الآن (اتركه فارغًا للتحصيل الكامل)":"Amount paid now (leave blank for full payment)"}<input type="number" min="0.01" step="0.01" value={memberPaymentAmount} onChange={e=>setMemberPaymentAmount(e.target.value)} placeholder={ar?"يمكن تحصيل جزء من قيمة الباقة":"Partial payment is allowed"}/></label><label>كود خصم الباقة (اختياري)<input value={memberCouponCode} onChange={e=>setMemberCouponCode(e.target.value.toUpperCase())} placeholder="KIDS10"/></label><label>{ar?"ملاحظة الدفعة":"Payment note"}<input value={memberPaymentNote} onChange={e=>setMemberPaymentNote(e.target.value)} placeholder={ar?"اختياري":"Optional"}/></label>
               <div className="full-width"><button className="primary-button" type="submit" disabled={!membershipPlans.length}>{ar?"تسجيل الاشتراك":"Enroll"}</button></div>
             </form>
             <h4>{ar?"المشتركون وحالة الباقات":"Subscribers and package status"}</h4>
