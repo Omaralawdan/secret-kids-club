@@ -728,6 +728,48 @@ export default function App() {
     }
   }
 
+  async function extendVisitChild(child: ActiveChild) {
+    if (!db || !hasPermission("pricing") || child.pricing_type === "membership") return;
+    const hoursText = window.prompt(ar
+      ? "مدة التمديد بالساعات (0.25 أو 0.5 أو 1):"
+      : "Extension duration in hours (0.25, 0.5 or 1):", "0.25");
+    if (hoursText === null) return;
+    let hoursHundredths: number;
+    try { hoursHundredths = egpToMinor(hoursText); }
+    catch { setError(ar ? "أدخل مدة صحيحة بزيادات ربع ساعة." : "Enter a valid duration in quarter-hour increments."); return; }
+    if (hoursHundredths <= 0 || hoursHundredths > 1200 || hoursHundredths % 25 !== 0) {
+      setError(ar ? "التمديد يجب أن يكون ربع ساعة على الأقل وبحد أقصى 12 ساعة." : "Extension must be at least 15 minutes and no more than 12 hours.");
+      return;
+    }
+    const additionalMinutes = hoursHundredths * 60 / 100;
+    const originalRate = readHourlyRate(child.calculation_json);
+    const rateText = window.prompt(
+      ar ? "سعر ساعة التمديد بالجنيه (السعر الأصلي افتراضيًا ويمكن تغييره):" : "Extension hourly rate in EGP (defaults to the original rate; editable):",
+      originalRate === null ? "" : String(originalRate / 100)
+    );
+    if (rateText === null) return;
+    let hourlyRateMinor: number;
+    try { hourlyRateMinor = egpToMinor(rateText); }
+    catch { setError(ar ? "أدخل سعر ساعة صحيحًا بالجنيه." : "Enter a valid hourly rate in EGP."); return; }
+    if (hourlyRateMinor <= 0) { setError(ar ? "سعر ساعة التمديد يجب أن يكون أكبر من صفر." : "The extension hourly rate must be greater than zero."); return; }
+    const reason = window.prompt(ar ? "سبب التمديد أو تغيير السعر (اختياري ما لم يتغير السعر الأصلي):" : "Reason for extension or rate change (required if changing the original rate):", "") || "";
+    setCheckoutId(child.visit_child_id);
+    setError("");
+    try {
+      const result = await invoke<{additionalMinutes:number;extraAmountMinor:number;newDurationMinutes:number}>("extend_visit_child", {
+        visitChildId: child.visit_child_id, additionalMinutes, hourlyRateMinor, reason
+      });
+      await refreshData(db);
+      setMessage(ar
+        ? "تم تمديد " + child.child_name + " بمقدار " + formatDuration(result.additionalMinutes, language) + " بقيمة " + money(result.extraAmountMinor, language) + "."
+        : child.child_name + " extended by " + formatDuration(result.additionalMinutes, language) + " for " + money(result.extraAmountMinor, language) + ".");
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setCheckoutId("");
+    }
+  }
+
   async function checkOutChild(child: ActiveChild) {
     if (!db || checkoutId) return;
 
@@ -1060,6 +1102,7 @@ export default function App() {
                         language
                       )}</strong>
                     </div>
+                    {hasPermission("pricing") && child.pricing_type !== "membership" && <button type="button" className="secondary-button" disabled={!ready || checkoutId !== ""} onClick={() => void extendVisitChild(child)}>{ar ? "تمديد الوقت" : "Extend time"}</button>}
                     <button
                       type="button"
                       className="primary-button"
