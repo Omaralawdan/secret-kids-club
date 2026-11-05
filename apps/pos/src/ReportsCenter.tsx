@@ -287,7 +287,7 @@ export default function ReportsCenter({ db, language, isAdmin = false, canManage
     if (key === "overtime_collected") return Number(value) === 1 ? "تم التحصيل" : "لم يتم التحصيل";
     if (key === "overtime_waived") return Number(value) === 1 ? "تم الإعفاء" : "لا";
     if (["base_amount","discount_amount","overtime_amount","total_amount","amount","opening_float","expected_cash","counted_cash","variance","cash_sales","electronic_sales","expenses","refunds","cash_additions","cash_removals","kids_cash","kids_instapay","kids_wallet","cafe_cash","cafe_instapay","cafe_wallet","kids_visa","kids_other","cafe_visa","cafe_other","normal_entry","overtime","membership","other_sales","revenue","net","average_transaction","group_total","group_average"].includes(key) && value !== null && value !== undefined) return Number(value).toLocaleString("ar-EG",{style:"currency",currency:"EGP"});
-    if (key === "method" || key === "payment_method") return ({cash:"كاش",instapay:"إنستاباي",wallet:"محفظة إلكترونية",visa:"فيزا",other:"أخرى"} as Record<string,string>)[String(value)] ?? String(value ?? "");
+    if (key === "expense_type") return value === "monthly" ? "مصروف شهري ثابت" : "مصروف يومي";\n    if (key === "method" || key === "payment_method") return ({cash:"كاش",instapay:"إنستاباي",wallet:"محفظة إلكترونية",visa:"فيزا",other:"أخرى"} as Record<string,string>)[String(value)] ?? String(value ?? "");
     if (key === "status") return ({active:"نشطة",completed:"مكتملة",cancelled:"ملغاة",confirmed:"تم التحصيل",pending:"معلقة",failed:"فشلت",refunded:"مستردة"} as Record<string,string>)[String(value)] ?? String(value ?? "");
     return String(value ?? "—");
   };
