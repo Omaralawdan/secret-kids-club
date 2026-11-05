@@ -134,6 +134,8 @@ function buildReceiptHtml(data: ReceiptData, language: Language): string {
   if (data.paymentMethod) { const methodNames:Record<string,string>={cash:"Cash",instapay:"InstaPay",wallet:"E-Wallet",visa:"Visa",other:"Other"}; const displayMethods=data.paymentMethod.split(",").map(method=>methodNames[method.trim()]||method.trim()).join(", "); html += row(label("Payment method", "طريقة الدفع"), escapeReceipt(displayMethods)); }
   if (data.children?.length) {
     html += amount(label("Children subtotal", "إجمالي أسعار الأطفال"), data.children.reduce((sum, child) => sum + child.baseAmountMinor, 0));
+    const extensionTotal = data.children.reduce((sum, child) => sum + (child.extensions || []).reduce((part, extension) => part + extension.amountMinor, 0), 0);
+    if (extensionTotal > 0) html += amount(label("Extensions total", "إجمالي التمديدات"), extensionTotal);
     html += amount(label("Total discount", "إجمالي الخصم"), data.children.reduce((sum, child) => sum + child.discountAmountMinor, 0));
   } else {
     html += amount(label("Base price", "السعر الأساسي"), data.baseAmountMinor);
@@ -840,13 +842,13 @@ export default function App() {
       if (receiptRows.length && !stillActive) {
         const first=receiptRows[0];
         const methods=receiptRows.map(row=>{try{return JSON.parse(row.calculation_json).paymentMethod||"cash"}catch{return "cash"}}).filter((v,i,a)=>a.indexOf(v)===i).join(", ");
-        const childLines=receiptRows.map(row=>({name:row.child_name,bookedMinutes:row.duration_minutes,baseAmountMinor:row.base_amount_minor,discountAmountMinor:row.discount_amount_minor,extensions:(()=>{try{return (JSON.parse(row.calculation_json).extensions||[]).map((x:{minutes:number;amountMinor:number})=>({minutes:x.minutes,amountMinor:x.amountMinor}))}catch{return []}})(),overtimeMinutes:row.overtime_minutes||0,overtimeAmountMinor:row.overtime_amount_minor||0,overtimeWaived:row.overtime_waived===1,overtimeWaiverReason:row.overtime_waiver_reason,totalAmountMinor:row.final_amount_minor}));
+        const childLines=receiptRows.map(row=>{const extensions=(()=>{try{return (JSON.parse(row.calculation_json).extensions||[]).map((x:{minutes:number;amountMinor:number})=>({minutes:x.minutes,amountMinor:x.amountMinor}))}catch{return []}})();return {name:row.child_name,bookedMinutes:row.duration_minutes,baseAmountMinor:row.base_amount_minor-extensions.reduce((sum,x)=>sum+x.amountMinor,0),discountAmountMinor:row.discount_amount_minor,extensions,overtimeMinutes:row.overtime_minutes||0,overtimeAmountMinor:row.overtime_amount_minor||0,overtimeWaived:row.overtime_waived===1,overtimeWaiverReason:row.overtime_waiver_reason,totalAmountMinor:row.final_amount_minor}});
         setReceiptQueue(current=>[...current,buildReceiptHtml({
           visitNumber:first.visit_number,guardianName:first.guardian_name,guardianPhone:first.guardian_phone,
           childName:childLines.map(x=>x.name).join("، "),children:childLines,
           checkedInAt:first.checked_in_at,checkedOutAt:(()=>{const times=receiptRows.map(row=>row.checked_out_at||"").sort();return times[times.length-1]||null})(),
           paymentMethod:methods,bookedMinutes:Math.max(...childLines.map(x=>x.bookedMinutes)),
-          baseAmountMinor:childLines.reduce((sum,x)=>sum+x.baseAmountMinor,0),
+          baseAmountMinor:receiptRows.reduce((sum,row)=>sum+row.base_amount_minor,0),
           discountAmountMinor:childLines.reduce((sum,x)=>sum+x.discountAmountMinor,0),
           overtimeMinutes:childLines.reduce((sum,x)=>sum+(x.overtimeMinutes||0),0),
           overtimeAmountMinor:childLines.reduce((sum,x)=>sum+(x.overtimeAmountMinor||0),0),
