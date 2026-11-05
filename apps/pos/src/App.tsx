@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from "react"
 import Database from "@tauri-apps/plugin-sql";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
+import { egpToMinor, tryEgpToMinor } from "./money";
 import { t, useLanguage, type Language } from "./i18n";
 import ReportsCenter from "./ReportsCenter";
 import AuthGate, { type AuthUser } from "./AuthGate";
@@ -365,7 +366,7 @@ export default function App() {
       await invoke("create_pricing_rule", {
         name: ruleName.trim(),
         pricingType: ruleType,
-        amountMinor: Math.round(amount * 100),
+        amountMinor: egpToMinor(amount),
         durationMinutes: Math.round(Number(ruleDurationHours) * 60),
       });
 
@@ -383,12 +384,12 @@ export default function App() {
     e.preventDefault(); if(!db)return;
     const hours=Number(planHours), price=Number(planPrice), days=Number(planValidity), overtimeRate=Number(planOvertimeRate);
     if(!planName.trim()||!Number.isFinite(hours)||hours<=0||!Number.isFinite(price)||price<0||![7,30].includes(days)||!Number.isFinite(overtimeRate)||overtimeRate<=0){setError("راجع اسم الباقة والسعر وعدد الساعات وسعر ساعة الإضافي.");return}
-    try { await db.execute("INSERT INTO local_membership_plans(id,name,price_minor,included_minutes,validity_days,overtime_rate_minor,description,is_active,created_at) VALUES(?,?,?,?,?,?,NULL,1,?)",[makeId(),planName.trim(),Math.round(price*100),Math.round(hours*60),days,Math.round(overtimeRate*100),now()]);setPlanName("");setPlanPrice("");setPlanOvertimeRate("");await refreshData(db);setMessage("تم حفظ الباقة.");setError("") } catch(e){setError(String(e))}
+    try { await db.execute("INSERT INTO local_membership_plans(id,name,price_minor,included_minutes,validity_days,overtime_rate_minor,description,is_active,created_at) VALUES(?,?,?,?,?,?,NULL,1,?)",[makeId(),planName.trim(),egpToMinor(price),Math.round(hours*60),days,Math.round(overtimeRate*100),now()]);setPlanName("");setPlanPrice("");setPlanOvertimeRate("");await refreshData(db);setMessage("تم حفظ الباقة.");setError("") } catch(e){setError(String(e))}
   }
   async function enrollMembership(e:FormEvent<HTMLFormElement>) {
     e.preventDefault(); if(!db)return;
     const plan=membershipPlans.find(p=>p.id===memberPlanId);
-    if(!plan||!memberName.trim()||!memberPhone.trim()){setError("أدخل اسم الطفل ورقم الهاتف واختار الباقة.");return} if(plan.price_minor<=0){setError("سعر الباقة يجب أن يكون أكبر من صفر لتسجيل التحصيل.");return} const initialPaid=memberPaymentAmount.trim()===""?plan.price_minor:Math.round(Number(memberPaymentAmount)*100); if(!Number.isFinite(initialPaid)||initialPaid<=0||initialPaid>plan.price_minor){setError("المبلغ المدفوع الآن يجب أن يكون أكبر من صفر ولا يتجاوز سعر الباقة.");return}
+    if(!plan||!memberName.trim()||!memberPhone.trim()){setError("أدخل اسم الطفل ورقم الهاتف واختار الباقة.");return} if(plan.price_minor<=0){setError("سعر الباقة يجب أن يكون أكبر من صفر لتسجيل التحصيل.");return} const initialPaid=memberPaymentAmount.trim()===""?plan.price_minor:egpToMinor(memberPaymentAmount); if(!Number.isFinite(initialPaid)||initialPaid<=0||initialPaid>plan.price_minor){setError("المبلغ المدفوع الآن يجب أن يكون أكبر من صفر ولا يتجاوز سعر الباقة.");return}
     const purchased=new Date(), expires=new Date(purchased.getTime()+plan.validity_days*86400000);
     try {
       const membershipId=makeId(), saleId=makeId();
@@ -418,7 +419,7 @@ export default function App() {
     if(!db||!m.sale_id||m.remaining_minor<=0)return;
     const amountText=window.prompt("المبلغ المطلوب تحصيله الآن بالجنيه. المتبقي: "+(m.remaining_minor/100).toFixed(2),String((m.remaining_minor/100).toFixed(2)));
     if(amountText===null)return;
-    const amountMinor=Math.round(Number(amountText)*100);
+    const amountMinor=egpToMinor(amountText);
     if(!Number.isFinite(amountMinor)||amountMinor<=0||amountMinor>m.remaining_minor){setError("راجع مبلغ الدفعة؛ لا يجوز أن يتجاوز المتبقي.");return}
     const method=window.prompt("طريقة الدفع: cash / instapay / wallet / visa / other","cash")||"";
     const note=window.prompt("ملاحظة الدفعة (اختياري):","")||"";
@@ -434,7 +435,7 @@ export default function App() {
     if(entered===null)return;
     const value=Number(entered);
     if(!Number.isFinite(value)||value<=0){setError(ar?"أدخل سعرًا أكبر من صفر.":"Enter a rate greater than zero.");return;}
-    try{await invoke("update_membership_overtime_rate",{planId:m.plan_id,overtimeRateMinor:Math.round(value*100)});if(db)await refreshData(db);setMessage(ar?"تم تحديث سعر الإضافي للباقة.":"Package overtime rate updated.");setError("")}catch(e){setError(String(e))}
+    try{await invoke("update_membership_overtime_rate",{planId:m.plan_id,overtimeRateMinor:egpToMinor(value)});if(db)await refreshData(db);setMessage(ar?"تم تحديث سعر الإضافي للباقة.":"Package overtime rate updated.");setError("")}catch(e){setError(String(e))}
   }
   async function checkInMember(m:ChildMembership) {
     if(!db)return;
@@ -1075,7 +1076,7 @@ export default function App() {
                         {rules.map((rule) => <option key={rule.id} value={rule.id}>{rule.name} · {tr(rule.pricing_type)}</option>)}
                       </select>
                     </label>
-                    <label className="child-pricing">{ar ? "سعر الطفل (جنيه)" : "Child price (EGP)"}<input type="number" min="0" step="0.01" required value={child.priceMinor === null ? "" : (child.priceMinor / 100).toFixed(2)} onChange={e => updateChild(child.key, "priceMinor", e.target.value === "" ? null : Math.round(Number(e.target.value) * 100))} placeholder={ar ? "اكتب سعر هذا الطفل" : "Enter this child's price"} /></label>
+                    <label className="child-pricing">{ar ? "سعر الطفل (جنيه)" : "Child price (EGP)"}<input type="number" min="0" step="0.01" required value={child.priceMinor === null ? "" : (child.priceMinor / 100).toFixed(2)} onChange={e => updateChild(child.key, "priceMinor", e.target.value === "" ? null : tryEgpToMinor(e.target.value))} placeholder={ar ? "اكتب سعر هذا الطفل" : "Enter this child's price"} /></label>
                     <label className="booked-hours-field">
                       {ar ? "مدة الحجز (بالساعات)" : "Booked duration (hours)"}
                       <input
@@ -1089,7 +1090,7 @@ export default function App() {
                       />
                       <span className="muted">{ar ? "المدة مستقلة لكل طفل؛ السعر الأساسي الذي أدخلته لهذا الطفل لا يتغير مع الأطفال الآخرين." : "Duration is set per child; this child's manually entered base price is independent of other children."}</span>
                     </label>
-                    {selected && <label className="child-pricing">{ar ? "سعر الساعة / ساعة الإضافي (جنيه)" : "Hourly / overtime rate (EGP)"}<input type="number" min="0.01" step="0.01" required value={child.hourlyRateMinor === null ? "" : (child.hourlyRateMinor / 100).toFixed(2)} onChange={e => updateChild(child.key, "hourlyRateMinor", e.target.value === "" ? null : Math.round(Number(e.target.value) * 100))} placeholder={ar ? "اكتب سعر الساعة" : "Enter hourly rate"} /><span className="muted">{selected.pricing_type === "hourly" ? (ar ? "يُستخدم لحساب السعر الأساسي والوقت الإضافي." : "Used for the booked hourly price and overtime.") : (ar ? "يُستخدم لحساب أي وقت يتجاوز مدة الحجز." : "Used to calculate time beyond the booked duration.")}</span></label>}
+                    {selected && <label className="child-pricing">{ar ? "سعر الساعة / ساعة الإضافي (جنيه)" : "Hourly / overtime rate (EGP)"}<input type="number" min="0.01" step="0.01" required value={child.hourlyRateMinor === null ? "" : (child.hourlyRateMinor / 100).toFixed(2)} onChange={e => updateChild(child.key, "hourlyRateMinor", e.target.value === "" ? null : tryEgpToMinor(e.target.value))} placeholder={ar ? "اكتب سعر الساعة" : "Enter hourly rate"} /><span className="muted">{selected.pricing_type === "hourly" ? (ar ? "يُستخدم لحساب السعر الأساسي والوقت الإضافي." : "Used for the booked hourly price and overtime.") : (ar ? "يُستخدم لحساب أي وقت يتجاوز مدة الحجز." : "Used to calculate time beyond the booked duration.")}</span></label>}
                     <div className="child-price">
                       <span>{tr("Price estimate")}</span>
                       <strong>{selected ? money(priceFor(child), language) : "—"}</strong>
