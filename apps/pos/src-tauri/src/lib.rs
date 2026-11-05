@@ -375,7 +375,7 @@ fn checkout_child(
     if !overtime_collected && overtime_collection_note.as_deref().unwrap_or("").trim().is_empty() && !overtime_waived { return Err("يجب تسجيل سبب عدم تحصيل الوقت الإضافي.".into()); }
     if overtime_waived && overtime_waiver_reason.as_deref().unwrap_or("").trim().is_empty() { return Err("يجب تسجيل سبب إعفاء الوقت الإضافي.".into()); }
     let db = auth_db(&app)?;
-    let (actor, _) = if overtime_waived { require_role(&db, &["admin", "manager"])? } else { require_role(&db, &["admin", "manager", "cashier"])? };
+    let (actor, _) = if overtime_waived { require_permission(&db,"overtime_waive")?; require_role(&db, &["admin", "manager", "cashier"])? } else { require_role(&db, &["admin", "manager", "cashier"])? };
     drop(db);
 
     let path = database_path(&app).map_err(|error| error.to_string())?;
@@ -411,7 +411,7 @@ fn require_permission(db:&Connection,permission:&str)->Result<(String,Vec<String
  if roles.iter().any(|r|r=="admin"){return Ok((id,roles))}
  let stored:String=db.query_row("SELECT permissions_json FROM local_users WHERE id=?",params![id],|r|r.get(0)).map_err(|e|e.to_string())?;
  let parsed:Vec<String>=serde_json::from_str(&stored).unwrap_or_default();
- let allowed=if parsed.iter().any(|p|p=="all"){true}else if parsed.iter().any(|p|p=="__custom__"){parsed.iter().any(|p|p==permission)}else if roles.iter().any(|r|r=="manager"){["reception","active","packages","cafe","reports","shift","pricing","bookings"].contains(&permission)}else if roles.iter().any(|r|r=="cashier"){["reception","active","packages","cafe","shift","bookings"].contains(&permission)}else if roles.iter().any(|r|r=="viewer"){permission=="reports"}else{false};
+ let allowed=if parsed.iter().any(|p|p=="all"){true}else if parsed.iter().any(|p|p=="__custom__"){parsed.iter().any(|p|p==permission)}else if roles.iter().any(|r|r=="manager"){["reception","active","packages","cafe","reports","shift","pricing","bookings","overtime_waive"].contains(&permission)}else if roles.iter().any(|r|r=="cashier"){["reception","active","packages","cafe","shift","bookings"].contains(&permission)}else if roles.iter().any(|r|r=="viewer"){permission=="reports"}else{false};
  if allowed{Ok((id,roles))}else{Err("هذه الوظيفة غير مفعّلة في صلاحيات حسابك.".into())}
 }
 #[tauri::command]
@@ -492,7 +492,7 @@ fn admin_reset_user_password(app: tauri::AppHandle, user_id: String, new_passwor
 #[tauri::command]
 fn admin_update_user_role(app: tauri::AppHandle, user_id: String, role: String) -> Result<(), String> {
     if !["admin","manager","cashier","viewer"].contains(&role.as_str()) { return Err("الدور غير صالح.".into()); }
-    let mut db=auth_db(&app)?; let (actor,_)=require_role(&db,&["admin"])?; let (current,_)=active_user(&db)?;
+    let mut db=auth_db(&app)?; require_permission(&db,"pricing")?; let (actor,_)=require_role(&db,&["admin","manager","cashier"])?; let (current,_)=active_user(&db)?;
     if current==user_id && role!="admin" { return Err("لا يمكنك إزالة صلاحية مدير النظام من حسابك الحالي.".into()); }
     let tx=db.transaction().map_err(|e|e.to_string())?;
     let before:String=tx.query_row("SELECT role_codes_json FROM local_users WHERE id=?",params![user_id],|r|r.get(0)).map_err(|e|e.to_string())?;
