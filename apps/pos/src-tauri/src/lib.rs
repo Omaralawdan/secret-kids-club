@@ -766,6 +766,29 @@ fn save_monthly_expense(app: tauri::AppHandle, expense_name: String, amount_mino
 
 
 
+
+#[tauri::command]
+fn record_cafe_stock_count(app:tauri::AppHandle,item_id:String,counted_quantity_milli:i64,reason:String)->Result<Value,String>{
+    if item_id.trim().is_empty()||counted_quantity_milli<0{return Err("أدخل الصنف والكمية الفعلية بشكل صحيح.".into())}
+    let mut db=auth_db(&app)?;let(actor,_)=require_role(&db,&["admin","manager"])?;let tx=db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
+    let expected:i64=tx.query_row("SELECT COALESCE(SUM(CASE WHEN movement_type IN ('purchase','stock_in','return_in','opening') THEN quantity_milli WHEN movement_type IN ('sale','waste','stock_out','return_supplier') THEN -quantity_milli ELSE 0 END),0) FROM local_stock_movements WHERE inventory_item_id=?",params![item_id],|r|r.get(0)).map_err(|e|e.to_string())?;
+    let variance=counted_quantity_milli.checked_sub(expected).ok_or("فرق الجرد كبير جدًا.")?;
+    if variance!=0&&reason.trim().is_empty(){return Err("يجب تسجيل سبب فرق الجرد.".into())}
+    let now=Utc::now().to_rfc3339();let id=uuid::Uuid::new_v4().to_string();
+    tx.execute("INSERT INTO local_stock_counts(id,inventory_item_id,expected_quantity_milli,counted_quantity_milli,variance_quantity_milli,reason,counted_by,counted_at) VALUES(?,?,?,?,?,?,?,?)",params![id,item_id,expected,counted_quantity_milli,variance,reason.trim(),actor,now]).map_err(|e|e.to_string())?;
+    if variance>0{tx.execute("INSERT INTO local_stock_movements(id,inventory_item_id,movement_type,quantity_milli,reason,created_by,created_at) VALUES(?,?,'stock_in',?,?,?,?)",params![uuid::Uuid::new_v4().to_string(),item_id,variance,format!("تسوية جرد: {}",reason.trim()),actor,now]).map_err(|e|e.to_string())?;}else if variance<0{tx.execute("INSERT INTO local_stock_movements(id,inventory_item_id,movement_type,quantity_milli,reason,created_by,created_at) VALUES(?,?,'stock_out',?,?,?,?)",params![uuid::Uuid::new_v4().to_string(),item_id,variance.abs(),format!("تسوية جرد: {}",reason.trim()),actor,now]).map_err(|e|e.to_string())?;}
+    tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,reason,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'cafe_stock_counted','stock_count',?,?,?,?)",params![actor,id,reason.trim(),json!({"expected_milli":expected,"counted_milli":counted_quantity_milli,"variance_milli":variance}).to_string(),now]).map_err(|e|e.to_string())?;
+    tx.commit().map_err(|e|e.to_string())?;Ok(json!({"expectedMilli":expected,"countedMilli":counted_quantity_milli,"varianceMilli":variance}))
+}
+
+#[tauri::command]
+fn list_cafe_expiry_alerts(app:tauri::AppHandle)->Result<Vec<Value>,String>{
+    let db=auth_db(&app)?;require_role(&db,&["admin","manager","cashier"])?;
+    let mut st=db.prepare("SELECT b.id,i.name,b.quantity_milli,b.expiry_date,CAST(julianday(b.expiry_date)-julianday(date('now')) AS INTEGER) FROM local_expiry_batches b JOIN local_inventory_items i ON i.id=b.inventory_item_id WHERE b.quantity_milli>0 AND date(b.expiry_date)<=date('now','+30 days') ORDER BY b.expiry_date").map_err(|e|e.to_string())?;
+    let rows=st.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"itemName":r.get::<_,String>(1)?,"quantityMilli":r.get::<_,i64>(2)?,"expiryDate":r.get::<_,String>(3)?,"daysRemaining":r.get::<_,i64>(4)?}))).map_err(|e|e.to_string())?;
+    rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())
+}
+
 #[tauri::command]
 fn save_cafe_recipe(app:tauri::AppHandle,sellable_item_id:String,recipe_name:String,yield_quantity_milli:i64,ingredients:Vec<Value>)->Result<(),String>{
     if sellable_item_id.trim().is_empty()||recipe_name.trim().is_empty()||yield_quantity_milli<=0||ingredients.is_empty(){return Err("أدخل اسم الوصفة والمنتج والكمية الناتجة ومكونًا واحدًا على الأقل.".into())}
@@ -936,7 +959,7 @@ pub fn run() {
                 .add_migrations("sqlite:secret-kids-club.db", migrations)
                 .build(),
         )
-        .invoke_handler(tauri::generate_handler![greet, save_cafe_recipe, list_cafe_recipes, create_cafe_sale, list_cafe_items, save_cafe_item, adjust_cafe_stock, record_cafe_purchase, save_cafe_supplier, list_cafe_suppliers, record_cash_movement, list_monthly_expenses, save_monthly_expense, checkout_child, cancel_visit, update_membership_overtime_rate, list_refundable_payments, record_expense, record_refund, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_create_user, admin_set_user_active, admin_reset_user_password, admin_update_user_role, admin_delete_user, delete_pricing_rule, create_pricing_rule, get_active_cash_shift, open_cash_shift, close_cash_shift, admin_audit_log])
+        .invoke_handler(tauri::generate_handler![greet, record_cafe_stock_count, list_cafe_expiry_alerts, save_cafe_recipe, list_cafe_recipes, create_cafe_sale, list_cafe_items, save_cafe_item, adjust_cafe_stock, record_cafe_purchase, save_cafe_supplier, list_cafe_suppliers, record_cash_movement, list_monthly_expenses, save_monthly_expense, checkout_child, cancel_visit, update_membership_overtime_rate, list_refundable_payments, record_expense, record_refund, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_create_user, admin_set_user_active, admin_reset_user_password, admin_update_user_role, admin_delete_user, delete_pricing_rule, create_pricing_rule, get_active_cash_shift, open_cash_shift, close_cash_shift, admin_audit_log])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
