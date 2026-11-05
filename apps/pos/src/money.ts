@@ -4,7 +4,10 @@
  * Database and Rust command payloads continue to use integer piastres.
  */
 export function egpToMinor(value: string | number): number {
-  const raw = String(value).trim();
+  const raw = String(value).trim()
+    .replace(/[٠-٩]/g, digit => String("٠١٢٣٤٥٦٧٨٩".indexOf(digit)))
+    .replace(/[۰-۹]/g, digit => String("۰۱۲۳۴۵۶۷۸۹".indexOf(digit)))
+    .replace(/[٫،,]/g, ".");
   const match = /^(\d+)(?:\.(\d{0,2}))?$/.exec(raw);
   if (!match) throw new Error("أدخل المبلغ بالجنيه، مع منزلتين عشريتين كحد أقصى (مثال: 65.5).");
   const whole = Number(match[1]);
