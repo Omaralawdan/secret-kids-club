@@ -384,7 +384,7 @@ export default function App() {
     e.preventDefault(); if(!db)return;
     const hours=Number(planHours), price=Number(planPrice), days=Number(planValidity), overtimeRate=Number(planOvertimeRate);
     if(!planName.trim()||!Number.isFinite(hours)||hours<=0||!Number.isFinite(price)||price<0||![7,30].includes(days)||!Number.isFinite(overtimeRate)||overtimeRate<=0){setError("راجع اسم الباقة والسعر وعدد الساعات وسعر ساعة الإضافي.");return}
-    try { await db.execute("INSERT INTO local_membership_plans(id,name,price_minor,included_minutes,validity_days,overtime_rate_minor,description,is_active,created_at) VALUES(?,?,?,?,?,?,NULL,1,?)",[makeId(),planName.trim(),egpToMinor(price),Math.round(hours*60),days,Math.round(overtimeRate*100),now()]);setPlanName("");setPlanPrice("");setPlanOvertimeRate("");await refreshData(db);setMessage("تم حفظ الباقة.");setError("") } catch(e){setError(String(e))}
+    try { await db.execute("INSERT INTO local_membership_plans(id,name,price_minor,included_minutes,validity_days,overtime_rate_minor,description,is_active,created_at) VALUES(?,?,?,?,?,?,NULL,1,?)",[makeId(),planName.trim(),egpToMinor(price),Math.round(hours*60),days,egpToMinor(overtimeRate),now()]);setPlanName("");setPlanPrice("");setPlanOvertimeRate("");await refreshData(db);setMessage("تم حفظ الباقة.");setError("") } catch(e){setError(String(e))}
   }
   async function enrollMembership(e:FormEvent<HTMLFormElement>) {
     e.preventDefault(); if(!db)return;
