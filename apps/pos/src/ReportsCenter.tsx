@@ -14,7 +14,7 @@ const reports: { key: ReportKey; label: string; description: string; fields: Fie
   { key: "payments", label: "التحصيلات وطرق الدفع", description: "المدفوعات المسجلة في قاعدة البيانات.", fields: [
     {key:"created_at",label:"التاريخ"},{key:"visit_number",label:"رقم الزيارة"},{key:"sale_number",label:"رقم عملية البيع"},{key:"sale_description",label:"تفاصيل البيع / الباقة"},{key:"guardian_name",label:"اسم ولي الأمر"},{key:"phone",label:"رقم التليفون"},{key:"method",label:"طريقة الدفع"},{key:"amount",label:"المبلغ"},{key:"status",label:"حالة الدفع"},{key:"received_by",label:"المستلم"},{key:"cash_session_id",label:"رقم الوردية"},{key:"external_reference",label:"رقم مرجعي"},{key:"group_count",label:"عدد العمليات بالمجموعة"},{key:"group_total",label:"إجمالي المجموعة"},{key:"group_average",label:"متوسط العملية"}]},
   { key: "shifts", label: "الورديات والصندوق", description: "جلسات فتح وإغلاق الصندوق والعجز أو الزيادة.", fields: [
-    {key:"opened_at",label:"بداية الوردية"},{key:"closed_at",label:"نهاية الوردية"},{key:"opened_by",label:"فتح بواسطة"},{key:"closed_by",label:"إغلاق بواسطة"},{key:"opening_float",label:"رصيد بداية الوردية"},{key:"expected_cash",label:"النقدية المتوقعة"},{key:"counted_cash",label:"النقدية الفعلية"},{key:"variance",label:"العجز / الزيادة"},{key:"variance_reason",label:"سبب الفرق"},{key:"cash_sales",label:"تحصيلات الكاش"},{key:"electronic_sales",label:"التحصيل الإلكتروني"},{key:"expenses",label:"المصروفات"},{key:"refunds",label:"الاستردادات"}]},
+    {key:"opened_at",label:"بداية الوردية"},{key:"closed_at",label:"نهاية الوردية"},{key:"opened_by",label:"فتح بواسطة"},{key:"closed_by",label:"إغلاق بواسطة"},{key:"opening_float",label:"رصيد بداية الوردية"},{key:"expected_cash",label:"النقدية المتوقعة"},{key:"counted_cash",label:"النقدية الفعلية"},{key:"variance",label:"العجز / الزيادة"},{key:"variance_reason",label:"سبب الفرق"},{key:"cash_sales",label:"تحصيلات الكاش"},{key:"electronic_sales",label:"التحصيل الإلكتروني"},{key:"expenses",label:"المصروفات"},{key:"refunds",label:"الاستردادات"},{key:"cash_additions",label:"إضافات الدرج"},{key:"cash_removals",label:"مسحوبات الدرج"}]},
   { key: "audit", label: "سجل العمليات", description: "تغييرات البيانات والعمليات المسجلة في سجل المراجعة.", fields: [
     {key:"created_at",label:"التاريخ والوقت"},{key:"actor",label:"المستخدم"},{key:"action",label:"العملية"},{key:"entity_type",label:"نوع البيانات"},{key:"entity_id",label:"رقم السجل"},{key:"reason",label:"السبب"},{key:"before_json",label:"قبل التعديل"},{key:"after_json",label:"بعد التعديل"}]},
   { key: "users", label: "المستخدمون والصلاحيات", description: "حسابات المستخدمين والأدوار والحالة.", fields: [
@@ -27,7 +27,7 @@ const defaultFields: Record<ReportKey, string[]> = {
   visits:["visit_number","child_name","guardian_name","phone","checked_in_at","expected_checkout","checked_out_at","duration_minutes","total_amount","status"],
   customers:["guardian_name","phone","child_name","visit_count","last_visit"],
   payments:["created_at","visit_number","sale_number","sale_description","guardian_name","method","amount","status","received_by","cash_session_id"],
-  shifts:["opened_at","closed_at","opened_by","closed_by","opening_float","cash_sales","electronic_sales","expenses","refunds","expected_cash","counted_cash","variance","variance_reason"],
+  shifts:["opened_at","closed_at","opened_by","closed_by","opening_float","cash_sales","electronic_sales","expenses","refunds","cash_additions","cash_removals","expected_cash","counted_cash","variance","variance_reason"],
   audit:["created_at","actor","action","entity_type","entity_id"],
   users:["display_name","username","role_codes_json","is_active","last_authenticated_at"],
   financials:["period","normal_entry","overtime","membership","other_sales","revenue","expenses","refunds","net","operation_count","average_transaction"],
@@ -155,7 +155,9 @@ export default function ReportsCenter({ db, language, isAdmin = false, canManage
           (SELECT COALESCE(SUM(amount_minor),0)/100.0 FROM local_payments p WHERE p.cash_session_id=local_cash_sessions.id AND p.method='cash' AND p.status='confirmed') AS cash_sales,
           (SELECT COALESCE(SUM(amount_minor),0)/100.0 FROM local_payments p WHERE p.cash_session_id=local_cash_sessions.id AND p.method<>'cash' AND p.status='confirmed') AS electronic_sales,
           (SELECT COALESCE(SUM(amount_minor),0)/100.0 FROM local_expenses e WHERE e.cash_session_id=local_cash_sessions.id) AS expenses,
-          (SELECT COALESCE(SUM(amount_minor),0)/100.0 FROM local_refunds r WHERE r.cash_session_id=local_cash_sessions.id) AS refunds
+          (SELECT COALESCE(SUM(amount_minor),0)/100.0 FROM local_refunds r WHERE r.cash_session_id=local_cash_sessions.id) AS refunds,
+          (SELECT COALESCE(SUM(amount_minor),0)/100.0 FROM local_cash_movements m WHERE m.cash_session_id=local_cash_sessions.id AND m.movement_type='cash_added') AS cash_additions,
+          (SELECT COALESCE(SUM(amount_minor),0)/100.0 FROM local_cash_movements m WHERE m.cash_session_id=local_cash_sessions.id AND m.movement_type='cash_removed') AS cash_removals
           FROM local_cash_sessions WHERE (?='' OR date(opened_at)>=date(?)) AND (?='' OR date(opened_at)<=date(?))
           ORDER BY opened_at DESC`, [startDate,startDate,endDate,endDate]);
       } else if (reportKey === "financials") {
@@ -175,7 +177,10 @@ export default function ReportsCenter({ db, language, isAdmin = false, canManage
         ), refund_rows AS (
           SELECT date(r.created_at) AS period,0 AS normal_entry,0 AS overtime,0 AS membership,0 AS other_sales,0 AS expenses,r.amount_minor AS refunds,0 AS transaction_amount,0 AS payment_count
           FROM local_refunds r WHERE (?='' OR date(r.created_at)>=date(?)) AND (?='' OR date(r.created_at)<=date(?))
-        ), all_rows AS (SELECT * FROM payment_rows UNION ALL SELECT * FROM expense_rows UNION ALL SELECT * FROM refund_rows)
+        ), monthly_expense_rows AS (
+          SELECT date(expense_month || '-01') AS period,0 AS normal_entry,0 AS overtime,0 AS membership,0 AS other_sales,amount_minor AS expenses,0 AS refunds,0 AS transaction_amount,0 AS payment_count
+          FROM local_monthly_expenses WHERE (?='' OR expense_month>=strftime('%Y-%m',?)) AND (?='' OR expense_month<=strftime('%Y-%m',?))
+        ), all_rows AS (SELECT * FROM payment_rows UNION ALL SELECT * FROM expense_rows UNION ALL SELECT * FROM refund_rows UNION ALL SELECT * FROM monthly_expense_rows)
         SELECT ${periodExpr} AS period,SUM(normal_entry)/100.0 AS normal_entry,SUM(overtime)/100.0 AS overtime,
           SUM(membership)/100.0 AS membership,SUM(other_sales)/100.0 AS other_sales,(SUM(normal_entry)+SUM(overtime)+SUM(membership)+SUM(other_sales))/100.0 AS revenue,
           SUM(expenses)/100.0 AS expenses,SUM(refunds)/100.0 AS refunds,
@@ -183,7 +188,7 @@ export default function ReportsCenter({ db, language, isAdmin = false, canManage
           COUNT(*) AS operation_count,
           CASE WHEN SUM(payment_count)>0 THEN SUM(transaction_amount)/SUM(payment_count)/100.0 ELSE 0 END AS average_transaction
         FROM all_rows GROUP BY ${periodExpr} ORDER BY period DESC`,
-        [startDate,startDate,endDate,endDate,startDate,startDate,endDate,endDate,startDate,startDate,endDate,endDate]);
+        [startDate,startDate,endDate,endDate,startDate,startDate,endDate,endDate,startDate,startDate,endDate,endDate,startDate,startDate,endDate,endDate]);
       } else if (reportKey === "audit") {
         result = await db.select<ReportRow[]>(`SELECT a.created_at, COALESCE(u.display_name,a.actor_user_id) AS actor,
           a.action, a.entity_type, a.entity_id, a.reason, a.before_json, a.after_json
