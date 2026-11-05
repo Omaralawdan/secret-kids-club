@@ -176,7 +176,7 @@ export default function App() {
   const [guardianName, setGuardianName] = useState("");
   const [guardianRelation, setGuardianRelation] = useState("Mother");
   const [guardianPhone, setGuardianPhone] = useState("");
-  const [paymentMethod, setPaymentMethod] = useState<"cash" | "instapay" | "wallet">("cash");
+  const [paymentMethod, setPaymentMethod] = useState<"cash" | "instapay" | "wallet" | "visa" | "other">("cash");
   const [customerLookupMessage, setCustomerLookupMessage] = useState("");
   const [previousChildren, setPreviousChildren] = useState<{name:string;lastVisit:string}[]>([]);
   const [guardianSuggestions, setGuardianSuggestions] = useState<{phone:string;name:string}[]>([]);
@@ -192,7 +192,7 @@ export default function App() {
   const [membershipPlans,setMembershipPlans]=useState<MembershipPlan[]>([]);
   const [memberships,setMemberships]=useState<ChildMembership[]>([]);
   const [planName,setPlanName]=useState(""); const [planPrice,setPlanPrice]=useState(""); const [planHours,setPlanHours]=useState("20"); const [planValidity,setPlanValidity]=useState("30"); const [planOvertimeRate,setPlanOvertimeRate]=useState("");
-  const [memberName,setMemberName]=useState(""); const [memberPhone,setMemberPhone]=useState(""); const [memberPlanId,setMemberPlanId]=useState(""); const [memberPaymentMethod,setMemberPaymentMethod]=useState<"cash"|"instapay"|"wallet">("cash");
+  const [memberName,setMemberName]=useState(""); const [memberPhone,setMemberPhone]=useState(""); const [memberPlanId,setMemberPlanId]=useState(""); const [memberPaymentMethod,setMemberPaymentMethod]=useState<"cash"|"instapay"|"wallet"|"visa"|"other">("cash");
 
   const refreshData = useCallback(async (connection: Database) => {
     const loadedRules = await connection.select<PricingRule[]>(
@@ -995,7 +995,7 @@ export default function App() {
               </label>
               {previousChildren.length>0 && <div className="full-width panel"><strong>{ar ? "الأطفال المسجلون سابقًا لنفس رقم الهاتف" : "Children previously registered to this phone"}</strong><div className="rule-list">{previousChildren.map((item,i)=><button type="button" className="secondary-button" key={item.name+i} onClick={()=>{setChildren(current=>[...current,{key:makeId(),name:item.name,ruleId:rules[0]?.id||"",durationHours:1,hourlyRateMinor:rules[0]?.pricing_type==="hourly"?rules[0].amount_minor:null,priceMinor:null}]);setMessage(ar ? "تمت إضافة الطفل؛ يمكنك تعديل الاسم والمدة والسعر." : "Child added. You can edit the name, duration and price.");}}>{item.name} · {formatDate(item.lastVisit,language)} · {ar ? "إضافة" : "Add"}</button>)}</div></div>}
               <label className="full-width">{ar ? "طريقة الدفع" : "Payment method"}
-                <select value={paymentMethod} onChange={e => setPaymentMethod(e.target.value as "cash"|"instapay"|"wallet")}><option value="cash">{ar ? "كاش" : "Cash"}</option><option value="instapay">InstaPay</option><option value="wallet">{ar ? "محفظة إلكترونية" : "E-Wallet"}</option></select>
+                <select value={paymentMethod} onChange={e => setPaymentMethod(e.target.value as "cash"|"instapay"|"wallet"|"visa"|"other")}><option value="cash">{ar ? "كاش" : "Cash"}</option><option value="instapay">InstaPay</option><option value="wallet">{ar ? "محفظة إلكترونية" : "E-Wallet"}</option><option value="visa">{ar ? "فيزا" : "Visa"}</option><option value="other">{ar ? "أخرى" : "Other"}</option></select>
               </label>
             </div>
           </section>
