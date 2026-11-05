@@ -2,7 +2,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { AuthUser } from "./AuthGate";
 type UserRow={id:string;username:string|null;name:string;roles:string;permissions:string;active:number;createdAt:string|null;lastLogin:string|null};
-const permissionOptions=[["reception","شاشة تسجيل الدخول"],["active","الزيارات النشطة"],["packages","مشاهدة الباقات"],["cafe","الكافيه والمخزون"],["reports","التقارير"],["shift","الورديات والصندوق"],["pricing","إعداد الأسعار"],["settings","الإعدادات"]] as const;
+const permissionOptions=[["reception","شاشة تسجيل الدخول"],["active","الزيارات النشطة"],["packages","مشاهدة الباقات"],["cafe","الكافيه والمخزون"],["reports","التقارير"],["shift","الورديات والصندوق"],["pricing","إعداد الأسعار"],["settings","الإعدادات"],["bookings","الحجوزات وأعياد الميلاد"]] as const;
 type AuditRow={createdAt:string;actor:string;action:string;entityType:string;entityId:string|null;reason:string|null;before:string|null;after:string|null};
 type ShiftResult={expectedCashMinor:number;countedCashMinor:number;varianceMinor:number;closedAt?:string};
 type ActiveShift={id:string;openingFloatMinor:number;openedAt:string;openedBy:string;cashSalesMinor:number;electronicSalesMinor:number;cashExpensesMinor:number;cashRefundsMinor:number;cashAdditionsMinor:number;cashRemovalsMinor:number;kidsAreaCashMinor:number;kidsAreaInstapayMinor:number;kidsAreaWalletMinor:number;cafeCashMinor:number;cafeInstapayMinor:number;cafeWalletMinor:number;kidsAreaVisaMinor:number;kidsAreaOtherMinor:number;cafeVisaMinor:number;cafeOtherMinor:number;expectedCashMinor:number};
