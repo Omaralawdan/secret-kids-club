@@ -7,6 +7,7 @@ import { t, useLanguage, type Language } from "./i18n";
 import ReportsCenter from "./ReportsCenter";
 import AuthGate, { type AuthUser } from "./AuthGate";
 import AdminTools from "./AdminTools";
+import CafeCenter from "./CafeCenter";
 
 type MembershipPlan = { id:string; name:string; price_minor:number; included_minutes:number; validity_days:number; overtime_rate_minor:number; is_active:number };
 type ChildMembership = { id:string; child_name_snapshot:string; guardian_phone_snapshot:string; plan_id:string; plan_name:string; purchased_at:string; expires_at:string; included_minutes:number; used_minutes:number; overtime_rate_minor:number; status:string };
@@ -29,7 +30,7 @@ type ChildDraft = {
   priceMinor: number | null;
 };
 
-type Screen = "reception" | "active" | "pricing" | "settings" | "reports" | "admin";
+type Screen = "reception" | "active" | "pricing" | "settings" | "reports" | "admin" | "cafe";
 
 type ActiveChild = {
   visit_id: string;
@@ -785,6 +786,7 @@ export default function App() {
         {reportAccess && <button className={screen === "reports" ? "active" : ""} onClick={() => setScreen("reports")}>
           {ar ? "التقارير والتصدير" : "Reports & Export"}
         </button>}
+        {canOperate && <button className={screen === "cafe" ? "active" : ""} onClick={() => setScreen("cafe")}>{ar ? "الكافيه والمخزون" : "Café & Inventory"}</button>}
         {canOperate && <button className={screen === "admin" ? "active" : ""} onClick={() => setScreen("admin")}>
           {ar ? "الوردية والصندوق" : "Shift & Cash"}
         </button>}
@@ -833,7 +835,9 @@ export default function App() {
         </section>
       )}
 
-      {screen === "admin" ? (
+      {screen === "cafe" ? (
+        <CafeCenter canManage={canManage} />
+      ) : screen === "admin" ? (
         <AdminTools user={authUser} onLogout={() => { void invoke("logout_user").finally(() => setAuthUser(null)); }}  />
       ) : screen === "reports" ? (
         <ReportsCenter db={db} language={language} isAdmin={isAdmin} canManage={canManage} />
