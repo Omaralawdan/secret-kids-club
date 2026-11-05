@@ -793,6 +793,23 @@ fn adjust_cafe_stock(app:tauri::AppHandle,item_id:String,movement_type:String,qu
     tx.commit().map_err(|e|e.to_string())?;Ok(())
 }
 
+
+#[tauri::command]
+fn record_cafe_purchase(app:tauri::AppHandle,supplier_id:Option<String>,document_number:Option<String>,item_id:String,quantity_milli:i64,unit_cost_minor:i64,expiry_date:Option<String>,notes:String)->Result<(),String>{
+    if item_id.trim().is_empty()||quantity_milli<=0||unit_cost_minor<0{return Err("راجع الصنف والكمية وتكلفة الوحدة.".into())}
+    let mut db=auth_db(&app)?;let(actor,_)=require_role(&db,&["admin","manager"])?;let tx=db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
+    let item_name:String=tx.query_row("SELECT name FROM local_inventory_items WHERE id=? AND is_active=1",params![item_id],|r|r.get(0)).map_err(|_|"الصنف غير موجود أو غير نشط.".to_string())?;
+    if let Some(sid)=supplier_id.as_deref(){let n:i64=tx.query_row("SELECT COUNT(*) FROM local_suppliers WHERE id=? AND is_active=1",params![sid],|r|r.get(0)).map_err(|e|e.to_string())?;if n==0{return Err("المورد غير موجود.".into())}}
+    let now=Utc::now().to_rfc3339();let purchase_id=uuid::Uuid::new_v4().to_string();let total=quantity_milli.checked_mul(unit_cost_minor).ok_or("قيمة الشراء كبيرة جدًا.")?/1000;
+    tx.execute("INSERT INTO local_stock_purchases(id,supplier_id,document_number,total_cost_minor,notes,created_by,created_at) VALUES(?,?,?,?,?,?,?)",params![purchase_id,supplier_id.as_deref(),document_number.as_deref(),total,notes.trim(),actor,now]).map_err(|e|e.to_string())?;
+    tx.execute("INSERT INTO local_stock_purchase_items(id,purchase_id,inventory_item_id,quantity_milli,unit_cost_minor,expiry_date) VALUES(?,?,?,?,?,?)",params![uuid::Uuid::new_v4().to_string(),purchase_id,item_id,quantity_milli,unit_cost_minor,expiry_date.as_deref()]).map_err(|e|e.to_string())?;
+    tx.execute("INSERT INTO local_stock_movements(id,inventory_item_id,movement_type,quantity_milli,unit_cost_minor,reason,created_by,created_at) VALUES(?,?, 'purchase',?,?,?, ?,?)",params![uuid::Uuid::new_v4().to_string(),item_id,quantity_milli,unit_cost_minor,format!("شراء {} - {}",item_name,document_number.as_deref().unwrap_or("بدون رقم فاتورة")),actor,now]).map_err(|e|e.to_string())?;
+    if let Some(date)=expiry_date.as_deref(){if !date.trim().is_empty(){tx.execute("INSERT INTO local_expiry_batches(id,inventory_item_id,quantity_milli,expiry_date,created_at) VALUES(?,?,?,?,?)",params![uuid::Uuid::new_v4().to_string(),item_id,quantity_milli,date,now]).map_err(|e|e.to_string())?;}}
+    tx.execute("UPDATE local_inventory_items SET purchase_price_minor=? WHERE id=?",[unit_cost_minor,item_id.as_str()]).map_err(|e|e.to_string())?;
+    tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,reason,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'cafe_purchase_recorded','stock_purchase',?,?,?,?)",params![actor,purchase_id,notes.trim(),json!({"item_id":item_id,"quantity_milli":quantity_milli,"unit_cost_minor":unit_cost_minor,"total_cost_minor":total}).to_string(),now]).map_err(|e|e.to_string())?;
+    tx.commit().map_err(|e|e.to_string())?;Ok(())
+}
+
 #[tauri::command]
 fn save_cafe_supplier(app:tauri::AppHandle,supplier_id:Option<String>,name:String,phone:Option<String>,notes:Option<String>)->Result<String,String>{
     if name.trim().is_empty(){return Err("اسم المورد مطلوب.".into())}let mut db=auth_db(&app)?;let(actor,_)=require_role(&db,&["admin","manager"])?;let id=supplier_id.unwrap_or_else(||uuid::Uuid::new_v4().to_string());db.execute("INSERT INTO local_suppliers(id,name,phone,notes,is_active,created_at) VALUES(?,?,?,?,1,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,phone=excluded.phone,notes=excluded.notes",params![id,name.trim(),phone.as_deref(),notes.as_deref(),Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;db.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'supplier_saved','supplier',?,?,?)",params![actor,id,json!({"name":name,"phone":phone}).to_string(),Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;Ok(id)
@@ -847,7 +864,7 @@ pub fn run() {
                 .add_migrations("sqlite:secret-kids-club.db", migrations)
                 .build(),
         )
-        .invoke_handler(tauri::generate_handler![greet, list_cafe_items, save_cafe_item, adjust_cafe_stock, save_cafe_supplier, list_cafe_suppliers, record_cash_movement, list_monthly_expenses, save_monthly_expense, checkout_child, cancel_visit, update_membership_overtime_rate, list_refundable_payments, record_expense, record_refund, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_create_user, admin_set_user_active, admin_reset_user_password, admin_update_user_role, admin_delete_user, delete_pricing_rule, create_pricing_rule, get_active_cash_shift, open_cash_shift, close_cash_shift, admin_audit_log])
+        .invoke_handler(tauri::generate_handler![greet, list_cafe_items, save_cafe_item, adjust_cafe_stock, record_cafe_purchase, save_cafe_supplier, list_cafe_suppliers, record_cash_movement, list_monthly_expenses, save_monthly_expense, checkout_child, cancel_visit, update_membership_overtime_rate, list_refundable_payments, record_expense, record_refund, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_create_user, admin_set_user_active, admin_reset_user_password, admin_update_user_role, admin_delete_user, delete_pricing_rule, create_pricing_rule, get_active_cash_shift, open_cash_shift, close_cash_shift, admin_audit_log])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
