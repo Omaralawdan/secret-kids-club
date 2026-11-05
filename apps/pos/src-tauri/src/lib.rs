@@ -757,7 +757,8 @@ fn save_monthly_expense(app: tauri::AppHandle, expense_name: String, amount_mino
     let id=uuid::Uuid::new_v4().to_string();
     let tx=db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
     tx.execute("INSERT INTO local_monthly_expenses(id,expense_name,amount_minor,expense_month,payment_method,notes,created_by,created_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(expense_name,expense_month) DO UPDATE SET amount_minor=excluded.amount_minor,payment_method=excluded.payment_method,notes=excluded.notes",params![id,expense_name.trim(),amount_minor,expense_month,payment_method,notes.trim(),actor,now]).map_err(|e|e.to_string())?;
-    tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,reason,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'monthly_expense_saved','monthly_expense',?,?,?,?)",params![actor,id,notes.trim(),json!({"name":expense_name,"amount_minor":amount_minor,"month":expense_month,"payment_method":payment_method}).to_string(),now]).map_err(|e|e.to_string())?;
+    let saved_id:String=tx.query_row("SELECT id FROM local_monthly_expenses WHERE expense_name=? AND expense_month=?",params![expense_name.trim(),expense_month],|r|r.get(0)).map_err(|e|e.to_string())?;
+    tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,reason,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'monthly_expense_saved','monthly_expense',?,?,?,?)",params![actor,saved_id,notes.trim(),json!({"name":expense_name,"amount_minor":amount_minor,"month":expense_month,"payment_method":payment_method}).to_string(),now]).map_err(|e|e.to_string())?;
     tx.commit().map_err(|e|e.to_string())?;
     Ok(())
 }
