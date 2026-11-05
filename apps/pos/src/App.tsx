@@ -561,8 +561,8 @@ export default function App() {
           guardian_relation, guardian_phone_snapshot, child_count,
           checked_in_at, checked_out_at, status, pricing_type,
           amount_before_discount_minor, discount_amount_minor,
-          final_amount_minor, cashier_user_id, sync_state, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 'active', ?, ?, 0, ?, (SELECT actor_user_id FROM local_session WHERE singleton_id=1), 'pending', ?)`,
+          final_amount_minor, cashier_user_id, sync_state, created_at, booking_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 'active', ?, ?, 0, ?, (SELECT actor_user_id FROM local_session WHERE singleton_id=1), 'pending', ?, ?)`,
         [
           visitId,
           visitNumber,
@@ -576,6 +576,7 @@ export default function App() {
           amountBeforeDiscount,
           amountBeforeDiscount,
           timestamp,
+          selectedBookingId,
         ]
       );
       visitInserted = true;
@@ -622,6 +623,10 @@ export default function App() {
         );
       }
 
+      if (selectedBookingId) {
+        const updatedBooking = await db.execute("UPDATE local_bookings SET status='confirmed' WHERE id=? AND status IN ('booked','confirmed')", [selectedBookingId]);
+        if (updatedBooking.rowsAffected !== 1) throw new Error("الحجز لم يعد متاحًا للتأكيد. راجع حالة الحجز.");
+      }
       await refreshData(db);
       const visitExpectedCheckout = new Date(Math.max(...childRows.map(row => new Date(timestamp).getTime() + Math.round(row.child.durationHours * 60) * 60000))).toISOString();
       setReceiptQueue((current) => [...current, buildReceiptHtml({
@@ -635,6 +640,7 @@ export default function App() {
       }, language)]);
       setGuardianName("");
       setGuardianPhone("");
+      setSelectedBookingId(null);
       setGuardianRelation("Mother");
       setChildren([
         { key: makeId(), name: "", ruleId: "", durationHours: 1, hourlyRateMinor: null, priceMinor: null },
@@ -879,7 +885,7 @@ export default function App() {
       )}
 
       {screen === "bookings" ? (
-        <BookingsCenter />
+        <BookingsCenter onUseBooking={useBookingForCheckIn} />
       ) : screen === "packages" ? (
         <>
         <section className="panel"><h3>{ar?"تسجيل أو تجديد باقة":"Register or renew a package"}</h3>
