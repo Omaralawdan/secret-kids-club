@@ -386,6 +386,7 @@ fn extend_visit_child(app:tauri::AppHandle,visit_child_id:String,additional_minu
         return Err("مدة التمديد يجب أن تكون ربع ساعة على الأقل وبزيادات 15 دقيقة، مع سعر ساعة صحيح.".into())
     }
     let mut db=auth_db(&app)?;
+    require_permission(&db,"active")?;
     require_permission(&db,"pricing")?;
     let(actor,_)=require_role(&db,&["admin","manager","cashier"])?;
     let tx=db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
@@ -436,6 +437,7 @@ fn checkout_child(
     if !overtime_collected && overtime_collection_note.as_deref().unwrap_or("").trim().is_empty() && !overtime_waived { return Err("يجب تسجيل سبب عدم تحصيل الوقت الإضافي.".into()); }
     if overtime_waived && overtime_waiver_reason.as_deref().unwrap_or("").trim().is_empty() { return Err("يجب تسجيل سبب إعفاء الوقت الإضافي.".into()); }
     let db = auth_db(&app)?;
+    require_permission(&db,"active")?;
     let (actor, _) = if overtime_waived { require_permission(&db,"overtime_waive")?; require_role(&db, &["admin", "manager", "cashier"])? } else { require_role(&db, &["admin", "manager", "cashier"])? };
     drop(db);
 
@@ -917,6 +919,7 @@ fn cancel_visit(app: tauri::AppHandle, visit_id: String, reason: String) -> Resu
     if visit_id.trim().is_empty() { return Err("رقم الزيارة غير صالح.".into()); }
     if reason.trim().is_empty() { return Err("يجب تسجيل سبب إلغاء الزيارة.".into()); }
     let mut db = auth_db(&app)?;
+    require_permission(&db,"active")?;
     let (actor, _) = require_role(&db, &["admin", "manager", "cashier"])?;
     let now = Utc::now().to_rfc3339();
     let tx = db.transaction().map_err(|e| e.to_string())?;
