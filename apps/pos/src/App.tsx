@@ -303,7 +303,7 @@ export default function App() {
 
   function updateChild(
     key: string,
-    field: "name" | "ruleId" | "durationHours" | "hourlyRateMinor" | "priceMinor",
+    field: "name" | "ruleId" | "durationHours" | "hourlyRateMinor" | "priceMinor" | "paymentMethod",
     value: string | number | null
   ) {
     setChildren((current) =>
