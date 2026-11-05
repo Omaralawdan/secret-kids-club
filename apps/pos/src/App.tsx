@@ -483,7 +483,7 @@ export default function App() {
     setGuardianRelation("Guardian");
     setChildren(Array.from({ length: Math.max(1, booking.childCount) }, () => ({
       key: makeId(), name: "", ruleId: rules[0]?.id ?? "", durationHours,
-      hourlyRateMinor: null, priceMinor: null,
+      hourlyRateMinor: null, priceMinor: null, paymentMethod,
     })));
     setError("");
     setMessage(booking.type === "birthday"
@@ -678,7 +678,7 @@ export default function App() {
       setVisitCouponCode("");
       setGuardianRelation("Mother");
       setChildren([
-        { key: makeId(), name: "", ruleId: "", durationHours: 1, hourlyRateMinor: null, priceMinor: null },
+        { key: makeId(), name: "", ruleId: "", durationHours: 1, hourlyRateMinor: null, priceMinor: null, paymentMethod },
       ]);
       setMessage(
         ar
