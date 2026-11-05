@@ -556,7 +556,7 @@ fn create_pricing_rule(
     if amount_minor < 0 {
         return Err("السعر لا يمكن أن يكون سالبًا.".into());
     }
-    if duration_minutes < 25 || duration_minutes > 720 { return Err("مدة الحجز يجب أن تكون من 25 دقيقة إلى 12 ساعة.".into()); }
+    if duration_minutes < 15 || duration_minutes > 720 || duration_minutes % 15 != 0 { return Err("مدة الحجز يجب أن تكون بزيادة 15 دقيقة، من 15 دقيقة إلى 12 ساعة.".into()); }
 
     let mut db = auth_db(&app)?;
     require_permission(&db,"pricing")?;
