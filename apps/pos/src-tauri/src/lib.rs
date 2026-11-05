@@ -502,7 +502,7 @@ fn admin_update_user_role(app: tauri::AppHandle, user_id: String, role: String) 
 }
 #[tauri::command]
 fn admin_delete_user(app: tauri::AppHandle, user_id: String) -> Result<(), String> {
-    let mut db=auth_db(&app)?; let (actor,_)=require_role(&db,&["admin"])?; let (current,_)=active_user(&db)?;
+    let mut db=auth_db(&app)?; require_permission(&db,"pricing")?; let (actor,_)=require_role(&db,&["admin","manager","cashier"])?; let (current,_)=active_user(&db)?;
     if current==user_id { return Err("لا يمكنك حذف الحساب الذي تستخدمه حاليًا.".into()); }
     let tx=db.transaction().map_err(|e|e.to_string())?;
     let active_shift:i64=tx.query_row("SELECT COUNT(*) FROM local_cash_sessions WHERE closed_at IS NULL AND opened_by=?",params![user_id],|r|r.get(0)).map_err(|e|e.to_string())?;
