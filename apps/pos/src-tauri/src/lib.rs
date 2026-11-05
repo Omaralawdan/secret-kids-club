@@ -411,7 +411,7 @@ fn require_permission(db:&Connection,permission:&str)->Result<(String,Vec<String
  if roles.iter().any(|r|r=="admin"){return Ok((id,roles))}
  let stored:String=db.query_row("SELECT permissions_json FROM local_users WHERE id=?",params![id],|r|r.get(0)).map_err(|e|e.to_string())?;
  let parsed:Vec<String>=serde_json::from_str(&stored).unwrap_or_default();
- let allowed=if parsed.iter().any(|p|p=="all"){true}else if parsed.iter().any(|p|p=="__custom__"){parsed.iter().any(|p|p==permission)}else if roles.iter().any(|r|r=="manager"){["reception","active","packages","cafe","reports","shift","pricing"].contains(&permission)}else if roles.iter().any(|r|r=="cashier"){["reception","active","packages","cafe","shift"].contains(&permission)}else if roles.iter().any(|r|r=="viewer"){permission=="reports"}else{false};
+ let allowed=if parsed.iter().any(|p|p=="all"){true}else if parsed.iter().any(|p|p=="__custom__"){parsed.iter().any(|p|p==permission)}else if roles.iter().any(|r|r=="manager"){["reception","active","packages","cafe","reports","shift","pricing","bookings"].contains(&permission)}else if roles.iter().any(|r|r=="cashier"){["reception","active","packages","cafe","shift","bookings"].contains(&permission)}else if roles.iter().any(|r|r=="viewer"){permission=="reports"}else{false};
  if allowed{Ok((id,roles))}else{Err("هذه الوظيفة غير مفعّلة في صلاحيات حسابك.".into())}
 }
 #[tauri::command]
@@ -457,7 +457,7 @@ fn admin_list_users(app:tauri::AppHandle)->Result<Vec<Value>,String>{
 }
 #[tauri::command]
 fn admin_set_user_permissions(app:tauri::AppHandle,user_id:String,permissions:Vec<String>)->Result<(),String>{
- let allowed=["reception","active","packages","cafe","reports","shift","pricing","settings"];
+ let allowed=["reception","active","packages","cafe","reports","shift","pricing","settings","bookings"];
  if permissions.iter().any(|p|!allowed.contains(&p.as_str())){return Err("تم إرسال صلاحية غير معروفة.".into())}
  let mut db=auth_db(&app)?;let(actor,_)=require_role(&db,&["admin","manager"])?;let tx=db.transaction().map_err(|e|e.to_string())?;
  let before:String=tx.query_row("SELECT permissions_json FROM local_users WHERE id=?",params![user_id],|r|r.get(0)).map_err(|_|"الموظف غير موجود.".to_string())?;
@@ -966,6 +966,38 @@ fn consume_expiry_batches(tx:&rusqlite::Transaction<'_>,item_id:&str,quantity_mi
 }
 
 #[tauri::command]
+fn list_bookings(app:tauri::AppHandle)->Result<Vec<Value>,String>{
+    let db=auth_db(&app)?;
+    require_permission(&db,"bookings")?;
+    require_role(&db,&["admin","manager","cashier"])?;
+    let mut st=db.prepare("SELECT id,booking_type,guardian_name,guardian_phone,scheduled_at,duration_minutes,child_count,guest_count,status,notes,created_by,created_at FROM local_bookings ORDER BY scheduled_at DESC LIMIT 300").map_err(|e|e.to_string())?;
+    let rows=st.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"type":r.get::<_,String>(1)?,"guardianName":r.get::<_,String>(2)?,"phone":r.get::<_,String>(3)?,"scheduledAt":r.get::<_,String>(4)?,"durationMinutes":r.get::<_,i64>(5)?,"childCount":r.get::<_,i64>(6)?,"guestCount":r.get::<_,i64>(7)?,"status":r.get::<_,String>(8)?,"notes":r.get::<_,Option<String>>(9)?,"createdBy":r.get::<_,String>(10)?,"createdAt":r.get::<_,String>(11)?}))).map_err(|e|e.to_string())?;
+    rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())
+}
+
+#[tauri::command]
+fn save_booking(app:tauri::AppHandle,booking_type:String,guardian_name:String,guardian_phone:String,scheduled_at:String,duration_minutes:i64,child_count:i64,guest_count:i64,notes:String)->Result<String,String>{
+    if !["visit","birthday"].contains(&booking_type.as_str())||guardian_name.trim().is_empty()||guardian_phone.trim().is_empty()||scheduled_at.trim().is_empty()||duration_minutes<=0||child_count<=0||guest_count<0{return Err("راجع نوع الحجز وبيانات المرافق والتاريخ والمدة والأعداد.".into())}
+    let mut db=auth_db(&app)?;
+    require_permission(&db,"bookings")?;
+    let(actor,_)=require_role(&db,&["admin","manager","cashier"])?;
+    let id=uuid::Uuid::new_v4().to_string();let now=Utc::now().to_rfc3339();
+    db.execute("INSERT INTO local_bookings(id,booking_type,guardian_name,guardian_phone,scheduled_at,duration_minutes,child_count,guest_count,status,notes,created_by,created_at) VALUES(?,?,?,?,?,?,?,?, 'booked',?,?,?)",params![id,booking_type,guardian_name.trim(),guardian_phone.trim(),scheduled_at,duration_minutes,child_count,guest_count,notes.trim(),actor,now]).map_err(|e|e.to_string())?;
+    db.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'booking_created','booking',?,?,?)",params![actor,id,json!({"type":booking_type,"scheduled_at":scheduled_at,"guardian":guardian_name,"phone":guardian_phone}).to_string(),now]).map_err(|e|e.to_string())?;
+    Ok(id)
+}
+
+#[tauri::command]
+fn update_booking_status(app:tauri::AppHandle,booking_id:String,status:String,reason:String)->Result<(),String>{
+    if !["confirmed","completed","cancelled"].contains(&status.as_str())||booking_id.trim().is_empty(){return Err("حالة الحجز غير صحيحة.".into())}
+    if status=="cancelled"&&reason.trim().is_empty(){return Err("سبب إلغاء الحجز مطلوب.".into())}
+    let mut db=auth_db(&app)?;require_permission(&db,"bookings")?;let(actor,_)=require_role(&db,&["admin","manager","cashier"])?;
+    let changed=db.execute("UPDATE local_bookings SET status=? WHERE id=? AND status IN ('booked','confirmed')",params![status,booking_id]).map_err(|e|e.to_string())?;
+    if changed==0{return Err("الحجز غير موجود أو تم إنهاؤه بالفعل.".into())}
+    db.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,reason,created_at) VALUES(lower(hex(randomblob(16))),?,'booking_status_changed','booking',?,?,?)",params![actor,booking_id,reason.trim(),Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;Ok(())
+}
+
+#[tauri::command]
 fn list_cafe_stock_movements(app:tauri::AppHandle)->Result<Vec<Value>,String>{
     let db=auth_db(&app)?;
     require_permission(&db,"cafe")?;
@@ -1086,6 +1118,7 @@ pub fn run() {
         Migration { version: 13, description: "custom_employee_permissions", sql: include_str!("../migrations/013_custom_employee_permissions.sql"), kind: MigrationKind::Up },
         Migration { version: 14, description: "extended_payment_methods", sql: include_str!("../migrations/014_extended_payment_methods.sql"), kind: MigrationKind::Up },
         Migration { version: 15, description: "membership_partial_payments", sql: include_str!("../migrations/015_membership_partial_payments.sql"), kind: MigrationKind::Up },
+        Migration { version: 16, description: "bookings_and_birthday_parties", sql: include_str!("../migrations/016_bookings_and_birthday_parties.sql"), kind: MigrationKind::Up },
     ];
 
     tauri::Builder::default()
@@ -1095,7 +1128,7 @@ pub fn run() {
                 .add_migrations("sqlite:secret-kids-club.db", migrations)
                 .build(),
         )
-        .invoke_handler(tauri::generate_handler![greet, list_cafe_stock_movements, record_cafe_stock_count, list_cafe_expiry_alerts, save_cafe_recipe, list_cafe_recipes, create_cafe_sale, list_cafe_items, save_cafe_item, adjust_cafe_stock, record_cafe_purchase, save_cafe_supplier, list_cafe_suppliers, cancel_membership, record_membership_payment, record_cash_movement, list_monthly_expenses, save_monthly_expense, checkout_child, cancel_visit, update_membership_overtime_rate, list_refundable_payments, record_expense, record_refund, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_set_user_permissions, admin_create_user, admin_set_user_active, admin_reset_user_password, admin_update_user_role, admin_delete_user, delete_pricing_rule, create_pricing_rule, get_active_cash_shift, open_cash_shift, close_cash_shift, admin_audit_log])
+        .invoke_handler(tauri::generate_handler![greet, list_bookings, save_booking, update_booking_status, list_cafe_stock_movements, record_cafe_stock_count, list_cafe_expiry_alerts, save_cafe_recipe, list_cafe_recipes, create_cafe_sale, list_cafe_items, save_cafe_item, adjust_cafe_stock, record_cafe_purchase, save_cafe_supplier, list_cafe_suppliers, cancel_membership, record_membership_payment, record_cash_movement, list_monthly_expenses, save_monthly_expense, checkout_child, cancel_visit, update_membership_overtime_rate, list_refundable_payments, record_expense, record_refund, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_set_user_permissions, admin_create_user, admin_set_user_active, admin_reset_user_password, admin_update_user_role, admin_delete_user, delete_pricing_rule, create_pricing_rule, get_active_cash_shift, open_cash_shift, close_cash_shift, admin_audit_log])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
