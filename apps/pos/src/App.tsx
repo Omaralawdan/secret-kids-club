@@ -113,8 +113,8 @@ function buildReceiptHtml(data: ReceiptData, language: Language): string {
     html += row(label("Children count", "عدد الأطفال"), String(data.children.length));
     for (const child of data.children) {
       html += row(escapeReceipt(child.name), escapeReceipt(formatDuration(child.bookedMinutes, language)) + " · " + escapeReceipt(money(child.baseAmountMinor, language)));
-      if ((child.discountAmountMinor || 0)>0) html += row(label("Child discount","خصم الطفل"),escapeReceipt(money(child.discountAmountMinor,language)));
-      if ((child.overtimeAmountMinor || 0)>0) html += row(label("Child overtime","إضافي الطفل"),escapeReceipt(money(child.overtimeAmountMinor,language)));
+      if ((child.discountAmountMinor || 0)>0) html += row(label("Child discount","خصم الطفل"),escapeReceipt(money(child.discountAmountMinor || 0,language)));
+      if ((child.overtimeAmountMinor || 0)>0) html += row(label("Child overtime","إضافي الطفل"),escapeReceipt(money(child.overtimeAmountMinor || 0,language)));
     }
   } else html += row(label("Child", "اسم الطفل"), escapeReceipt(data.childName));
   html += row(label("Check-in", "وقت الدخول"), date(data.checkedInAt));
