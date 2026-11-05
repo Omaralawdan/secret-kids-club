@@ -390,7 +390,7 @@ export default function App() {
     let priceMinor:number, overtimeRateMinor:number;
     try { priceMinor=egpToMinor(planPrice); overtimeRateMinor=egpToMinor(planOvertimeRate); }
     catch { setError("راجع سعر الباقة وسعر ساعة الإضافي بالجنيه."); return; }
-    if(!planName.trim()||!Number.isFinite(hours)||hours<=0||![7,30].includes(days)||overtimeRateMinor<=0){setError("راجع اسم الباقة والسعر وعدد الساعات وسعر ساعة الإضافي.");return}
+    if(!planName.trim()||!Number.isFinite(hours)||hours<=0||!Number.isInteger(hours*4)||![7,30].includes(days)||overtimeRateMinor<=0){setError("راجع اسم الباقة والسعر وعدد الساعات وسعر ساعة الإضافي.");return}
     try { await db.execute("INSERT INTO local_membership_plans(id,name,price_minor,included_minutes,validity_days,overtime_rate_minor,description,is_active,created_at) VALUES(?,?,?,?,?,?,NULL,1,?)",[makeId(),planName.trim(),priceMinor,Math.round(hours*60),days,overtimeRateMinor,now()]);setPlanName("");setPlanPrice("");setPlanOvertimeRate("");await refreshData(db);setMessage("تم حفظ الباقة.");setError("") } catch(e){setError(String(e))}
   }
   async function enrollMembership(e:FormEvent<HTMLFormElement>) {
