@@ -407,6 +407,21 @@ export default function App() {
       setMemberName("");setMemberPhone("");setMemberPaymentAmount("");setMemberPaymentNote("");await refreshData(db);setMessage(initialPaid<plan.price_minor?"تم تسجيل الباقة مع وجود مبلغ متبقٍ للتحصيل.":"تم تسجيل الطفل في الباقة وتحصيل قيمتها بالكامل.");setError("")
     } catch(e){setError(String(e))}
   }
+  async function collectMembershipPayment(m:ChildMembership){
+    if(!db||!m.sale_id||m.remaining_minor<=0)return;
+    const amountText=window.prompt("المبلغ المطلوب تحصيله الآن بالجنيه. المتبقي: "+(m.remaining_minor/100).toFixed(2),String((m.remaining_minor/100).toFixed(2)));
+    if(amountText===null)return;
+    const amountMinor=Math.round(Number(amountText)*100);
+    if(!Number.isFinite(amountMinor)||amountMinor<=0||amountMinor>m.remaining_minor){setError("راجع مبلغ الدفعة؛ لا يجوز أن يتجاوز المتبقي.");return}
+    const method=window.prompt("طريقة الدفع: cash / instapay / wallet / visa / other","cash")||"";
+    const note=window.prompt("ملاحظة الدفعة (اختياري):","")||"";
+    try{const result=await invoke<{paidMinor:number;remainingMinor:number}>("record_membership_payment",{membershipId:m.id,amountMinor,method,note});await refreshData(db);setMessage("تم تسجيل الدفعة. المتبقي: "+money(result.remainingMinor,language));setError("")}catch(e){setError(String(e))}
+  }
+  async function toggleMembershipHistory(m:ChildMembership){
+    if(!db||!m.sale_id)return;
+    if(membershipPaymentHistory[m.id]){setMembershipPaymentHistory(old=>{const next={...old};delete next[m.id];return next});return}
+    try{const rows=await db.select<MembershipPayment[]>("SELECT created_at,amount_minor,COALESCE(method_label,method) AS method,external_reference FROM local_payments WHERE sale_id=? AND status='confirmed' ORDER BY created_at",[m.sale_id]);setMembershipPaymentHistory(old=>({...old,[m.id]:rows}))}catch(e){setError(String(e))}
+  }
   async function updateMembershipOvertimeRate(m:ChildMembership) {
     const entered=window.prompt(ar?"سعر ساعة الإضافي للباقة بالجنيه:":"Membership overtime hourly rate (EGP):",(m.overtime_rate_minor/100).toFixed(2));
     if(entered===null)return;
