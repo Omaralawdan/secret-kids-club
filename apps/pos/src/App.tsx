@@ -22,6 +22,87 @@ type ChildDraft = {
 
 type Screen = "reception" | "active" | "pricing" | "settings";
 
+
+type ReceiptData = {
+  kind: "checkin" | "checkout";
+  visitNumber: number;
+  guardianName: string;
+  guardianPhone: string;
+  childName: string;
+  checkedInAt: string;
+  expectedCheckoutAt?: string;
+  checkedOutAt?: string;
+  bookedMinutes: number;
+  actualMinutes?: number;
+  baseAmountMinor: number;
+  discountAmountMinor: number;
+  overtimeMinutes?: number;
+  overtimeAmountMinor?: number;
+  overtimeCollected?: boolean;
+  overtimeCollectionNote?: string | null;
+  finalAmountMinor: number;
+  language: Language;
+};
+
+function escapeReceipt(value: unknown): string {
+  return String(value ?? "").replace(/[&<>"']/g, (character) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  })[character] ?? character);
+}
+
+function receiptDate(value: string | undefined, language: Language): string {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString(language === "ar" ? "ar-EG" : "en-EG");
+}
+
+function receiptMoney(value: number, language: Language): string {
+  return new Intl.NumberFormat(language === "ar" ? "ar-EG" : "en-EG", {
+    style: "currency", currency: "EGP",
+  }).format(value / 100);
+}
+
+function buildReceiptHtml(receipt: ReceiptData): string {
+  const ar = receipt.language === "ar";
+  const row = (label: string, value: string) =>
+    `<div class="line"><span>${escapeReceipt(label)}</span><strong>${escapeReceipt(value)}</strong></div>`;
+  const lines = [
+    row(ar ? "رقم الزيارة" : "Visit number", `#${receipt.visitNumber}`),
+    row(ar ? "اسم المرافق" : "Guardian", receipt.guardianName),
+    row(ar ? "رقم الهاتف" : "Phone", receipt.guardianPhone),
+    row(ar ? "اسم الطفل" : "Child", receipt.childName),
+    row(ar ? "وقت الدخول" : "Check-in", receiptDate(receipt.checkedInAt, receipt.language)),
+    row(ar ? "المدة المحجوزة" : "Booked duration", formatDuration(receipt.bookedMinutes, receipt.language)),
+    receipt.kind === "checkin"
+      ? row(ar ? "الخروج المتوقع" : "Expected checkout", receiptDate(receipt.expectedCheckoutAt, receipt.language))
+      : row(ar ? "وقت الخروج الفعلي" : "Actual checkout", receiptDate(receipt.checkedOutAt, receipt.language)),
+    ...(receipt.kind === "checkout" ? [
+      row(ar ? "المدة الفعلية" : "Actual duration", formatDuration(receipt.actualMinutes ?? 0, receipt.language)),
+      row(ar ? "الوقت الإضافي" : "Overtime", formatDuration(receipt.overtimeMinutes ?? 0, receipt.language)),
+      row(ar ? "قيمة الوقت الإضافي" : "Overtime amount", receiptMoney(receipt.overtimeAmountMinor ?? 0, receipt.language)),
+      row(ar ? "تحصيل الوقت الإضافي" : "Overtime collected", receipt.overtimeCollected ? (ar ? "نعم" : "Yes") : (ar ? "لا" : "No")),
+      ...(receipt.overtimeCollectionNote ? [row(ar ? "سبب عدم التحصيل" : "Not collected reason", receipt.overtimeCollectionNote)] : []),
+    ] : []),
+    row(ar ? "السعر الأساسي" : "Base amount", receiptMoney(receipt.baseAmountMinor, receipt.language)),
+    row(ar ? "الخصم" : "Discount", receiptMoney(receipt.discountAmountMinor, receipt.language)),
+    row(ar ? "الإجمالي" : "Total", receiptMoney(receipt.finalAmountMinor, receipt.language)),
+  ].join("");
+  const title = receipt.kind === "checkin"
+    ? (ar ? "إيصال دخول" : "CHECK-IN RECEIPT")
+    : (ar ? "إيصال خروج" : "CHECK-OUT RECEIPT");
+  return `<!doctype html><html lang="${ar ? "ar" : "en"}" dir="${ar ? "rtl" : "ltr"}"><head><meta charset="utf-8"><title>${title}</title><style>
+    @page{size:80mm auto;margin:3mm}*{box-sizing:border-box}body{width:74mm;margin:0 auto;padding:2mm 0;color:#111;font:12px/1.45 Arial,sans-serif}
+    h1{text-align:center;font-size:17px;margin:0 0 3px}h2{text-align:center;font-size:13px;margin:0 0 10px;border-bottom:1px dashed #555;padding-bottom:8px}
+    .line{display:flex;justify-content:space-between;gap:8px;padding:4px 0;border-bottom:1px dotted #bbb;align-items:flex-start}
+    .line span{max-width:48%;color:#444}.line strong{max-width:52%;text-align:end;overflow-wrap:anywhere}
+    .thanks{text-align:center;margin:14px 0 4px;font-weight:700}.foot{text-align:center;font-size:10px;margin-top:8px}
+    @media screen{body{border:1px solid #ddd;padding:8px;margin:8px auto}}
+  </style></head><body><h1>Secret Kids Club</h1><h2>${title}</h2>${lines}
+  <div class="thanks">${ar ? "شرفتنا ونورتنا، مستنينكم تيجوا تنورونا تاني ❤️" : "Thank you for visiting! We look forward to seeing you again ❤️"}</div>
+  <div class="foot">${receiptDate(new Date().toISOString(), receipt.language)}</div></body></html>`;
+}
+
 type ActiveChild = {
   visit_id: string;
   visit_number: number;
@@ -106,6 +187,27 @@ export default function App() {
   const [saving, setSaving] = useState(false);
   const [checkoutId, setCheckoutId] = useState("");
   const [clock, setClock] = useState(Date.now());
+  const [receiptQueue, setReceiptQueue] = useState<ReceiptData[]>([]);
+  const [receiptIndex, setReceiptIndex] = useState(0);
+  const activeReceipt = receiptQueue[receiptIndex] ?? null;
+
+  function closeReceiptQueue() {
+    setReceiptQueue([]);
+    setReceiptIndex(0);
+  }
+
+  function skipReceipt() {
+    if (receiptIndex + 1 < receiptQueue.length) setReceiptIndex((index) => index + 1);
+    else closeReceiptQueue();
+  }
+
+  function printCurrentReceipt() {
+    const frame = document.getElementById("receipt-print-frame") as HTMLIFrameElement | null;
+    frame?.contentWindow?.focus();
+    frame?.contentWindow?.print();
+    skipReceipt();
+  }
+
 
   const [guardianName, setGuardianName] = useState("");
   const [guardianRelation, setGuardianRelation] = useState("Mother");
@@ -422,6 +524,28 @@ export default function App() {
       }
 
       await refreshData(db);
+      const checkinReceipts: ReceiptData[] = childRows.map((row) => {
+        const bookedMinutes = Math.round(row.child.durationHours * 60);
+        const baseAmount = priceFor(row.child);
+        const expected = new Date(timestamp);
+        expected.setMinutes(expected.getMinutes() + bookedMinutes);
+        return {
+          kind: "checkin",
+          visitNumber,
+          guardianName: guardianName.trim(),
+          guardianPhone: guardianPhone.trim(),
+          childName: row.child.name,
+          checkedInAt: timestamp,
+          expectedCheckoutAt: expected.toISOString(),
+          bookedMinutes,
+          baseAmountMinor: baseAmount,
+          discountAmountMinor: 0,
+          finalAmountMinor: baseAmount,
+          language,
+        };
+      });
+      setReceiptQueue(checkinReceipts);
+      setReceiptIndex(0);
       setGuardianName("");
       setGuardianPhone("");
       setGuardianRelation("Mother");
@@ -476,6 +600,54 @@ export default function App() {
       });
 
       await refreshData(db);
+
+      try {
+        const savedRows = await db.select<{
+          visit_number: number; guardian_name: string; guardian_phone: string;
+          child_name: string; checked_in_at: string; checked_out_at: string;
+          booked_minutes: number; actual_minutes: number; base_amount_minor: number;
+          discount_amount_minor: number; overtime_minutes: number;
+          overtime_amount_minor: number; overtime_collected: number;
+          overtime_collection_note: string | null; final_amount_minor: number;
+        }[]>(`
+          SELECT v.visit_number_local AS visit_number,
+                 v.guardian_name_snapshot AS guardian_name,
+                 v.guardian_phone_snapshot AS guardian_phone,
+                 vc.child_name_snapshot AS child_name,
+                 v.checked_in_at, vc.checked_out_at,
+                 p.duration_minutes AS booked_minutes,
+                 vc.actual_duration_minutes AS actual_minutes,
+                 p.base_amount_minor, p.discount_amount_minor,
+                 p.overtime_minutes, p.overtime_amount_minor,
+                 p.overtime_collected, p.overtime_collection_note,
+                 p.final_amount_minor
+          FROM local_visit_children vc
+          JOIN local_visits v ON v.id = vc.visit_id
+          JOIN local_visit_child_pricing p ON p.visit_child_id = vc.id
+          WHERE vc.id = ?
+        `, [child.visit_child_id]);
+        const saved = savedRows[0];
+        if (saved) {
+          setReceiptQueue([{
+            kind: "checkout", visitNumber: saved.visit_number,
+            guardianName: saved.guardian_name, guardianPhone: saved.guardian_phone,
+            childName: saved.child_name, checkedInAt: saved.checked_in_at,
+            checkedOutAt: saved.checked_out_at, bookedMinutes: saved.booked_minutes,
+            actualMinutes: saved.actual_minutes, baseAmountMinor: saved.base_amount_minor,
+            discountAmountMinor: saved.discount_amount_minor,
+            overtimeMinutes: saved.overtime_minutes,
+            overtimeAmountMinor: saved.overtime_amount_minor,
+            overtimeCollected: saved.overtime_collected === 1,
+            overtimeCollectionNote: saved.overtime_collection_note,
+            finalAmountMinor: saved.final_amount_minor, language,
+          }]);
+          setReceiptIndex(0);
+        }
+      } catch (receiptError) {
+        setError(ar
+          ? `تم تسجيل الخروج، لكن تعذر تجهيز الإيصال: ${receiptError instanceof Error ? receiptError.message : String(receiptError)}`
+          : `Checkout was saved, but the receipt could not be prepared: ${receiptError instanceof Error ? receiptError.message : String(receiptError)}`);
+      }
 
       setMessage(
         ar
@@ -783,6 +955,25 @@ export default function App() {
             ))}
           </div>
         </section>
+      )}
+
+      {activeReceipt && (
+        <div className="receipt-overlay" role="dialog" aria-modal="true" aria-label={ar ? "معاينة الإيصال" : "Receipt preview"}>
+          <section className="receipt-dialog">
+            <div className="receipt-dialog-heading">
+              <div>
+                <strong>{ar ? "معاينة الإيصال" : "Receipt preview"}</strong>
+                <span>{receiptIndex + 1} / {receiptQueue.length} · {activeReceipt.kind === "checkin" ? (ar ? "دخول" : "Check-in") : (ar ? "خروج" : "Check-out")}</span>
+              </div>
+              <button type="button" className="remove-button" onClick={closeReceiptQueue} aria-label={ar ? "إغلاق" : "Close"}>×</button>
+            </div>
+            <iframe id="receipt-print-frame" title={ar ? "معاينة الإيصال" : "Receipt preview"} srcDoc={buildReceiptHtml(activeReceipt)} />
+            <div className="receipt-actions">
+              <button type="button" className="primary-button" onClick={printCurrentReceipt}>{ar ? "طباعة الإيصال" : "Print receipt"}</button>
+              <button type="button" className="secondary-button" onClick={skipReceipt}>{ar ? "بدون طباعة / التالي" : "Skip printing / Next"}</button>
+            </div>
+          </section>
+        </div>
       )}
 
       <footer>

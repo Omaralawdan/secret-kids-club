@@ -131,3 +131,15 @@ html[dir="rtl"] .expiry-alerts { text-align: right; }
   .expiry-alert { grid-template-columns: minmax(0, 1fr); align-items: stretch; }
   .expiry-actions { display: grid; grid-template-columns: 1fr 1fr; }
 }
+
+
+/* Receipt preview and optional thermal printing. */
+.receipt-overlay{position:fixed;inset:0;z-index:1000;display:grid;place-items:center;padding:18px;background:rgb(20 25 36 / 68%)}
+.receipt-dialog{display:grid;grid-template-rows:auto minmax(0,1fr) auto;gap:14px;width:min(100%,520px);max-height:min(92vh,900px);padding:18px;border-radius:16px;background:#fff;box-shadow:0 20px 70px rgb(0 0 0 / 30%)}
+.receipt-dialog-heading{display:flex;justify-content:space-between;align-items:center;gap:12px}
+.receipt-dialog-heading>div{display:grid;gap:4px}
+.receipt-dialog-heading strong{font-size:16px}
+.receipt-dialog-heading span{color:#7a8292;font-size:12px}
+.receipt-dialog iframe{width:100%;min-height:420px;border:1px solid #e2e5ed;border-radius:8px;background:#fff}
+.receipt-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:9px}
+@media(max-width:520px){.receipt-dialog{padding:12px}.receipt-actions{display:grid;grid-template-columns:1fr}.receipt-actions button{width:100%}}
