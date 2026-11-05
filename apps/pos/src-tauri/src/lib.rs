@@ -1160,7 +1160,7 @@ fn consume_expiry_batches(tx:&rusqlite::Transaction<'_>,item_id:&str,quantity_mi
 
 #[tauri::command]
 fn list_coupons(app:tauri::AppHandle)->Result<Vec<Value>,String>{
-    let db=auth_db(&app)?;require_permission(&db,"discounts")?;require_role(&db,&["admin","manager","cashier"])?;
+    let db=auth_db(&app)?;if require_permission(&db,"discounts").is_err(){require_permission(&db,"pricing")?;}require_role(&db,&["admin","manager","cashier"])?;
     let mut st=db.prepare("SELECT id,code,description,discount_type,discount_value,max_discount_minor,usage_limit,used_count,starts_at,ends_at,is_active FROM local_coupons ORDER BY created_at DESC").map_err(|e|e.to_string())?;
     let rows=st.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"code":r.get::<_,String>(1)?,"description":r.get::<_,String>(2)?,"discountType":r.get::<_,String>(3)?,"discountValue":r.get::<_,i64>(4)?,"maxDiscountMinor":r.get::<_,Option<i64>>(5)?,"usageLimit":r.get::<_,Option<i64>>(6)?,"usedCount":r.get::<_,i64>(7)?,"startsAt":r.get::<_,Option<String>>(8)?,"endsAt":r.get::<_,Option<String>>(9)?,"active":r.get::<_,i64>(10)?==1}))).map_err(|e|e.to_string())?;
     rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())
