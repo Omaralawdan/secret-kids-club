@@ -838,7 +838,8 @@ fn apply_visit_coupon(app: tauri::AppHandle, visit_id: String, coupon_code: Stri
     if subtotal<=0 { return Err("لا يمكن تطبيق كوبون على زيارة قيمتها صفر.".into()); }
     let mut discount=if kind=="percent" { subtotal.checked_mul(value).ok_or("قيمة الخصم كبيرة جدًا.")?/10000 } else if kind=="fixed" { value.min(subtotal) } else { return Err("نوع الخصم غير صالح.".into()); };
     if let Some(maximum)=cap { discount=discount.min(maximum); }
-    let mut allocations:Vec<i64>=children.iter().map(|(_,base)|discount.checked_mul(*base).unwrap_or(0)/subtotal).collect();
+    let mut allocations:Vec<i64>=Vec::with_capacity(children.len());
+    for (_,base) in children.iter() { allocations.push(discount.checked_mul(*base).ok_or("قيمة توزيع الخصم كبيرة جدًا.")?/subtotal); }
     let assigned=allocations.iter().try_fold(0i64,|sum,v|sum.checked_add(*v)).ok_or("حساب الخصم تجاوز الحد المسموح.")?;
     let mut remaining=discount.saturating_sub(assigned);
     for (index,(_,base)) in children.iter().enumerate() {
