@@ -381,6 +381,46 @@ fn checkout_transaction_with_overtime(
 }
 
 #[tauri::command]
+fn extend_visit_child(app:tauri::AppHandle,visit_child_id:String,additional_minutes:i64,hourly_rate_minor:i64,reason:String)->Result<Value,String>{
+    if visit_child_id.trim().is_empty()||additional_minutes<15||additional_minutes>720||additional_minutes%15!=0||hourly_rate_minor<=0{
+        return Err("مدة التمديد يجب أن تكون ربع ساعة على الأقل وبزيادات 15 دقيقة، مع سعر ساعة صحيح.".into())
+    }
+    let mut db=auth_db(&app)?;
+    require_permission(&db,"pricing")?;
+    let(actor,_)=require_role(&db,&["admin","manager","cashier"])?;
+    let tx=db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
+    let row:Option<(String,String,String,i64,i64,i64,String,Option<String>,String)>=tx.query_row(
+        "SELECT v.id,v.status,p.pricing_type,p.duration_minutes,p.base_amount_minor,p.discount_amount_minor,p.calculation_json,p.membership_id,vc.child_name_snapshot FROM local_visit_children vc JOIN local_visits v ON v.id=vc.visit_id JOIN local_visit_child_pricing p ON p.visit_child_id=vc.id WHERE vc.id=? AND vc.checked_out_at IS NULL",
+        params![visit_child_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?))
+    ).optional().map_err(|e|e.to_string())?;
+    let(visit_id,status,pricing_type,old_duration,old_base,discount,calculation_json,membership_id,child_name)=row.ok_or("الطفل غير موجود في الزيارات النشطة.")?;
+    if status!="active"{return Err("لا يمكن تمديد زيارة غير نشطة.".into())}
+    if pricing_type=="membership"||membership_id.is_some(){return Err("تمديد زيارة الباقة يتم من رصيد الباقة المتاح، وليس بتمديد مدفوع يدويًا.".into())}
+    let mut calculation:Value=serde_json::from_str(&calculation_json).map_err(|e|e.to_string())?;
+    if !calculation.is_object(){return Err("بيانات تسعير الزيارة غير صالحة.".into())}
+    let original_rate=calculation.get("hourlyRateMinor").and_then(Value::as_i64);
+    if original_rate.map(|v|v!=hourly_rate_minor).unwrap_or(false)&&reason.trim().is_empty(){
+        return Err("اكتب سبب تغيير سعر ساعة التمديد عن السعر الأصلي.".into())
+    }
+    let extra_amount=hourly_rate_minor.checked_mul(additional_minutes).and_then(|v|v.checked_add(30)).ok_or("قيمة التمديد تجاوزت الحد المسموح.")?/60;
+    let new_duration=old_duration.checked_add(additional_minutes).ok_or("مدة الزيارة تجاوزت الحد المسموح.")?;
+    let new_base=old_base.checked_add(extra_amount).ok_or("قيمة الزيارة تجاوزت الحد المسموح.")?;
+    let new_final=new_base.checked_sub(discount).ok_or("حساب الخصم غير صحيح.")?.max(0);
+    let now=Utc::now().to_rfc3339();
+    let extension=json!({"minutes":additional_minutes,"hourlyRateMinor":hourly_rate_minor,"amountMinor":extra_amount,"reason":reason.trim(),"addedAt":now});
+    if !calculation.get("extensions").map(Value::is_array).unwrap_or(false){calculation["extensions"]=json!([]);}
+    calculation["extensions"].as_array_mut().ok_or("سجل التمديدات غير صالح.")?.push(extension);
+    let prior=calculation.get("extensionAmountMinor").and_then(Value::as_i64).unwrap_or(0);
+    calculation["extensionAmountMinor"]=json!(prior.checked_add(extra_amount).ok_or("قيمة التمديد تجاوزت الحد المسموح.")?);
+    calculation["hourlyRateMinor"]=json!(hourly_rate_minor);
+    tx.execute("UPDATE local_visit_child_pricing SET duration_minutes=?,base_amount_minor=?,final_amount_minor=?,calculation_json=? WHERE visit_child_id=?",params![new_duration,new_base,new_final,calculation.to_string(),visit_child_id]).map_err(|e|e.to_string())?;
+    tx.execute("UPDATE local_visits SET base_amount_minor=(SELECT COALESCE(SUM(base_amount_minor),0) FROM local_visit_child_pricing p JOIN local_visit_children c ON c.id=p.visit_child_id WHERE c.visit_id=?),discount_amount_minor=(SELECT COALESCE(SUM(discount_amount_minor),0) FROM local_visit_child_pricing p JOIN local_visit_children c ON c.id=p.visit_child_id WHERE c.visit_id=?),final_amount_minor=(SELECT COALESCE(SUM(MAX(0,base_amount_minor-discount_amount_minor)),0) FROM local_visit_child_pricing p JOIN local_visit_children c ON c.id=p.visit_child_id WHERE c.visit_id=?) WHERE id=? AND status='active'",params![visit_id,visit_id,visit_id,visit_id]).map_err(|e|e.to_string())?;
+    tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,reason,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'visit_extended','visit_child',?,?,?,?)",params![actor,visit_child_id,reason.trim(),json!({"child":child_name,"additional_minutes":additional_minutes,"hourly_rate_minor":hourly_rate_minor,"extra_amount_minor":extra_amount,"new_duration_minutes":new_duration,"new_base_amount_minor":new_base}).to_string(),now]).map_err(|e|e.to_string())?;
+    tx.commit().map_err(|e|e.to_string())?;
+    Ok(json!({"visitId":visit_id,"visitChildId":visit_child_id,"additionalMinutes":additional_minutes,"extraAmountMinor":extra_amount,"newDurationMinutes":new_duration,"newBaseAmountMinor":new_base,"hourlyRateMinor":hourly_rate_minor}))
+}
+
+#[tauri::command]
 fn checkout_child(
     app: tauri::AppHandle,
     visit_child_id: String,
@@ -1481,7 +1521,7 @@ pub fn run() {
                 .add_migrations("sqlite:secret-kids-club.db", migrations)
                 .build(),
         )
-        .invoke_handler(tauri::generate_handler![greet, list_coupons, save_coupon, set_coupon_active, apply_visit_coupon, create_membership_sale, list_bookings, save_booking, update_booking_status, list_cafe_stock_movements, record_cafe_stock_count, list_cafe_expiry_alerts, save_cafe_recipe, list_cafe_recipes, create_cafe_sale, list_cafe_items, save_cafe_item, adjust_cafe_stock, record_cafe_purchase, save_cafe_supplier, list_cafe_suppliers, cancel_membership, record_membership_payment, record_cash_movement, list_monthly_expenses, save_monthly_expense, checkout_child, cancel_visit, update_membership_overtime_rate, list_refundable_payments, record_expense, record_refund, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_set_user_permissions, admin_create_user, admin_set_user_active, admin_reset_user_password, admin_update_user_role, admin_delete_user, delete_pricing_rule, create_pricing_rule, get_active_cash_shift, get_shift_inventory_reconciliation, record_shift_inventory_count, open_cash_shift, close_cash_shift, admin_audit_log])
+        .invoke_handler(tauri::generate_handler![greet, list_coupons, save_coupon, set_coupon_active, apply_visit_coupon, create_membership_sale, list_bookings, save_booking, update_booking_status, list_cafe_stock_movements, record_cafe_stock_count, list_cafe_expiry_alerts, save_cafe_recipe, list_cafe_recipes, create_cafe_sale, list_cafe_items, save_cafe_item, adjust_cafe_stock, record_cafe_purchase, save_cafe_supplier, list_cafe_suppliers, cancel_membership, record_membership_payment, record_cash_movement, list_monthly_expenses, save_monthly_expense, checkout_child, extend_visit_child, cancel_visit, update_membership_overtime_rate, list_refundable_payments, record_expense, record_refund, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_set_user_permissions, admin_create_user, admin_set_user_active, admin_reset_user_password, admin_update_user_role, admin_delete_user, delete_pricing_rule, create_pricing_rule, get_active_cash_shift, get_shift_inventory_reconciliation, record_shift_inventory_count, open_cash_shift, close_cash_shift, admin_audit_log])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
