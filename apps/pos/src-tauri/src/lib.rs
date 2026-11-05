@@ -714,6 +714,50 @@ fn cancel_visit(app: tauri::AppHandle, visit_id: String, reason: String) -> Resu
     Ok(())
 }
 
+
+#[tauri::command]
+fn record_cash_movement(app: tauri::AppHandle, movement_type: String, amount_minor: i64, source: String, reason: String) -> Result<(), String> {
+    if !["cash_added","cash_removed"].contains(&movement_type.as_str()) || amount_minor <= 0 || source.trim().is_empty() || reason.trim().is_empty() {
+        return Err("أدخل نوع الحركة والمبلغ والمصدر والسبب بشكل صحيح.".into());
+    }
+    let mut db=auth_db(&app)?;
+    let (actor,_)=require_role(&db,&["admin","manager"])?;
+    let tx=db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
+    let shift_id:String=tx.query_row("SELECT id FROM local_cash_sessions WHERE closed_at IS NULL ORDER BY opened_at DESC LIMIT 1",[],|r|r.get(0)).optional().map_err(|e|e.to_string())?.ok_or("لا توجد وردية مفتوحة.")?;
+    let id=uuid::Uuid::new_v4().to_string();
+    let now=Utc::now().to_rfc3339();
+    tx.execute("INSERT INTO local_cash_movements(id,cash_session_id,movement_type,amount_minor,source,reason,created_by,created_at) VALUES(?,?,?,?,?,?,?,?)",params![id,shift_id,movement_type,amount_minor,source.trim(),reason.trim(),actor,now]).map_err(|e|e.to_string())?;
+    tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,reason,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'cash_movement_recorded','cash_movement',?,?,?,?)",params![actor,id,reason.trim(),json!({"movement_type":movement_type,"amount_minor":amount_minor,"source":source,"cash_session_id":shift_id}).to_string(),now]).map_err(|e|e.to_string())?;
+    tx.commit().map_err(|e|e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn list_monthly_expenses(app: tauri::AppHandle, expense_month: String) -> Result<Vec<Value>,String> {
+    if expense_month.len()!=7 || !expense_month.chars().nth(4).map(|c|c=='-').unwrap_or(false) { return Err("الشهر يجب أن يكون بصيغة YYYY-MM.".into()); }
+    let db=auth_db(&app)?;
+    require_role(&db,&["admin","manager"])?;
+    let mut st=db.prepare("SELECT id,expense_name,amount_minor,expense_month,paid_at,payment_method,notes,created_by,created_at FROM local_monthly_expenses WHERE expense_month=? ORDER BY expense_name").map_err(|e|e.to_string())?;
+    let rows=st.query_map(params![expense_month],|r|Ok(json!({"id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?,"amountMinor":r.get::<_,i64>(2)?,"month":r.get::<_,String>(3)?,"paidAt":r.get::<_,Option<String>>(4)?,"paymentMethod":r.get::<_,String>(5)?,"notes":r.get::<_,Option<String>>(6)?,"createdBy":r.get::<_,String>(7)?,"createdAt":r.get::<_,String>(8)?}))).map_err(|e|e.to_string())?;
+    rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())
+}
+
+#[tauri::command]
+fn save_monthly_expense(app: tauri::AppHandle, expense_name: String, amount_minor: i64, expense_month: String, payment_method: String, notes: String) -> Result<(),String> {
+    if expense_name.trim().is_empty() || amount_minor<=0 || expense_month.len()!=7 || !expense_month.chars().nth(4).map(|c|c=='-').unwrap_or(false) || !["cash","instapay","wallet","visa","other"].contains(&payment_method.as_str()) {
+        return Err("راجع اسم المصروف والمبلغ والشهر وطريقة الدفع.".into());
+    }
+    let mut db=auth_db(&app)?;
+    let (actor,_)=require_role(&db,&["admin"])?;
+    let now=Utc::now().to_rfc3339();
+    let id=uuid::Uuid::new_v4().to_string();
+    let tx=db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
+    tx.execute("INSERT INTO local_monthly_expenses(id,expense_name,amount_minor,expense_month,payment_method,notes,created_by,created_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(expense_name,expense_month) DO UPDATE SET amount_minor=excluded.amount_minor,payment_method=excluded.payment_method,notes=excluded.notes",params![id,expense_name.trim(),amount_minor,expense_month,payment_method,notes.trim(),actor,now]).map_err(|e|e.to_string())?;
+    tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,reason,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'monthly_expense_saved','monthly_expense',?,?,?,?)",params![actor,id,notes.trim(),json!({"name":expense_name,"amount_minor":amount_minor,"month":expense_month,"payment_method":payment_method}).to_string(),now]).map_err(|e|e.to_string())?;
+    tx.commit().map_err(|e|e.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
@@ -748,6 +792,7 @@ pub fn run() {
         Migration { version: 9, description: "waivers_and_visit_cancellations", sql: include_str!("../migrations/009_waivers_and_visit_cancellations.sql"), kind: MigrationKind::Up },
         Migration { version: 10, description: "shift_payments_expenses_refunds", sql: include_str!("../migrations/010_shift_payments_expenses_refunds.sql"), kind: MigrationKind::Up },
         Migration { version: 11, description: "shift_variance_reason", sql: include_str!("../migrations/011_shift_variance_reason.sql"), kind: MigrationKind::Up },
+        Migration { version: 12, description: "operations_inventory_and_fixed_expenses", sql: include_str!("../migrations/012_operations_inventory_and_fixed_expenses.sql"), kind: MigrationKind::Up },
     ];
 
     tauri::Builder::default()
@@ -757,7 +802,7 @@ pub fn run() {
                 .add_migrations("sqlite:secret-kids-club.db", migrations)
                 .build(),
         )
-        .invoke_handler(tauri::generate_handler![greet, checkout_child, cancel_visit, update_membership_overtime_rate, list_refundable_payments, record_expense, record_refund, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_create_user, admin_set_user_active, admin_reset_user_password, admin_update_user_role, admin_delete_user, delete_pricing_rule, create_pricing_rule, get_active_cash_shift, open_cash_shift, close_cash_shift, admin_audit_log])
+        .invoke_handler(tauri::generate_handler![greet, record_cash_movement, list_monthly_expenses, save_monthly_expense, checkout_child, cancel_visit, update_membership_overtime_rate, list_refundable_payments, record_expense, record_refund, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_create_user, admin_set_user_active, admin_reset_user_password, admin_update_user_role, admin_delete_user, delete_pricing_rule, create_pricing_rule, get_active_cash_shift, open_cash_shift, close_cash_shift, admin_audit_log])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
