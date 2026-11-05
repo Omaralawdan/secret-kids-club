@@ -346,7 +346,7 @@ export default function App() {
   const canManage = isAdmin || authRoles.includes("manager");
   const canOperate = canManage || authRoles.includes("cashier");
   const reportAccess = (canManage || authRoles.includes("viewer")) && hasPermission("reports");
-  if (!authUser) return <AuthGate onAuthenticated={(user) => { setAuthUser(user); try { const roles=JSON.parse(user.roles) as string[];let perms:string[]=[];try{perms=user.permissions?JSON.parse(user.permissions):[]}catch{};if(roles.includes("viewer"))setScreen("reports");else if(perms.includes("__custom__")){const selected=perms.filter(x=>x!=="__custom__");setScreen(selected.includes("reception")?"reception":selected.includes("packages")?"packages":selected.includes("active")?"active":selected.includes("cafe")?"cafe":selected.includes("bookings")?"bookings":selected.includes("reports")?"reports":"admin");} } catch {} }} databaseReady={ready} />;
+  if (!authUser) return <AuthGate onAuthenticated={(user) => { setAuthUser(user); try { const roles=JSON.parse(user.roles) as string[];let perms:string[]=[];try{perms=user.permissions?JSON.parse(user.permissions):[]}catch{};if(roles.includes("viewer"))setScreen("reports");else if(perms.includes("__custom__")){const selected=perms.filter(x=>x!=="__custom__");setScreen(selected.includes("reception")?"reception":selected.includes("packages")?"packages":selected.includes("active")?"active":selected.includes("cafe")?"cafe":selected.includes("bookings")?"bookings":selected.includes("reports")?"reports":selected.includes("pricing")?"pricing":selected.includes("settings")?"settings":"admin");} } catch {} }} databaseReady={ready} />;
 
   async function createRule(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
