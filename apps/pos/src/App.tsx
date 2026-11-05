@@ -10,7 +10,8 @@ import AdminTools from "./AdminTools";
 import CafeCenter from "./CafeCenter";
 
 type MembershipPlan = { id:string; name:string; price_minor:number; included_minutes:number; validity_days:number; overtime_rate_minor:number; is_active:number };
-type ChildMembership = { id:string; child_name_snapshot:string; guardian_phone_snapshot:string; plan_id:string; plan_name:string; purchased_at:string; expires_at:string; included_minutes:number; used_minutes:number; overtime_rate_minor:number; status:string };
+type ChildMembership = { id:string; child_name_snapshot:string; guardian_phone_snapshot:string; plan_id:string; plan_name:string; purchased_at:string; expires_at:string; included_minutes:number; used_minutes:number; overtime_rate_minor:number; status:string; sale_id:string|null; paid_minor:number; remaining_minor:number };
+type MembershipPayment = {created_at:string;amount_minor:number;method:string;external_reference:string|null};
 
 type PricingRule = {
   id: string;
@@ -192,7 +193,7 @@ export default function App() {
   const [membershipPlans,setMembershipPlans]=useState<MembershipPlan[]>([]);
   const [memberships,setMemberships]=useState<ChildMembership[]>([]);
   const [planName,setPlanName]=useState(""); const [planPrice,setPlanPrice]=useState(""); const [planHours,setPlanHours]=useState("20"); const [planValidity,setPlanValidity]=useState("30"); const [planOvertimeRate,setPlanOvertimeRate]=useState("");
-  const [memberName,setMemberName]=useState(""); const [memberPhone,setMemberPhone]=useState(""); const [memberPlanId,setMemberPlanId]=useState(""); const [memberPaymentMethod,setMemberPaymentMethod]=useState<"cash"|"instapay"|"wallet"|"visa"|"other">("cash");
+  const [memberName,setMemberName]=useState(""); const [memberPhone,setMemberPhone]=useState(""); const [memberPlanId,setMemberPlanId]=useState(""); const [memberPaymentMethod,setMemberPaymentMethod]=useState<"cash"|"instapay"|"wallet"|"visa"|"other">("cash"); const [memberPaymentAmount,setMemberPaymentAmount]=useState(""); const [memberPaymentNote,setMemberPaymentNote]=useState(""); const [membershipPaymentHistory,setMembershipPaymentHistory]=useState<Record<string,MembershipPayment[]>>({});
 
   const refreshData = useCallback(async (connection: Database) => {
     const loadedRules = await connection.select<PricingRule[]>(
@@ -204,7 +205,7 @@ export default function App() {
     setRules(loadedRules);
     try {
       setMembershipPlans(await connection.select<MembershipPlan[]>("SELECT id,name,price_minor,included_minutes,validity_days,overtime_rate_minor,is_active FROM local_membership_plans WHERE is_active=1 ORDER BY name"));
-      setMemberships(await connection.select<ChildMembership[]>("SELECT m.id,m.child_name_snapshot,m.guardian_phone_snapshot,m.plan_id,p.name AS plan_name,m.purchased_at,m.expires_at,m.included_minutes,m.used_minutes,p.overtime_rate_minor,m.status FROM local_child_memberships m JOIN local_membership_plans p ON p.id=m.plan_id ORDER BY m.purchased_at DESC"));
+      setMemberships(await connection.select<ChildMembership[]>("SELECT m.id,m.child_name_snapshot,m.guardian_phone_snapshot,m.plan_id,p.name AS plan_name,m.purchased_at,m.expires_at,m.included_minutes,m.used_minutes,p.overtime_rate_minor,m.status,m.sale_id,COALESCE((SELECT SUM(pay.amount_minor) FROM local_payments pay WHERE pay.sale_id=m.sale_id AND pay.status='confirmed'),0) AS paid_minor,MAX(0,p.price_minor-COALESCE((SELECT SUM(pay.amount_minor) FROM local_payments pay WHERE pay.sale_id=m.sale_id AND pay.status='confirmed'),0)) AS remaining_minor FROM local_child_memberships m JOIN local_membership_plans p ON p.id=m.plan_id ORDER BY m.purchased_at DESC"));
     } catch { /* Membership tables are created by the installed schema migration. */ }
 
     const counts = await connection.select<{ total: number }[]>(
