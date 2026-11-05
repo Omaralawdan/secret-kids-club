@@ -780,6 +780,20 @@ fn record_cash_movement(app: tauri::AppHandle, movement_type: String, amount_min
 }
 
 #[tauri::command]
+fn cancel_membership(app:tauri::AppHandle,membership_id:String,reason:String)->Result<(),String>{
+    if membership_id.trim().is_empty()||reason.trim().is_empty(){return Err("سبب إلغاء الباقة مطلوب.".into())}
+    let mut db=auth_db(&app)?;
+    require_permission(&db,"packages")?;
+    let(actor,_)=require_role(&db,&["admin","manager"])?;
+    let tx=db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
+    let status:String=tx.query_row("SELECT status FROM local_child_memberships WHERE id=?",params![membership_id],|r|r.get(0)).map_err(|_|"الاشتراك غير موجود.".to_string())?;
+    if status=="cancelled"{return Err("هذا الاشتراك ملغي بالفعل.".into())}
+    tx.execute("UPDATE local_child_memberships SET status='cancelled' WHERE id=?",params![membership_id]).map_err(|e|e.to_string())?;
+    tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,reason,created_at) VALUES(lower(hex(randomblob(16))),?,'membership_cancelled','membership',?,?,?)",params![actor,membership_id,reason.trim(),Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
+    tx.commit().map_err(|e|e.to_string())?;Ok(())
+}
+
+#[tauri::command]
 fn record_membership_payment(app:tauri::AppHandle,membership_id:String,amount_minor:i64,method:String,note:String)->Result<Value,String>{
     if membership_id.trim().is_empty()||amount_minor<=0||!["cash","instapay","wallet","visa","other"].contains(&method.as_str()){return Err("راجع الباقة والمبلغ وطريقة الدفع.".into())}
     let mut db=auth_db(&app)?;
@@ -1071,7 +1085,7 @@ pub fn run() {
                 .add_migrations("sqlite:secret-kids-club.db", migrations)
                 .build(),
         )
-        .invoke_handler(tauri::generate_handler![greet, record_cafe_stock_count, list_cafe_expiry_alerts, save_cafe_recipe, list_cafe_recipes, create_cafe_sale, list_cafe_items, save_cafe_item, adjust_cafe_stock, record_cafe_purchase, save_cafe_supplier, list_cafe_suppliers, record_membership_payment, record_cash_movement, list_monthly_expenses, save_monthly_expense, checkout_child, cancel_visit, update_membership_overtime_rate, list_refundable_payments, record_expense, record_refund, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_set_user_permissions, admin_create_user, admin_set_user_active, admin_reset_user_password, admin_update_user_role, admin_delete_user, delete_pricing_rule, create_pricing_rule, get_active_cash_shift, open_cash_shift, close_cash_shift, admin_audit_log])
+        .invoke_handler(tauri::generate_handler![greet, record_cafe_stock_count, list_cafe_expiry_alerts, save_cafe_recipe, list_cafe_recipes, create_cafe_sale, list_cafe_items, save_cafe_item, adjust_cafe_stock, record_cafe_purchase, save_cafe_supplier, list_cafe_suppliers, cancel_membership, record_membership_payment, record_cash_movement, list_monthly_expenses, save_monthly_expense, checkout_child, cancel_visit, update_membership_overtime_rate, list_refundable_payments, record_expense, record_refund, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_set_user_permissions, admin_create_user, admin_set_user_active, admin_reset_user_password, admin_update_user_role, admin_delete_user, delete_pricing_rule, create_pricing_rule, get_active_cash_shift, open_cash_shift, close_cash_shift, admin_audit_log])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
