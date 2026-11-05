@@ -462,6 +462,31 @@ export default function App() {
     } catch(e){setError(String(e))}
   }
 
+  function useBookingForCheckIn(booking: Booking) {
+    if (booking.status !== "booked" && booking.status !== "confirmed") {
+      setError(ar ? "الحجز غير متاح للاستخدام." : "This booking is no longer available.");
+      return;
+    }
+    const durationHours = booking.durationMinutes / 60;
+    if (!Number.isFinite(durationHours) || durationHours < 0.25 || !Number.isInteger(durationHours * 4)) {
+      setError(ar ? "مدة الحجز يجب أن تكون بزيادة ربع ساعة." : "Booking duration must use 15-minute increments.");
+      return;
+    }
+    setSelectedBookingId(booking.id);
+    setGuardianName(booking.guardianName);
+    setGuardianPhone(booking.phone);
+    setGuardianRelation("Guardian");
+    setChildren(Array.from({ length: Math.max(1, booking.childCount) }, () => ({
+      key: makeId(), name: "", ruleId: rules[0]?.id ?? "", durationHours,
+      hourlyRateMinor: null, priceMinor: null,
+    })));
+    setError("");
+    setMessage(booking.type === "birthday"
+      ? (ar ? "تم تحميل حجز عيد الميلاد. أكمل أسماء الأطفال والأسعار قبل تسجيل الدخول." : "Birthday booking loaded. Complete each child's name and price before check-in.")
+      : (ar ? "تم تحميل بيانات الحجز. أكمل أسماء الأطفال والأسعار قبل تسجيل الدخول." : "Booking loaded. Complete each child's name and price before check-in."));
+    setScreen("reception");
+  }
+
   async function createVisit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!db || saving) return;
