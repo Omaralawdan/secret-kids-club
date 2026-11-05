@@ -780,6 +780,29 @@ fn record_cash_movement(app: tauri::AppHandle, movement_type: String, amount_min
 }
 
 #[tauri::command]
+fn record_membership_payment(app:tauri::AppHandle,membership_id:String,amount_minor:i64,method:String,note:String)->Result<Value,String>{
+    if membership_id.trim().is_empty()||amount_minor<=0||!["cash","instapay","wallet","visa","other"].contains(&method.as_str()){return Err("راجع الباقة والمبلغ وطريقة الدفع.".into())}
+    let mut db=auth_db(&app)?;
+    require_permission(&db,"packages")?;
+    let(actor,_)=require_role(&db,&["admin","manager","cashier"])?;
+    let tx=db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
+    let (sale_id,plan_price,status):(Option<String>,i64,String)=tx.query_row("SELECT m.sale_id,p.price_minor,m.status FROM local_child_memberships m JOIN local_membership_plans p ON p.id=m.plan_id WHERE m.id=?",params![membership_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(|_|"الاشتراك غير موجود.".to_string())?;
+    let sale_id=sale_id.ok_or("هذا الاشتراك غير مرتبط بفاتورة تحصيل.")?;
+    if status=="cancelled"{return Err("لا يمكن التحصيل على اشتراك ملغي.".into())}
+    let paid:i64=tx.query_row("SELECT COALESCE(SUM(amount_minor),0) FROM local_payments WHERE sale_id=? AND status='confirmed'",params![sale_id],|r|r.get(0)).map_err(|e|e.to_string())?;
+    let remaining=plan_price.saturating_sub(paid);
+    if amount_minor>remaining{return Err(format!("المبلغ أكبر من المتبقي على الباقة: {} جنيه.",remaining as f64/100.0))}
+    let shift_id:String=tx.query_row("SELECT id FROM local_cash_sessions WHERE closed_at IS NULL ORDER BY opened_at DESC LIMIT 1",[],|r|r.get(0)).optional().map_err(|e|e.to_string())?.ok_or("افتح وردية قبل تسجيل دفعة الباقة.")?;
+    let stored_method=if ["visa","other"].contains(&method.as_str()){"wallet"}else{method.as_str()};
+    let now=Utc::now().to_rfc3339();
+    tx.execute("INSERT INTO local_payments(id,sale_id,visit_id,method,method_label,status,amount_minor,external_reference,received_by,created_at,cash_session_id) VALUES(?,?,NULL,?,?,'confirmed',?,?,?,?,?)",params![uuid::Uuid::new_v4().to_string(),sale_id,stored_method,method,amount_minor,note.trim(),actor,now,shift_id]).map_err(|e|e.to_string())?;
+    let new_paid=paid.saturating_add(amount_minor);let new_remaining=plan_price.saturating_sub(new_paid);
+    tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,reason,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'membership_payment_recorded','membership',?,?,?,?)",params![actor,membership_id,note.trim(),json!({"sale_id":sale_id,"amount_minor":amount_minor,"method":method,"paid_minor":new_paid,"remaining_minor":new_remaining,"cash_session_id":shift_id}).to_string(),now]).map_err(|e|e.to_string())?;
+    tx.commit().map_err(|e|e.to_string())?;
+    Ok(json!({"paidMinor":new_paid,"remainingMinor":new_remaining}))
+}
+
+#[tauri::command]
 fn list_monthly_expenses(app: tauri::AppHandle, expense_month: String) -> Result<Vec<Value>,String> {
     if expense_month.len()!=7 || !expense_month.chars().nth(4).map(|c|c=='-').unwrap_or(false) { return Err("الشهر يجب أن يكون بصيغة YYYY-MM.".into()); }
     let db=auth_db(&app)?;
@@ -1037,6 +1060,7 @@ pub fn run() {
         Migration { version: 12, description: "operations_inventory_and_fixed_expenses", sql: include_str!("../migrations/012_operations_inventory_and_fixed_expenses.sql"), kind: MigrationKind::Up },
         Migration { version: 13, description: "custom_employee_permissions", sql: include_str!("../migrations/013_custom_employee_permissions.sql"), kind: MigrationKind::Up },
         Migration { version: 14, description: "extended_payment_methods", sql: include_str!("../migrations/014_extended_payment_methods.sql"), kind: MigrationKind::Up },
+        Migration { version: 15, description: "membership_partial_payments", sql: include_str!("../migrations/015_membership_partial_payments.sql"), kind: MigrationKind::Up },
     ];
 
     tauri::Builder::default()
@@ -1046,7 +1070,7 @@ pub fn run() {
                 .add_migrations("sqlite:secret-kids-club.db", migrations)
                 .build(),
         )
-        .invoke_handler(tauri::generate_handler![greet, record_cafe_stock_count, list_cafe_expiry_alerts, save_cafe_recipe, list_cafe_recipes, create_cafe_sale, list_cafe_items, save_cafe_item, adjust_cafe_stock, record_cafe_purchase, save_cafe_supplier, list_cafe_suppliers, record_cash_movement, list_monthly_expenses, save_monthly_expense, checkout_child, cancel_visit, update_membership_overtime_rate, list_refundable_payments, record_expense, record_refund, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_set_user_permissions, admin_create_user, admin_set_user_active, admin_reset_user_password, admin_update_user_role, admin_delete_user, delete_pricing_rule, create_pricing_rule, get_active_cash_shift, open_cash_shift, close_cash_shift, admin_audit_log])
+        .invoke_handler(tauri::generate_handler![greet, record_cafe_stock_count, list_cafe_expiry_alerts, save_cafe_recipe, list_cafe_recipes, create_cafe_sale, list_cafe_items, save_cafe_item, adjust_cafe_stock, record_cafe_purchase, save_cafe_supplier, list_cafe_suppliers, record_membership_payment, record_cash_movement, list_monthly_expenses, save_monthly_expense, checkout_child, cancel_visit, update_membership_overtime_rate, list_refundable_payments, record_expense, record_refund, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_set_user_permissions, admin_create_user, admin_set_user_active, admin_reset_user_password, admin_update_user_role, admin_delete_user, delete_pricing_rule, create_pricing_rule, get_active_cash_shift, open_cash_shift, close_cash_shift, admin_audit_log])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
