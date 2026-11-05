@@ -879,7 +879,6 @@ fn save_cafe_recipe(app:tauri::AppHandle,sellable_item_id:String,recipe_name:Str
     if sellable_item_id.trim().is_empty()||recipe_name.trim().is_empty()||yield_quantity_milli<=0||ingredients.is_empty(){return Err("أدخل اسم الوصفة والمنتج والكمية الناتجة ومكونًا واحدًا على الأقل.".into())}
     let mut db=auth_db(&app)?;let(actor,_)=require_role(&db,&["admin","manager"])?;require_permission(&db,"cafe")?;
     let tx=db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
-    require_permission(&db,"cafe")?;
     let kind:String=tx.query_row("SELECT item_kind FROM local_inventory_items WHERE id=? AND is_active=1",params![sellable_item_id],|r|r.get(0)).map_err(|_|"المنتج غير موجود.".to_string())?;if kind!="ready_product"{return Err("الوصفة يجب أن ترتبط بمنتج جاهز للبيع.".into())}
     let recipe_id:Option<String>=tx.query_row("SELECT id FROM local_recipes WHERE sellable_item_id=?",params![sellable_item_id],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
     let id=recipe_id.unwrap_or_else(||uuid::Uuid::new_v4().to_string());
