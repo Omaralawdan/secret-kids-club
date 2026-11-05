@@ -611,6 +611,25 @@ fn get_active_cash_shift(app: tauri::AppHandle) -> Result<Value, String> {
     Ok(shift.unwrap_or(Value::Null))
 }
 
+fn shift_inventory_totals(db:&Connection,item_id:&str,opened_at:&str,until:&str)->Result<(i64,i64,i64,i64,i64,i64),String>{
+    db.query_row(
+        "SELECT
+          COALESCE(SUM(CASE WHEN movement_type='sale' THEN quantity_milli ELSE 0 END),0),
+          COALESCE(SUM(CASE WHEN movement_type='purchase' THEN quantity_milli ELSE 0 END),0),
+          COALESCE(SUM(CASE WHEN movement_type IN ('stock_in','return_in','opening') THEN quantity_milli ELSE 0 END),0),
+          COALESCE(SUM(CASE WHEN movement_type='waste' THEN quantity_milli ELSE 0 END),0),
+          COALESCE(SUM(CASE WHEN movement_type='return_supplier' THEN quantity_milli ELSE 0 END),0),
+          COALESCE(SUM(CASE WHEN movement_type='stock_out' THEN quantity_milli ELSE 0 END),0)
+         FROM local_stock_movements
+         WHERE inventory_item_id=? AND created_at>=? AND created_at<=?",
+        params![item_id,opened_at,until],
+        |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))
+    ).map_err(|e|e.to_string())
+}
+fn shift_inventory_expected(opening:i64,sold:i64,purchases:i64,additions:i64,waste:i64,returns_out:i64,other_out:i64)->Result<i64,String>{
+    opening.checked_add(purchases).and_then(|v|v.checked_add(additions)).and_then(|v|v.checked_sub(sold)).and_then(|v|v.checked_sub(waste)).and_then(|v|v.checked_sub(returns_out)).and_then(|v|v.checked_sub(other_out)).ok_or_else(||"حساب المخزون تجاوز الحد المسموح.".to_string())
+}
+
 #[tauri::command]
 fn open_cash_shift(app:tauri::AppHandle,opening_float_minor:i64)->Result<Value,String>{
  if opening_float_minor<0{return Err("رصيد بداية الوردية غير صحيح.".into())}
@@ -622,6 +641,7 @@ fn open_cash_shift(app:tauri::AppHandle,opening_float_minor:i64)->Result<Value,S
  if count>0{return Err("هناك وردية مفتوحة بالفعل.".into())}
  let id=uuid::Uuid::new_v4().to_string();let now=Utc::now().to_rfc3339();
  tx.execute("INSERT INTO local_cash_sessions(id,opening_float_minor,opened_by,opened_at) VALUES(?,?,?,?)",params![id,opening_float_minor,actor,now]).map_err(|e|e.to_string())?;
+ tx.execute("INSERT INTO local_shift_inventory_opening(cash_session_id,inventory_item_id,item_name_snapshot,opening_quantity_milli) SELECT ?,i.id,i.name,COALESCE(SUM(CASE WHEN m.movement_type IN ('purchase','stock_in','return_in','opening') THEN m.quantity_milli WHEN m.movement_type IN ('sale','waste','stock_out','return_supplier') THEN -m.quantity_milli ELSE 0 END),0) FROM local_inventory_items i LEFT JOIN local_stock_movements m ON m.inventory_item_id=i.id WHERE i.is_active=1 GROUP BY i.id",params![id]).map_err(|e|e.to_string())?;
  tx.commit().map_err(|e|e.to_string())?;
  Ok(json!({"id":id,"openedAt":now}))
 }
@@ -636,7 +656,24 @@ fn close_cash_shift(app:tauri::AppHandle,counted_cash_minor:i64,variance_reason:
  let(id,float,_opened)=shift.ok_or("لا توجد وردية مفتوحة.")?;
  let active_visits:i64=tx.query_row("SELECT COUNT(*) FROM local_visits WHERE status='active'",[],|r|r.get(0)).map_err(|e|e.to_string())?;
  if active_visits>0 { return Err("لا يمكن إغلاق الوردية وهناك أطفال لم يتم تسجيل خروجهم بعد.".into()); }
+ let required_inventory_count:i64=tx.query_row("SELECT COUNT(*) FROM (SELECT inventory_item_id FROM local_shift_inventory_opening WHERE cash_session_id=? UNION SELECT id FROM local_inventory_items WHERE is_active=1) x LEFT JOIN local_shift_inventory_counts c ON c.cash_session_id=? AND c.inventory_item_id=x.inventory_item_id WHERE c.id IS NULL",params![id,id],|r|r.get(0)).map_err(|e|e.to_string())?;
+ if required_inventory_count>0 { return Err(format!("يجب جرد جميع أصناف المخزون قبل إغلاق الوردية. الأصناف المتبقية: {}",required_inventory_count)); }
+ let stale_inventory_count:i64=tx.query_row("SELECT COUNT(*) FROM local_shift_inventory_counts c WHERE c.cash_session_id=? AND EXISTS(SELECT 1 FROM local_stock_movements m WHERE m.inventory_item_id=c.inventory_item_id AND m.created_at>c.counted_at)",params![id],|r|r.get(0)).map_err(|e|e.to_string())?;
+ if stale_inventory_count>0 { return Err("تم تسجيل حركة مخزون بعد الجرد. حدّث جرد الأصناف المتأثرة قبل إغلاق الوردية.".into()); }
  let now=Utc::now().to_rfc3339();
+ let inventory_adjustments={
+   let mut st=tx.prepare("SELECT inventory_item_id,variance_quantity_milli,COALESCE(reason,'') FROM local_shift_inventory_counts WHERE cash_session_id=? AND variance_quantity_milli<>0").map_err(|e|e.to_string())?;
+   let rows=st.query_map(params![id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?))).map_err(|e|e.to_string())?;
+   rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())?
+ };
+ for (item_id,variance,reason) in inventory_adjustments {
+   let movement_type=if variance>0{"stock_in"}else{"stock_out"};
+   let quantity=variance.checked_abs().ok_or("فرق المخزون تجاوز الحد المسموح.")?;
+   tx.execute("INSERT INTO local_stock_movements(id,inventory_item_id,movement_type,quantity_milli,reason,created_by,created_at) VALUES(?,?,?,?,?,?,?)",params![uuid::Uuid::new_v4().to_string(),item_id,movement_type,quantity,format!("تسوية جرد الوردية: {}",reason),actor,now]).map_err(|e|e.to_string())?;
+   if variance<0 { consume_expiry_batches(&tx,&item_id,quantity)?; }
+ }
+ let inventory_count:i64=tx.query_row("SELECT COUNT(*) FROM local_shift_inventory_counts WHERE cash_session_id=?",params![id],|r|r.get(0)).map_err(|e|e.to_string())?;
+ let inventory_variance_count:i64=tx.query_row("SELECT COUNT(*) FROM local_shift_inventory_counts WHERE cash_session_id=? AND variance_quantity_milli<>0",params![id],|r|r.get(0)).map_err(|e|e.to_string())?;
  let sales:i64=tx.query_row("SELECT COALESCE(SUM(amount_minor),0) FROM local_payments WHERE cash_session_id=? AND method='cash' AND status='confirmed'",params![id],|r|r.get(0)).map_err(|e|e.to_string())?;
  let expenses:i64=tx.query_row("SELECT COALESCE(SUM(amount_minor),0) FROM local_expenses WHERE cash_session_id=? AND method='cash'",params![id],|r|r.get(0)).map_err(|e|e.to_string())?;
  let refunds:i64=tx.query_row("SELECT COALESCE(SUM(amount_minor),0) FROM local_refunds WHERE cash_session_id=? AND method='cash'",params![id],|r|r.get(0)).map_err(|e|e.to_string())?;
@@ -648,8 +685,53 @@ fn close_cash_shift(app:tauri::AppHandle,counted_cash_minor:i64,variance_reason:
  let changed=tx.execute("UPDATE local_cash_sessions SET closed_by=?,closed_at=?,counted_cash_minor=?,expected_cash_minor=?,variance_minor=?,variance_reason=? WHERE id=? AND closed_at IS NULL",params![actor,now,counted_cash_minor,expected,variance,variance_reason.trim(),id]).map_err(|e|e.to_string())?;
  if changed!=1{return Err("تم إغلاق الوردية بالفعل أو تغيرت حالتها.".into())}
  tx.commit().map_err(|e|e.to_string())?;
- Ok(json!({"id":id,"expectedCashMinor":expected,"countedCashMinor":counted_cash_minor,"varianceMinor":variance,"closedAt":now}))
+ Ok(json!({"id":id,"expectedCashMinor":expected,"countedCashMinor":counted_cash_minor,"varianceMinor":variance,"inventoryCount":inventory_count,"inventoryVarianceCount":inventory_variance_count,"closedAt":now}))
 }
+#[tauri::command]
+fn get_shift_inventory_reconciliation(app:tauri::AppHandle)->Result<Vec<Value>,String>{
+    let db=auth_db(&app)?;
+    require_permission(&db,"shift")?;
+    let _=require_role(&db,&["admin","manager","cashier"])?;
+    let shift:Option<(String,String)>=db.query_row("SELECT id,opened_at FROM local_cash_sessions WHERE closed_at IS NULL ORDER BY opened_at DESC LIMIT 1",[],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(|e|e.to_string())?;
+    let Some((shift_id,opened_at))=shift else{return Ok(Vec::new())};
+    let until=Utc::now().to_rfc3339();
+    let rows={
+        let mut st=db.prepare("SELECT x.inventory_item_id,COALESCE(i.name,o.item_name_snapshot),COALESCE(o.opening_quantity_milli,0),c.counted_quantity_milli,c.variance_quantity_milli,c.reason,c.counted_at FROM (SELECT inventory_item_id FROM local_shift_inventory_opening WHERE cash_session_id=? UNION SELECT id FROM local_inventory_items WHERE is_active=1) x LEFT JOIN local_inventory_items i ON i.id=x.inventory_item_id LEFT JOIN local_shift_inventory_opening o ON o.cash_session_id=? AND o.inventory_item_id=x.inventory_item_id LEFT JOIN local_shift_inventory_counts c ON c.cash_session_id=? AND c.inventory_item_id=x.inventory_item_id ORDER BY 2").map_err(|e|e.to_string())?;
+        let mapped=st.query_map(params![shift_id,shift_id,shift_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?,r.get::<_,Option<i64>>(3)?,r.get::<_,Option<i64>>(4)?,r.get::<_,Option<String>>(5)?,r.get::<_,Option<String>>(6)?))).map_err(|e|e.to_string())?;
+        mapped.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())?
+    };
+    let mut result=Vec::new();
+    for (item_id,item_name,opening,counted,variance,reason,counted_at) in rows {
+        let (sold,purchases,additions,waste,returns_out,other_out)=shift_inventory_totals(&db,&item_id,&opened_at,&until)?;
+        let expected=shift_inventory_expected(opening,sold,purchases,additions,waste,returns_out,other_out)?;
+        let needs_recount=if let Some(stamp)=counted_at.as_deref(){db.query_row("SELECT EXISTS(SELECT 1 FROM local_stock_movements WHERE inventory_item_id=? AND created_at>?)",params![item_id,stamp],|r|r.get::<_,bool>(0)).map_err(|e|e.to_string())?}else{false};
+        result.push(json!({"itemId":item_id,"itemName":item_name,"openingQuantityMilli":opening,"soldQuantityMilli":sold,"purchaseQuantityMilli":purchases,"additionQuantityMilli":additions,"wasteQuantityMilli":waste,"returnOutQuantityMilli":returns_out,"otherOutQuantityMilli":other_out,"expectedQuantityMilli":expected,"countedQuantityMilli":counted,"varianceQuantityMilli":variance,"reason":reason,"countedAt":counted_at,"needsRecount":needs_recount}));
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+fn record_shift_inventory_count(app:tauri::AppHandle,item_id:String,counted_quantity_milli:i64,reason:String)->Result<Value,String>{
+    if item_id.trim().is_empty()||counted_quantity_milli<0{return Err("أدخل الصنف والكمية الفعلية بشكل صحيح.".into())}
+    let mut db=auth_db(&app)?;
+    require_permission(&db,"shift")?;
+    let(actor,_)=require_role(&db,&["admin","manager","cashier"])?;
+    let tx=db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
+    let shift:Option<(String,String)>=tx.query_row("SELECT id,opened_at FROM local_cash_sessions WHERE closed_at IS NULL ORDER BY opened_at DESC LIMIT 1",[],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(|e|e.to_string())?;
+    let(shift_id,opened_at)=shift.ok_or("افتح الوردية قبل تسجيل جرد المخزون.")?;
+    let item:Option<(String,i64)>=tx.query_row("SELECT COALESCE(i.name,o.item_name_snapshot),COALESCE(o.opening_quantity_milli,0) FROM (SELECT ? AS inventory_item_id) x LEFT JOIN local_inventory_items i ON i.id=x.inventory_item_id LEFT JOIN local_shift_inventory_opening o ON o.cash_session_id=? AND o.inventory_item_id=x.inventory_item_id WHERE i.is_active=1 OR o.inventory_item_id IS NOT NULL",params![item_id,shift_id],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(|e|e.to_string())?;
+    let(item_name,opening)=item.ok_or("الصنف غير موجود أو غير مسجل في الوردية.")?;
+    let now=Utc::now().to_rfc3339();
+    let(sold,purchases,additions,waste,returns_out,other_out)=shift_inventory_totals(&tx,&item_id,&opened_at,&now)?;
+    let expected=shift_inventory_expected(opening,sold,purchases,additions,waste,returns_out,other_out)?;
+    let variance=counted_quantity_milli.checked_sub(expected).ok_or("فرق الجرد تجاوز الحد المسموح.")?;
+    if variance!=0&&reason.trim().is_empty(){return Err("يجب تسجيل سبب فرق الجرد.".into())}
+    tx.execute("INSERT INTO local_shift_inventory_counts(id,cash_session_id,inventory_item_id,item_name_snapshot,opening_quantity_milli,sold_quantity_milli,purchase_quantity_milli,addition_quantity_milli,waste_quantity_milli,return_out_quantity_milli,other_out_quantity_milli,expected_quantity_milli,counted_quantity_milli,variance_quantity_milli,reason,counted_by,counted_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(cash_session_id,inventory_item_id) DO UPDATE SET item_name_snapshot=excluded.item_name_snapshot,opening_quantity_milli=excluded.opening_quantity_milli,sold_quantity_milli=excluded.sold_quantity_milli,purchase_quantity_milli=excluded.purchase_quantity_milli,addition_quantity_milli=excluded.addition_quantity_milli,waste_quantity_milli=excluded.waste_quantity_milli,return_out_quantity_milli=excluded.return_out_quantity_milli,other_out_quantity_milli=excluded.other_out_quantity_milli,expected_quantity_milli=excluded.expected_quantity_milli,counted_quantity_milli=excluded.counted_quantity_milli,variance_quantity_milli=excluded.variance_quantity_milli,reason=excluded.reason,counted_by=excluded.counted_by,counted_at=excluded.counted_at",params![uuid::Uuid::new_v4().to_string(),shift_id,item_id,item_name,opening,sold,purchases,additions,waste,returns_out,other_out,expected,counted_quantity_milli,variance,reason.trim(),actor,now]).map_err(|e|e.to_string())?;
+    tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,reason,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'shift_inventory_counted','shift_inventory',?,?,?,?)",params![actor,item_id,reason.trim(),json!({"shift_id":shift_id,"expected_milli":expected,"counted_milli":counted_quantity_milli,"variance_milli":variance}).to_string(),now]).map_err(|e|e.to_string())?;
+    tx.commit().map_err(|e|e.to_string())?;
+    Ok(json!({"itemId":item_id,"expectedQuantityMilli":expected,"countedQuantityMilli":counted_quantity_milli,"varianceQuantityMilli":variance,"countedAt":now}))
+}
+
 #[tauri::command]
 fn admin_audit_log(app:tauri::AppHandle,limit:i64)->Result<Vec<Value>,String>{
  let db=auth_db(&app)?;require_role(&db,&["admin","manager"])?;let mut st=db.prepare("SELECT a.created_at,COALESCE(u.display_name,a.actor_user_id),a.action,a.entity_type,a.entity_id,a.reason,a.before_json,a.after_json FROM local_audit_log a LEFT JOIN local_users u ON u.id=a.actor_user_id ORDER BY a.created_at DESC LIMIT ?").map_err(|e|e.to_string())?;let rows=st.query_map(params![limit.clamp(1,5000)],|r|Ok(json!({"createdAt":r.get::<_,String>(0)?,"actor":r.get::<_,String>(1)?,"action":r.get::<_,String>(2)?,"entityType":r.get::<_,String>(3)?,"entityId":r.get::<_,Option<String>>(4)?,"reason":r.get::<_,Option<String>>(5)?,"before":r.get::<_,Option<String>>(6)?,"after":r.get::<_,Option<String>>(7)?}))).map_err(|e|e.to_string())?;rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())
@@ -1346,6 +1428,7 @@ pub fn run() {
         Migration { version: 18, description: "booking_visit_link", sql: include_str!("../migrations/018_booking_visit_link.sql"), kind: MigrationKind::Up },
         Migration { version: 19, description: "custom_pricing_guards", sql: include_str!("../migrations/019_custom_pricing_guards.sql"), kind: MigrationKind::Up },
         Migration { version: 20, description: "visit_coupons", sql: include_str!("../migrations/020_visit_coupons.sql"), kind: MigrationKind::Up },
+        Migration { version: 21, description: "shift_inventory_reconciliation", sql: include_str!("../migrations/021_shift_inventory_reconciliation.sql"), kind: MigrationKind::Up },
     ];
 
     tauri::Builder::default()
@@ -1355,7 +1438,7 @@ pub fn run() {
                 .add_migrations("sqlite:secret-kids-club.db", migrations)
                 .build(),
         )
-        .invoke_handler(tauri::generate_handler![greet, list_coupons, save_coupon, set_coupon_active, apply_visit_coupon, create_membership_sale, list_bookings, save_booking, update_booking_status, list_cafe_stock_movements, record_cafe_stock_count, list_cafe_expiry_alerts, save_cafe_recipe, list_cafe_recipes, create_cafe_sale, list_cafe_items, save_cafe_item, adjust_cafe_stock, record_cafe_purchase, save_cafe_supplier, list_cafe_suppliers, cancel_membership, record_membership_payment, record_cash_movement, list_monthly_expenses, save_monthly_expense, checkout_child, cancel_visit, update_membership_overtime_rate, list_refundable_payments, record_expense, record_refund, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_set_user_permissions, admin_create_user, admin_set_user_active, admin_reset_user_password, admin_update_user_role, admin_delete_user, delete_pricing_rule, create_pricing_rule, get_active_cash_shift, open_cash_shift, close_cash_shift, admin_audit_log])
+        .invoke_handler(tauri::generate_handler![greet, list_coupons, save_coupon, set_coupon_active, apply_visit_coupon, create_membership_sale, list_bookings, save_booking, update_booking_status, list_cafe_stock_movements, record_cafe_stock_count, list_cafe_expiry_alerts, save_cafe_recipe, list_cafe_recipes, create_cafe_sale, list_cafe_items, save_cafe_item, adjust_cafe_stock, record_cafe_purchase, save_cafe_supplier, list_cafe_suppliers, cancel_membership, record_membership_payment, record_cash_movement, list_monthly_expenses, save_monthly_expense, checkout_child, cancel_visit, update_membership_overtime_rate, list_refundable_payments, record_expense, record_refund, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_set_user_permissions, admin_create_user, admin_set_user_active, admin_reset_user_password, admin_update_user_role, admin_delete_user, delete_pricing_rule, create_pricing_rule, get_active_cash_shift, get_shift_inventory_reconciliation, record_shift_inventory_count, open_cash_shift, close_cash_shift, admin_audit_log])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
