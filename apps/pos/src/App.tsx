@@ -353,8 +353,10 @@ export default function App() {
     event.preventDefault();
     if (!db) return;
 
-    const amount = ruleType === "hourly" ? 0 : Number(ruleAmount);
-    if (!ruleName.trim() || (ruleType !== "hourly" && (!Number.isFinite(amount) || amount < 0)) || !Number.isFinite(Number(ruleDurationHours)) || Number(ruleDurationHours) < 0.25 || Number(ruleDurationHours) > 12 || !Number.isInteger(Number(ruleDurationHours) * 4)) {
+    let amountMinor = 0;
+    try { if (ruleType !== "hourly") amountMinor = egpToMinor(ruleAmount); }
+    catch { setError(tr("Enter a rule name and a valid non-negative price.")); return; }
+    if (!ruleName.trim() || !Number.isFinite(Number(ruleDurationHours)) || Number(ruleDurationHours) < 0.25 || Number(ruleDurationHours) > 12 || !Number.isInteger(Number(ruleDurationHours) * 4)) {
       setError(tr("Enter a rule name and a valid non-negative price."));
       return;
     }
@@ -366,7 +368,7 @@ export default function App() {
       await invoke("create_pricing_rule", {
         name: ruleName.trim(),
         pricingType: ruleType,
-        amountMinor: egpToMinor(amount),
+        amountMinor,
         durationMinutes: Math.round(Number(ruleDurationHours) * 60),
       });
 
@@ -382,9 +384,12 @@ export default function App() {
 
   async function createMembershipPlan(e:FormEvent<HTMLFormElement>) {
     e.preventDefault(); if(!db)return;
-    const hours=Number(planHours), price=Number(planPrice), days=Number(planValidity), overtimeRate=Number(planOvertimeRate);
-    if(!planName.trim()||!Number.isFinite(hours)||hours<=0||!Number.isFinite(price)||price<0||![7,30].includes(days)||!Number.isFinite(overtimeRate)||overtimeRate<=0){setError("راجع اسم الباقة والسعر وعدد الساعات وسعر ساعة الإضافي.");return}
-    try { await db.execute("INSERT INTO local_membership_plans(id,name,price_minor,included_minutes,validity_days,overtime_rate_minor,description,is_active,created_at) VALUES(?,?,?,?,?,?,NULL,1,?)",[makeId(),planName.trim(),egpToMinor(price),Math.round(hours*60),days,egpToMinor(overtimeRate),now()]);setPlanName("");setPlanPrice("");setPlanOvertimeRate("");await refreshData(db);setMessage("تم حفظ الباقة.");setError("") } catch(e){setError(String(e))}
+    const hours=Number(planHours), days=Number(planValidity);
+    let priceMinor:number, overtimeRateMinor:number;
+    try { priceMinor=egpToMinor(planPrice); overtimeRateMinor=egpToMinor(planOvertimeRate); }
+    catch { setError("راجع سعر الباقة وسعر ساعة الإضافي بالجنيه."); return; }
+    if(!planName.trim()||!Number.isFinite(hours)||hours<=0||![7,30].includes(days)||overtimeRateMinor<=0){setError("راجع اسم الباقة والسعر وعدد الساعات وسعر ساعة الإضافي.");return}
+    try { await db.execute("INSERT INTO local_membership_plans(id,name,price_minor,included_minutes,validity_days,overtime_rate_minor,description,is_active,created_at) VALUES(?,?,?,?,?,?,NULL,1,?)",[makeId(),planName.trim(),priceMinor,Math.round(hours*60),days,overtimeRateMinor,now()]);setPlanName("");setPlanPrice("");setPlanOvertimeRate("");await refreshData(db);setMessage("تم حفظ الباقة.");setError("") } catch(e){setError(String(e))}
   }
   async function enrollMembership(e:FormEvent<HTMLFormElement>) {
     e.preventDefault(); if(!db)return;
@@ -433,9 +438,9 @@ export default function App() {
   async function updateMembershipOvertimeRate(m:ChildMembership) {
     const entered=window.prompt(ar?"سعر ساعة الإضافي للباقة بالجنيه:":"Membership overtime hourly rate (EGP):",(m.overtime_rate_minor/100).toFixed(2));
     if(entered===null)return;
-    const value=Number(entered);
-    if(!Number.isFinite(value)||value<=0){setError(ar?"أدخل سعرًا أكبر من صفر.":"Enter a rate greater than zero.");return;}
-    try{await invoke("update_membership_overtime_rate",{planId:m.plan_id,overtimeRateMinor:egpToMinor(value)});if(db)await refreshData(db);setMessage(ar?"تم تحديث سعر الإضافي للباقة.":"Package overtime rate updated.");setError("")}catch(e){setError(String(e))}
+    const rateMinor=tryEgpToMinor(entered);
+    if(rateMinor===null||rateMinor<=0){setError(ar?"أدخل سعرًا أكبر من صفر وبحد أقصى منزلتين عشريتين.":"Enter a positive rate with up to two decimal places.");return;}
+    try{await invoke("update_membership_overtime_rate",{planId:m.plan_id,overtimeRateMinor:rateMinor});if(db)await refreshData(db);setMessage(ar?"تم تحديث سعر الإضافي للباقة.":"Package overtime rate updated.");setError("")}catch(e){setError(String(e))}
   }
   async function checkInMember(m:ChildMembership) {
     if(!db)return;
