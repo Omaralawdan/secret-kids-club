@@ -622,13 +622,13 @@ export default function App() {
         );
       }
 
-      let appliedVisitCoupon:{discountMinor:number;totalMinor:number;allocations:{visitChildId:string;discountMinor:number}[]}|null=null;
-      if (visitCouponCode.trim()) {
-        appliedVisitCoupon=await invoke<{discountMinor:number;totalMinor:number;allocations:{visitChildId:string;discountMinor:number}[]}>('apply_visit_coupon',{visitId,couponCode:visitCouponCode.trim()});
-      }
       if (selectedBookingId) {
         const updatedBooking = await db.execute("UPDATE local_bookings SET status='confirmed' WHERE id=? AND status IN ('booked','confirmed')", [selectedBookingId]);
         if (updatedBooking.rowsAffected !== 1) throw new Error("الحجز لم يعد متاحًا للتأكيد. راجع حالة الحجز.");
+      }
+      let appliedVisitCoupon:{discountMinor:number;totalMinor:number;allocations:{visitChildId:string;discountMinor:number}[]}|null=null;
+      if (visitCouponCode.trim()) {
+        appliedVisitCoupon=await invoke<{discountMinor:number;totalMinor:number;allocations:{visitChildId:string;discountMinor:number}[]}>('apply_visit_coupon',{visitId,couponCode:visitCouponCode.trim()});
       }
       await refreshData(db);
       const visitExpectedCheckout = new Date(Math.max(...childRows.map(row => new Date(timestamp).getTime() + Math.round(row.child.durationHours * 60) * 60000))).toISOString();
