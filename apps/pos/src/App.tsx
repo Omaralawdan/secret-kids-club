@@ -826,6 +826,8 @@ export default function App() {
             ? tr("New visit")
             : screen === "active"
               ? ar ? "الزيارات النشطة" : "Active visits"
+              : screen === "bookings"
+                ? (ar ? "الحجوزات وأعياد الميلاد" : "Bookings & Birthday Parties")
               : screen === "packages"
                 ? (ar ? "الباقات والاشتراكات" : "Packages & Memberships")
               : screen === "pricing"
@@ -843,6 +845,8 @@ export default function App() {
               ? ar
                 ? "تابع الأطفال الموجودين وسجّل خروج كل طفل عند مغادرته."
                 : "Track children currently in the club and check each child out individually."
+              : screen === "bookings"
+                ? (ar ? "تنظيم مواعيد الزيارات وحفلات أعياد الميلاد." : "Schedule visits and birthday parties.")
               : screen === "packages"
                 ? (ar ? "متابعة أرصدة الباقات وحالة اشتراك كل طفل." : "View package balances and membership status.")
               : screen === "pricing"
