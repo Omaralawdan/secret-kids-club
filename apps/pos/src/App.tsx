@@ -75,8 +75,10 @@ function formatDuration(minutes: number, language: Language) {
   return language === "ar" ? `${formatted} ساعة` : `${formatted} h`;
 }
 
+type ReceiptChildLine = { name:string; bookedMinutes:number; baseAmountMinor:number; discountAmountMinor:number; overtimeMinutes?:number; overtimeAmountMinor?:number; overtimeWaived?:boolean; overtimeWaiverReason?:string|null; totalAmountMinor?:number };
 type ReceiptData = {
   visitNumber: number; guardianName: string; guardianPhone: string; childName: string;
+  children?: ReceiptChildLine[];
   checkedInAt: string; checkedOutAt?: string | null; expectedCheckoutAt?: string | null; bookedMinutes: number; actualMinutes?: number | null; paymentMethod?: string;
   baseAmountMinor: number; discountAmountMinor: number; overtimeMinutes?: number | null;
   overtimeAmountMinor?: number | null; overtimeWaived?: boolean; overtimeWaiverReason?: string | null; totalAmountMinor?: number | null;
@@ -107,16 +109,24 @@ function buildReceiptHtml(data: ReceiptData, language: Language): string {
   html += row(label("Visit date", "تاريخ الزيارة"), date(data.checkedInAt));
   html += row(label("Guardian", "اسم المرافق"), escapeReceipt(data.guardianName));
   html += row(label("Guardian phone", "تليفون المرافق"), escapeReceipt(data.guardianPhone));
-  html += row(label("Child", "اسم الطفل"), escapeReceipt(data.childName));
+  if (data.children?.length) {
+    html += row(label("Children count", "عدد الأطفال"), String(data.children.length));
+    for (const child of data.children) html += row(escapeReceipt(child.name), escapeReceipt(formatDuration(child.bookedMinutes, language)) + " · " + escapeReceipt(money(child.baseAmountMinor, language)));
+  } else html += row(label("Child", "اسم الطفل"), escapeReceipt(data.childName));
   html += row(label("Check-in", "وقت الدخول"), date(data.checkedInAt));
   if (!finalReceipt && data.expectedCheckoutAt) html += row(label("Expected check-out", "وقت الخروج المتوقع"), date(data.expectedCheckoutAt));
   if (finalReceipt) html += row(label("Check-out", "وقت الخروج"), date(data.checkedOutAt || ""));
   html += row(label("Booked duration", "المدة المحجوزة"), escapeReceipt(formatDuration(data.bookedMinutes, language)));
-  if (finalReceipt) html += row(label("Actual duration", "المدة الفعلية"), escapeReceipt(formatDuration(data.actualMinutes || 0, language)));
+  // Actual elapsed duration is intentionally not shown on the customer receipt.
   html += '<div class="section">' + label("Payment details", "تفاصيل الحساب") + '</div>';
   if (data.paymentMethod) html += row(label("Payment method", "طريقة الدفع"), escapeReceipt(({cash:"Cash",instapay:"InstaPay",wallet:"E-Wallet"} as Record<string,string>)[data.paymentMethod] || data.paymentMethod));
-  html += amount(label("Base price", "السعر الأساسي"), data.baseAmountMinor);
-  html += amount(label("Discount", "الخصم"), data.discountAmountMinor);
+  if (data.children?.length) {
+    html += amount(label("Children subtotal", "إجمالي أسعار الأطفال"), data.children.reduce((sum, child) => sum + child.baseAmountMinor, 0));
+    html += amount(label("Total discount", "إجمالي الخصم"), data.children.reduce((sum, child) => sum + child.discountAmountMinor, 0));
+  } else {
+    html += amount(label("Base price", "السعر الأساسي"), data.baseAmountMinor);
+    html += amount(label("Discount", "الخصم"), data.discountAmountMinor);
+  }
   if (finalReceipt) { html += row(label("Overtime duration", "مدة الوقت الإضافي"), escapeReceipt(formatDuration(data.overtimeMinutes || 0, language))); html += amount(label(data.overtimeWaived ? "Overtime amount waived" : "Overtime amount", data.overtimeWaived ? "قيمة الإضافي المعفاة" : "قيمة الوقت الإضافي"), data.overtimeAmountMinor || 0); if (data.overtimeWaived) html += row(label("Waiver reason", "سبب الإعفاء"), escapeReceipt(data.overtimeWaiverReason || "")); }
   html += '<div class="row total"><span>' + label(finalReceipt ? "FINAL TOTAL" : "INITIAL ESTIMATE", finalReceipt ? "الإجمالي النهائي" : "السعر المبدئي") + '</span><strong>' + escapeReceipt(money(finalReceipt ? (data.totalAmountMinor || 0) : (data.baseAmountMinor - data.discountAmountMinor), language)) + '</strong></div>';
   html += '<div class="section">' + label("Receipt details", "بيانات الإيصال") + '</div>' + row(label("Issued by", "مُصدر الإيصال"), escapeReceipt(data.issuer || label("Cashier", "الكاشير")));
