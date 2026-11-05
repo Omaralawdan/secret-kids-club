@@ -650,6 +650,33 @@ fn open_cash_shift(app:tauri::AppHandle,opening_float_minor:i64)->Result<Value,S
  tx.commit().map_err(|e|e.to_string())?;
  Ok(json!({"id":id,"openedAt":now}))
 }
+fn shift_payment_breakdown(db:&Connection,id:&str)->Result<Value,String>{
+    db.query_row(
+        "SELECT
+          COALESCE((SELECT SUM(p.amount_minor) FROM local_payments p WHERE p.cash_session_id=? AND p.visit_id IS NOT NULL AND COALESCE(p.method_label,p.method)='cash' AND p.status='confirmed'),0),
+          COALESCE((SELECT SUM(p.amount_minor) FROM local_payments p WHERE p.cash_session_id=? AND p.visit_id IS NOT NULL AND COALESCE(p.method_label,p.method)='instapay' AND p.status='confirmed'),0),
+          COALESCE((SELECT SUM(p.amount_minor) FROM local_payments p WHERE p.cash_session_id=? AND p.visit_id IS NOT NULL AND COALESCE(p.method_label,p.method)='wallet' AND p.status='confirmed'),0),
+          COALESCE((SELECT SUM(p.amount_minor) FROM local_payments p WHERE p.cash_session_id=? AND p.visit_id IS NOT NULL AND COALESCE(p.method_label,p.method)='visa' AND p.status='confirmed'),0),
+          COALESCE((SELECT SUM(p.amount_minor) FROM local_payments p WHERE p.cash_session_id=? AND p.visit_id IS NOT NULL AND COALESCE(p.method_label,p.method)='other' AND p.status='confirmed'),0),
+          COALESCE((SELECT SUM(p.amount_minor) FROM local_payments p WHERE p.cash_session_id=? AND p.sale_id IS NOT NULL AND EXISTS(SELECT 1 FROM local_sale_items si WHERE si.sale_id=p.sale_id AND si.inventory_item_id IS NOT NULL) AND COALESCE(p.method_label,p.method)='cash' AND p.status='confirmed'),0),
+          COALESCE((SELECT SUM(p.amount_minor) FROM local_payments p WHERE p.cash_session_id=? AND p.sale_id IS NOT NULL AND EXISTS(SELECT 1 FROM local_sale_items si WHERE si.sale_id=p.sale_id AND si.inventory_item_id IS NOT NULL) AND COALESCE(p.method_label,p.method)='instapay' AND p.status='confirmed'),0),
+          COALESCE((SELECT SUM(p.amount_minor) FROM local_payments p WHERE p.cash_session_id=? AND p.sale_id IS NOT NULL AND EXISTS(SELECT 1 FROM local_sale_items si WHERE si.sale_id=p.sale_id AND si.inventory_item_id IS NOT NULL) AND COALESCE(p.method_label,p.method)='wallet' AND p.status='confirmed'),0),
+          COALESCE((SELECT SUM(p.amount_minor) FROM local_payments p WHERE p.cash_session_id=? AND p.sale_id IS NOT NULL AND EXISTS(SELECT 1 FROM local_sale_items si WHERE si.sale_id=p.sale_id AND si.inventory_item_id IS NOT NULL) AND COALESCE(p.method_label,p.method)='visa' AND p.status='confirmed'),0),
+          COALESCE((SELECT SUM(p.amount_minor) FROM local_payments p WHERE p.cash_session_id=? AND p.sale_id IS NOT NULL AND EXISTS(SELECT 1 FROM local_sale_items si WHERE si.sale_id=p.sale_id AND si.inventory_item_id IS NOT NULL) AND COALESCE(p.method_label,p.method)='other' AND p.status='confirmed'),0),
+          COALESCE((SELECT SUM(p.amount_minor) FROM local_payments p WHERE p.cash_session_id=? AND p.sale_id IS NOT NULL AND EXISTS(SELECT 1 FROM local_child_memberships m WHERE m.sale_id=p.sale_id) AND COALESCE(p.method_label,p.method)='cash' AND p.status='confirmed'),0),
+          COALESCE((SELECT SUM(p.amount_minor) FROM local_payments p WHERE p.cash_session_id=? AND p.sale_id IS NOT NULL AND EXISTS(SELECT 1 FROM local_child_memberships m WHERE m.sale_id=p.sale_id) AND COALESCE(p.method_label,p.method)='instapay' AND p.status='confirmed'),0),
+          COALESCE((SELECT SUM(p.amount_minor) FROM local_payments p WHERE p.cash_session_id=? AND p.sale_id IS NOT NULL AND EXISTS(SELECT 1 FROM local_child_memberships m WHERE m.sale_id=p.sale_id) AND COALESCE(p.method_label,p.method)='wallet' AND p.status='confirmed'),0),
+          COALESCE((SELECT SUM(p.amount_minor) FROM local_payments p WHERE p.cash_session_id=? AND p.sale_id IS NOT NULL AND EXISTS(SELECT 1 FROM local_child_memberships m WHERE m.sale_id=p.sale_id) AND COALESCE(p.method_label,p.method)='visa' AND p.status='confirmed'),0),
+          COALESCE((SELECT SUM(p.amount_minor) FROM local_payments p WHERE p.cash_session_id=? AND p.sale_id IS NOT NULL AND EXISTS(SELECT 1 FROM local_child_memberships m WHERE m.sale_id=p.sale_id) AND COALESCE(p.method_label,p.method)='other' AND p.status='confirmed'),0)",
+        params![id,id,id,id,id,id,id,id,id,id,id,id,id,id,id],
+        |r|Ok(json!({
+          "kidsAreaCashMinor":r.get::<_,i64>(0)?,"kidsAreaInstapayMinor":r.get::<_,i64>(1)?,"kidsAreaWalletMinor":r.get::<_,i64>(2)?,"kidsAreaVisaMinor":r.get::<_,i64>(3)?,"kidsAreaOtherMinor":r.get::<_,i64>(4)?,
+          "cafeCashMinor":r.get::<_,i64>(5)?,"cafeInstapayMinor":r.get::<_,i64>(6)?,"cafeWalletMinor":r.get::<_,i64>(7)?,"cafeVisaMinor":r.get::<_,i64>(8)?,"cafeOtherMinor":r.get::<_,i64>(9)?,
+          "packagesCashMinor":r.get::<_,i64>(10)?,"packagesInstapayMinor":r.get::<_,i64>(11)?,"packagesWalletMinor":r.get::<_,i64>(12)?,"packagesVisaMinor":r.get::<_,i64>(13)?,"packagesOtherMinor":r.get::<_,i64>(14)?
+        }))
+    ).map_err(|e|e.to_string())
+}
+
 #[tauri::command]
 fn close_cash_shift(app:tauri::AppHandle,counted_cash_minor:i64,variance_reason:String)->Result<Value,String>{
  if counted_cash_minor<0{return Err("النقدية المعدودة غير صحيحة.".into())}
@@ -679,6 +706,7 @@ fn close_cash_shift(app:tauri::AppHandle,counted_cash_minor:i64,variance_reason:
  }
  let inventory_count:i64=tx.query_row("SELECT COUNT(*) FROM local_shift_inventory_counts WHERE cash_session_id=?",params![id],|r|r.get(0)).map_err(|e|e.to_string())?;
  let inventory_variance_count:i64=tx.query_row("SELECT COUNT(*) FROM local_shift_inventory_counts WHERE cash_session_id=? AND variance_quantity_milli<>0",params![id],|r|r.get(0)).map_err(|e|e.to_string())?;
+ let breakdown=shift_payment_breakdown(&tx,&id)?;
  let sales:i64=tx.query_row("SELECT COALESCE(SUM(amount_minor),0) FROM local_payments WHERE cash_session_id=? AND method='cash' AND status='confirmed'",params![id],|r|r.get(0)).map_err(|e|e.to_string())?;
  let expenses:i64=tx.query_row("SELECT COALESCE(SUM(amount_minor),0) FROM local_expenses WHERE cash_session_id=? AND method='cash'",params![id],|r|r.get(0)).map_err(|e|e.to_string())?;
  let refunds:i64=tx.query_row("SELECT COALESCE(SUM(amount_minor),0) FROM local_refunds WHERE cash_session_id=? AND method='cash'",params![id],|r|r.get(0)).map_err(|e|e.to_string())?;
@@ -690,7 +718,7 @@ fn close_cash_shift(app:tauri::AppHandle,counted_cash_minor:i64,variance_reason:
  let changed=tx.execute("UPDATE local_cash_sessions SET closed_by=?,closed_at=?,counted_cash_minor=?,expected_cash_minor=?,variance_minor=?,variance_reason=? WHERE id=? AND closed_at IS NULL",params![actor,now,counted_cash_minor,expected,variance,variance_reason.trim(),id]).map_err(|e|e.to_string())?;
  if changed!=1{return Err("تم إغلاق الوردية بالفعل أو تغيرت حالتها.".into())}
  tx.commit().map_err(|e|e.to_string())?;
- Ok(json!({"id":id,"expectedCashMinor":expected,"countedCashMinor":counted_cash_minor,"varianceMinor":variance,"inventoryCount":inventory_count,"inventoryVarianceCount":inventory_variance_count,"closedAt":now}))
+ Ok(json!({"id":id,"openingFloatMinor":float,"cashExpensesMinor":expenses,"cashRefundsMinor":refunds,"cashAdditionsMinor":additions,"cashRemovalsMinor":removals,"expectedCashMinor":expected,"countedCashMinor":counted_cash_minor,"varianceMinor":variance,"inventoryCount":inventory_count,"inventoryVarianceCount":inventory_variance_count,"closedAt":now,"kidsAreaCashMinor":breakdown["kidsAreaCashMinor"],"kidsAreaInstapayMinor":breakdown["kidsAreaInstapayMinor"],"kidsAreaWalletMinor":breakdown["kidsAreaWalletMinor"],"kidsAreaVisaMinor":breakdown["kidsAreaVisaMinor"],"kidsAreaOtherMinor":breakdown["kidsAreaOtherMinor"],"cafeCashMinor":breakdown["cafeCashMinor"],"cafeInstapayMinor":breakdown["cafeInstapayMinor"],"cafeWalletMinor":breakdown["cafeWalletMinor"],"cafeVisaMinor":breakdown["cafeVisaMinor"],"cafeOtherMinor":breakdown["cafeOtherMinor"],"packagesCashMinor":breakdown["packagesCashMinor"],"packagesInstapayMinor":breakdown["packagesInstapayMinor"],"packagesWalletMinor":breakdown["packagesWalletMinor"],"packagesVisaMinor":breakdown["packagesVisaMinor"],"packagesOtherMinor":breakdown["packagesOtherMinor"]}))
 }
 #[tauri::command]
 fn get_shift_inventory_reconciliation(app:tauri::AppHandle)->Result<Vec<Value>,String>{
