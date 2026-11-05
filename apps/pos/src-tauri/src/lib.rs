@@ -424,7 +424,7 @@ fn setup_first_admin(app:tauri::AppHandle,username:String,display_name:String,pa
  let mut db=auth_db(&app)?;let tx=db.transaction().map_err(|e|e.to_string())?;let count:i64=tx.query_row("SELECT COUNT(*) FROM local_users WHERE username IS NOT NULL AND password_hash IS NOT NULL",[],|r|r.get(0)).map_err(|e|e.to_string())?;if count>0{return Err("تم إعداد المدير بالفعل.".into())}
  let mut salt=[0u8;16];rand::thread_rng().fill_bytes(&mut salt);let id=uuid::Uuid::new_v4().to_string();let now=Utc::now().to_rfc3339();
  tx.execute("INSERT INTO local_users(id,display_name,role_codes_json,permissions_json,is_active,last_authenticated_at,username,password_salt,password_hash,created_at) VALUES(?,?,'[\"admin\"]','[\"all\"]',1,?,?,?,?,?)",params![id,display_name.trim(),now,username.trim(),hex::encode(salt),hash_password(&password,&salt),now]).map_err(|e|e.to_string())?;
- tx.execute("UPDATE local_session SET actor_user_id=?,authenticated_at=? WHERE singleton_id=1",params![id,now]).map_err(|e|e.to_string())?;tx.commit().map_err(|e|e.to_string())?;Ok(json!({"id":id,"name":display_name.trim(),"roles":"[\"admin\"]"}))
+ tx.execute("UPDATE local_session SET actor_user_id=?,authenticated_at=? WHERE singleton_id=1",params![id,now]).map_err(|e|e.to_string())?;tx.commit().map_err(|e|e.to_string())?;Ok(json!({"id":id,"name":display_name.trim(),"roles":"[\"admin\"]","permissions":"[\"all\"]"}))
 }
 #[tauri::command]
 fn login_user(app:tauri::AppHandle,username:String,password:String)->Result<Value,String>{
