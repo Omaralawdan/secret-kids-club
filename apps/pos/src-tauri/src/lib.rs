@@ -902,7 +902,7 @@ fn list_cafe_recipes(app:tauri::AppHandle)->Result<Vec<Value>,String>{
 }
 
 #[tauri::command]
-fn create_cafe_sale(app:tauri::AppHandle,items:Vec<Value>,payments:Vec<Value>)->Result<Value,String>{
+fn create_cafe_sale(app:tauri::AppHandle,items:Vec<Value>,payments:Vec<Value>,coupon_code:Option<String>)->Result<Value,String>{
     if items.is_empty()||payments.is_empty(){return Err("أضف أصنافًا وحدد دفعة واحدة على الأقل.".into())}
     let mut db=auth_db(&app)?;let(actor,_)=require_role(&db,&["admin","manager","cashier"])?;require_permission(&db,"cafe")?;
     let tx=db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
@@ -933,8 +933,25 @@ fn create_cafe_sale(app:tauri::AppHandle,items:Vec<Value>,payments:Vec<Value>)->
         }
         prepared.push((item_id.to_string(),name,qty,price,line_total,recipe_id));
     }
+
+    let now=Utc::now().to_rfc3339();
+    let mut coupon_id:Option<String>=None;
+    let mut discount_minor:i64=0;
+    if let Some(raw_code)=coupon_code.as_deref().filter(|v|!v.trim().is_empty()){
+        require_permission(&db,"pricing")?;
+        let code=raw_code.trim().to_ascii_uppercase();
+        let coupon:Option<(String,String,i64,Option<i64>,Option<i64>,i64,Option<String>,Option<String>,i64)>=tx.query_row("SELECT id,discount_type,discount_value,max_discount_minor,usage_limit,used_count,starts_at,ends_at,is_active FROM local_coupons WHERE code=? COLLATE NOCASE",params![code],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?))).optional().map_err(|e|e.to_string())?;
+        let (id,kind,value,max_discount,usage_limit,used,start,end,active)=coupon.ok_or("كود الخصم غير موجود.")?;
+        if active!=1{return Err("كود الخصم غير نشط.".into())}
+        if usage_limit.map(|limit|used>=limit).unwrap_or(false){return Err("تم استنفاد عدد مرات استخدام الكوبون.".into())}
+        if start.as_deref().map(|v|now<v).unwrap_or(false)||end.as_deref().map(|v|now>v).unwrap_or(false){return Err("الكوبون خارج فترة الصلاحية.".into())}
+        discount_minor=if kind=="percent"{subtotal.checked_mul(value).ok_or("قيمة الخصم كبيرة جدًا.")?/10000}else if kind=="fixed"{value.min(subtotal)}else{return Err("نوع الخصم غير صالح.".into())};
+        if let Some(cap)=max_discount{discount_minor=discount_minor.min(cap)}
+        coupon_id=Some(id);
+    }
+    let total_minor=subtotal.saturating_sub(discount_minor);
     let sale_id=uuid::Uuid::new_v4().to_string();let now=Utc::now().to_rfc3339();let sale_no:i64=tx.query_row("SELECT COALESCE(MAX(sale_number_local),0)+1 FROM local_sales",[],|r|r.get(0)).map_err(|e|e.to_string())?;
-    tx.execute("INSERT INTO local_sales(id,sale_number_local,visit_id,status,subtotal_minor,discount_minor,total_minor,cashier_user_id,created_at) VALUES(?,?,NULL,'completed',?,0,?,?,?)",params![sale_id,sale_no,subtotal,subtotal,actor,now]).map_err(|e|e.to_string())?;
+    tx.execute("INSERT INTO local_sales(id,sale_number_local,visit_id,status,subtotal_minor,discount_minor,total_minor,cashier_user_id,created_at,coupon_id) VALUES(?,?,NULL,'completed',?,?,?,?,?,?)",params![sale_id,sale_no,subtotal,discount_minor,total_minor,actor,now,coupon_id]).map_err(|e|e.to_string())?;
     for (item_id,name,qty,price,line_total,recipe_id) in prepared.iter(){
         tx.execute("INSERT INTO local_sale_items(id,sale_id,item_type,inventory_item_id,description_snapshot,quantity_milli,unit_price_minor,line_total_minor) VALUES(?,?,'cafe_product',?,?,?,?,?)",params![uuid::Uuid::new_v4().to_string(),sale_id,item_id,name,qty,price,line_total]).map_err(|e|e.to_string())?;
         if recipe_id.is_empty(){
@@ -956,13 +973,14 @@ fn create_cafe_sale(app:tauri::AppHandle,items:Vec<Value>,payments:Vec<Value>)->
         collected=collected.checked_add(amount).ok_or("إجمالي الدفعات كبير جدًا.")?;
         normalized_payments.push((method.to_string(),amount));
     }
-    if collected!=subtotal{return Err(format!("مجموع الدفعات ({}) يجب أن يساوي إجمالي الفاتورة ({}).",collected,subtotal))}
+    if collected!=total_minor{return Err(format!("مجموع الدفعات ({}) يجب أن يساوي صافي الفاتورة بعد الخصم ({}).",collected,total_minor))}
     for (method,amount) in normalized_payments.iter(){
         let stored_method=if ["visa","other"].contains(&method.as_str()){"wallet"}else{method.as_str()};
         tx.execute("INSERT INTO local_payments(id,sale_id,visit_id,method,method_label,status,amount_minor,received_by,created_at,cash_session_id) VALUES(?,?,NULL,?,?,'confirmed',?,?,?,?)",params![uuid::Uuid::new_v4().to_string(),sale_id,stored_method,method,amount,actor,now,shift_id]).map_err(|e|e.to_string())?;
     }
-    tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'cafe_sale_created','sale',?,?,?)",params![actor,sale_id,json!({"sale_number":sale_no,"total_minor":subtotal,"payments":normalized_payments.iter().map(|(method,amount)|json!({"method":method,"amount_minor":amount})).collect::<Vec<_>>(),"cash_session_id":shift_id}).to_string(),now]).map_err(|e|e.to_string())?;
-    tx.commit().map_err(|e|e.to_string())?;Ok(json!({"saleId":sale_id,"saleNumber":sale_no,"totalMinor":subtotal,"createdAt":now,"payments":normalized_payments.iter().map(|(method,amount)|json!({"method":method,"amountMinor":amount})).collect::<Vec<_>>(),"items":prepared.iter().map(|(_,name,qty,_,line_total,_)|json!({"name":name,"quantityMilli":qty,"lineTotalMinor":line_total})).collect::<Vec<_>>()}))
+    if let Some(id)=coupon_id.as_deref(){tx.execute("UPDATE local_coupons SET used_count=used_count+1 WHERE id=?",params![id]).map_err(|e|e.to_string())?;}
+    tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'cafe_sale_created','sale',?,?,?)",params![actor,sale_id,json!({"sale_number":sale_no,"subtotal_minor":subtotal,"discount_minor":discount_minor,"total_minor":total_minor,"payments":normalized_payments.iter().map(|(method,amount)|json!({"method":method,"amount_minor":amount})).collect::<Vec<_>>(),"cash_session_id":shift_id}).to_string(),now]).map_err(|e|e.to_string())?;
+    tx.commit().map_err(|e|e.to_string())?;Ok(json!({"saleId":sale_id,"saleNumber":sale_no,"subtotalMinor":subtotal,"discountMinor":discount_minor,"totalMinor":total_minor,"couponCode":coupon_code,"createdAt":now,"payments":normalized_payments.iter().map(|(method,amount)|json!({"method":method,"amountMinor":amount})).collect::<Vec<_>>(),"items":prepared.iter().map(|(_,name,qty,_,line_total,_)|json!({"name":name,"quantityMilli":qty,"lineTotalMinor":line_total})).collect::<Vec<_>>()}))
 }
 
 
@@ -977,6 +995,25 @@ fn consume_expiry_batches(tx:&rusqlite::Transaction<'_>,item_id:&str,quantity_mi
     Ok(())
 }
 
+
+#[tauri::command]
+fn list_coupons(app:tauri::AppHandle)->Result<Vec<Value>,String>{
+    let db=auth_db(&app)?;require_permission(&db,"pricing")?;require_role(&db,&["admin","manager"])?;
+    let mut st=db.prepare("SELECT id,code,description,discount_type,discount_value,max_discount_minor,usage_limit,used_count,starts_at,ends_at,is_active FROM local_coupons ORDER BY created_at DESC").map_err(|e|e.to_string())?;
+    let rows=st.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"code":r.get::<_,String>(1)?,"description":r.get::<_,String>(2)?,"discountType":r.get::<_,String>(3)?,"discountValue":r.get::<_,i64>(4)?,"maxDiscountMinor":r.get::<_,Option<i64>>(5)?,"usageLimit":r.get::<_,Option<i64>>(6)?,"usedCount":r.get::<_,i64>(7)?,"startsAt":r.get::<_,Option<String>>(8)?,"endsAt":r.get::<_,Option<String>>(9)?,"active":r.get::<_,i64>(10)?==1}))).map_err(|e|e.to_string())?;
+    rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())
+}
+#[tauri::command]
+fn save_coupon(app:tauri::AppHandle,code:String,description:String,discount_type:String,discount_value:i64,max_discount_minor:Option<i64>,usage_limit:Option<i64>,starts_at:Option<String>,ends_at:Option<String>)->Result<String,String>{
+    let normalized=code.trim().to_ascii_uppercase();
+    if normalized.len()<3||normalized.len()>32||!normalized.chars().all(|c|c.is_ascii_alphanumeric()||c=='-')||!["percent","fixed"].contains(&discount_type.as_str())||discount_value<=0||(discount_type=="percent"&&discount_value>10000)||max_discount_minor.map(|v|v<=0).unwrap_or(false)||usage_limit.map(|v|v<=0).unwrap_or(false){return Err("راجع كود الخصم ونوعه وقيمته وحدود الاستخدام.".into())}
+    if let (Some(start),Some(end))=(&starts_at,&ends_at){if start>=end{return Err("تاريخ انتهاء الكوبون يجب أن يكون بعد تاريخ البداية.".into())}}
+    let mut db=auth_db(&app)?;require_permission(&db,"pricing")?;let(actor,_)=require_role(&db,&["admin","manager"])?;
+    let id=uuid::Uuid::new_v4().to_string();let now=Utc::now().to_rfc3339();
+    db.execute("INSERT INTO local_coupons(id,code,description,discount_type,discount_value,max_discount_minor,usage_limit,starts_at,ends_at,is_active,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?,1,?,?)",params![id,normalized,description.trim(),discount_type,discount_value,max_discount_minor,usage_limit,starts_at,ends_at,actor,now]).map_err(|e|if e.to_string().contains("UNIQUE"){"كود الخصم مستخدم بالفعل.".to_string()}else{e.to_string()})?;
+    db.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'coupon_created','coupon',?,?,?)",params![actor,id,json!({"code":normalized,"discount_type":discount_type,"discount_value":discount_value}).to_string(),now]).map_err(|e|e.to_string())?;
+    Ok(id)
+}
 #[tauri::command]
 fn list_bookings(app:tauri::AppHandle)->Result<Vec<Value>,String>{
     let db=auth_db(&app)?;
@@ -1130,6 +1167,7 @@ pub fn run() {
         Migration { version: 14, description: "extended_payment_methods", sql: include_str!("../migrations/014_extended_payment_methods.sql"), kind: MigrationKind::Up },
         Migration { version: 15, description: "membership_partial_payments", sql: include_str!("../migrations/015_membership_partial_payments.sql"), kind: MigrationKind::Up },
         Migration { version: 16, description: "bookings_and_birthday_parties", sql: include_str!("../migrations/016_bookings_and_birthday_parties.sql"), kind: MigrationKind::Up },
+        Migration { version: 17, description: "coupons", sql: include_str!("../migrations/017_coupons.sql"), kind: MigrationKind::Up },
     ];
 
     tauri::Builder::default()
@@ -1139,7 +1177,7 @@ pub fn run() {
                 .add_migrations("sqlite:secret-kids-club.db", migrations)
                 .build(),
         )
-        .invoke_handler(tauri::generate_handler![greet, list_bookings, save_booking, update_booking_status, list_cafe_stock_movements, record_cafe_stock_count, list_cafe_expiry_alerts, save_cafe_recipe, list_cafe_recipes, create_cafe_sale, list_cafe_items, save_cafe_item, adjust_cafe_stock, record_cafe_purchase, save_cafe_supplier, list_cafe_suppliers, cancel_membership, record_membership_payment, record_cash_movement, list_monthly_expenses, save_monthly_expense, checkout_child, cancel_visit, update_membership_overtime_rate, list_refundable_payments, record_expense, record_refund, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_set_user_permissions, admin_create_user, admin_set_user_active, admin_reset_user_password, admin_update_user_role, admin_delete_user, delete_pricing_rule, create_pricing_rule, get_active_cash_shift, open_cash_shift, close_cash_shift, admin_audit_log])
+        .invoke_handler(tauri::generate_handler![greet, list_coupons, save_coupon, list_bookings, save_booking, update_booking_status, list_cafe_stock_movements, record_cafe_stock_count, list_cafe_expiry_alerts, save_cafe_recipe, list_cafe_recipes, create_cafe_sale, list_cafe_items, save_cafe_item, adjust_cafe_stock, record_cafe_purchase, save_cafe_supplier, list_cafe_suppliers, cancel_membership, record_membership_payment, record_cash_movement, list_monthly_expenses, save_monthly_expense, checkout_child, cancel_visit, update_membership_overtime_rate, list_refundable_payments, record_expense, record_refund, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_set_user_permissions, admin_create_user, admin_set_user_active, admin_reset_user_password, admin_update_user_role, admin_delete_user, delete_pricing_rule, create_pricing_rule, get_active_cash_shift, open_cash_shift, close_cash_shift, admin_audit_log])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
