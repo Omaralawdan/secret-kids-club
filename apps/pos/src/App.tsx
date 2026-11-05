@@ -26,6 +26,7 @@ type ChildDraft = {
   ruleId: string;
   durationHours: number;
   hourlyRateMinor: number | null;
+  priceMinor: number | null;
 };
 
 type Screen = "reception" | "active" | "pricing" | "settings" | "reports" | "admin";
@@ -164,7 +165,7 @@ export default function App() {
   const [customerLookupMessage, setCustomerLookupMessage] = useState("");
   const [previousChildren, setPreviousChildren] = useState<{name:string;lastVisit:string}[]>([]);
   const [children, setChildren] = useState<ChildDraft[]>([
-    { key: makeId(), name: "", ruleId: "", durationHours: 1, hourlyRateMinor: null },
+    { key: makeId(), name: "", ruleId: "", durationHours: 1, hourlyRateMinor: null, priceMinor: null },
   ]);
 
   const [ruleName, setRuleName] = useState("");
@@ -277,13 +278,14 @@ export default function App() {
 
   function updateChild(
     key: string,
-    field: "name" | "ruleId" | "durationHours" | "hourlyRateMinor",
+    field: "name" | "ruleId" | "durationHours" | "hourlyRateMinor" | "priceMinor",
     value: string | number | null
   ) {
     setChildren((current) =>
       current.map((child) => {
         if (child.key !== key) return child;
         if (field === "durationHours") return { ...child, durationHours: Number(value) };
+        if (field === "priceMinor") return { ...child, priceMinor: value === null ? null : Number(value) };
         if (field === "hourlyRateMinor") {
           const rate = value === null ? null : Number(value);
           return { ...child, hourlyRateMinor: rate };
@@ -300,7 +302,7 @@ export default function App() {
   function addChild() {
     setChildren((current) => [
       ...current,
-      { key: makeId(), name: "", ruleId: "", durationHours: 1, hourlyRateMinor: null },
+      { key: makeId(), name: "", ruleId: "", durationHours: 1, hourlyRateMinor: null, priceMinor: null },
     ]);
   }
 
@@ -314,11 +316,7 @@ export default function App() {
     const rule = rules.find((item) => item.id === child.ruleId);
     if (!rule) return 0;
 
-    if (rule.pricing_type === "hourly") {
-      return child.hourlyRateMinor === null ? 0 : Math.round(child.hourlyRateMinor * child.durationHours);
-    }
-
-    return rule.amount_minor;
+    return child.priceMinor === null ? 0 : Math.round(child.priceMinor);
   }
 
   const total = children.reduce((sum, child) => sum + priceFor(child), 0);
@@ -441,13 +439,14 @@ export default function App() {
           child.durationHours < 0.25 ||
           child.durationHours > 12 ||
           !Number.isInteger(child.durationHours * 4) ||
+          (child.priceMinor === null || !Number.isFinite(child.priceMinor) || child.priceMinor < 0) ||
           (child.hourlyRateMinor === null || !Number.isFinite(child.hourlyRateMinor) || child.hourlyRateMinor <= 0)
       )
     ) {
       setError(
         ar
-          ? "أدخل اسم كل طفل وحدد التسعير وسعر ساعة الإضافي يدويًا، والمدة من 0.25 إلى 12 ساعة."
-          : "Enter each child's name, pricing type, manual overtime hourly rate, and duration from 0.25 to 12 hours."
+          ? "أدخل اسم كل طفل وسعره يدويًا وسعر ساعة الإضافي، والمدة من 0.25 إلى 12 ساعة."
+          : "Enter each child's name and individual price, overtime hourly rate, and duration from 0.25 to 12 hours."
       );
       return;
     }
@@ -588,7 +587,7 @@ export default function App() {
       setGuardianPhone("");
       setGuardianRelation("Mother");
       setChildren([
-        { key: makeId(), name: "", ruleId: "", durationHours: 1, hourlyRateMinor: null },
+        { key: makeId(), name: "", ruleId: "", durationHours: 1, hourlyRateMinor: null, priceMinor: null },
       ]);
       setMessage(
         ar
@@ -990,6 +989,7 @@ export default function App() {
                         {rules.map((rule) => <option key={rule.id} value={rule.id}>{rule.name} · {tr(rule.pricing_type)}</option>)}
                       </select>
                     </label>
+                    <label className="child-pricing">{ar ? "سعر الطفل (جنيه)" : "Child price (EGP)"}<input type="number" min="0" step="0.01" required value={child.priceMinor === null ? "" : (child.priceMinor / 100).toFixed(2)} onChange={e => updateChild(child.key, "priceMinor", e.target.value === "" ? null : Math.round(Number(e.target.value) * 100))} placeholder={ar ? "اكتب سعر هذا الطفل" : "Enter this child's price"} /></label>
                     <label className="booked-hours-field">
                       {ar ? "مدة الحجز (بالساعات)" : "Booked duration (hours)"}
                       <input
@@ -1001,11 +1001,7 @@ export default function App() {
                         step="0.25"
                         onChange={(e) => updateChild(child.key, "durationHours", Number(e.target.value))}
                       />
-                      <span className="muted">
-                        {selected?.pricing_type === "hourly"
-                          ? (ar ? "السعر يتغير حسب عدد الساعات" : "Price is multiplied by booked hours")
-                          : (ar ? "السعر الأساسي ثابت؛ الإضافي بالدقيقة متاح للتسعير بالساعة فقط" : "Base price stays fixed; per-minute overtime is available for hourly pricing only")}
-                      </span>
+                      <span className="muted">{ar ? "المدة مستقلة لكل طفل؛ السعر الأساسي الذي أدخلته لهذا الطفل لا يتغير مع الأطفال الآخرين." : "Duration is set per child; this child's manually entered base price is independent of other children."}</span>
                     </label>
                     {selected && <label className="child-pricing">{ar ? "سعر الساعة / ساعة الإضافي (جنيه)" : "Hourly / overtime rate (EGP)"}<input type="number" min="0.01" step="0.01" required value={child.hourlyRateMinor === null ? "" : (child.hourlyRateMinor / 100).toFixed(2)} onChange={e => updateChild(child.key, "hourlyRateMinor", e.target.value === "" ? null : Math.round(Number(e.target.value) * 100))} placeholder={ar ? "اكتب سعر الساعة" : "Enter hourly rate"} /><span className="muted">{selected.pricing_type === "hourly" ? (ar ? "يُستخدم لحساب السعر الأساسي والوقت الإضافي." : "Used for the booked hourly price and overtime.") : (ar ? "يُستخدم لحساب أي وقت يتجاوز مدة الحجز." : "Used to calculate time beyond the booked duration.")}</span></label>}
                     <div className="child-price">
