@@ -333,6 +333,17 @@ fn checkout_transaction_with_overtime(
             )
             .into());
         }
+        let booking_id: Option<String> = tx.query_row(
+            "SELECT booking_id FROM local_visits WHERE id=?",
+            params![visit_id],
+            |row| row.get(0),
+        )?;
+        if let Some(booking_id) = booking_id {
+            tx.execute(
+                "UPDATE local_bookings SET status='completed' WHERE id=? AND status IN ('booked','confirmed')",
+                params![booking_id],
+            )?;
+        }
 
         let requested_method = calculation.get("paymentMethod").and_then(Value::as_str).unwrap_or("cash");
         let payment_method_label = if ["cash","instapay","wallet","visa","other"].contains(&requested_method) { requested_method } else { "cash" };
