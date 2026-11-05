@@ -966,6 +966,16 @@ fn consume_expiry_batches(tx:&rusqlite::Transaction<'_>,item_id:&str,quantity_mi
 }
 
 #[tauri::command]
+fn list_cafe_stock_movements(app:tauri::AppHandle)->Result<Vec<Value>,String>{
+    let db=auth_db(&app)?;
+    require_permission(&db,"cafe")?;
+    require_role(&db,&["admin","manager","cashier"])?;
+    let mut st=db.prepare("SELECT m.id,i.name,m.movement_type,m.quantity_milli,m.reason,m.created_by,m.created_at FROM local_stock_movements m JOIN local_inventory_items i ON i.id=m.inventory_item_id ORDER BY m.created_at DESC LIMIT 150").map_err(|e|e.to_string())?;
+    let rows=st.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"itemName":r.get::<_,String>(1)?,"type":r.get::<_,String>(2)?,"quantityMilli":r.get::<_,i64>(3)?,"reason":r.get::<_,String>(4)?,"createdBy":r.get::<_,String>(5)?,"createdAt":r.get::<_,String>(6)?}))).map_err(|e|e.to_string())?;
+    rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())
+}
+
+#[tauri::command]
 fn list_cafe_items(app: tauri::AppHandle) -> Result<Vec<Value>,String> {
     let db=auth_db(&app)?;
     require_permission(&db,"cafe")?;
@@ -1085,7 +1095,7 @@ pub fn run() {
                 .add_migrations("sqlite:secret-kids-club.db", migrations)
                 .build(),
         )
-        .invoke_handler(tauri::generate_handler![greet, record_cafe_stock_count, list_cafe_expiry_alerts, save_cafe_recipe, list_cafe_recipes, create_cafe_sale, list_cafe_items, save_cafe_item, adjust_cafe_stock, record_cafe_purchase, save_cafe_supplier, list_cafe_suppliers, cancel_membership, record_membership_payment, record_cash_movement, list_monthly_expenses, save_monthly_expense, checkout_child, cancel_visit, update_membership_overtime_rate, list_refundable_payments, record_expense, record_refund, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_set_user_permissions, admin_create_user, admin_set_user_active, admin_reset_user_password, admin_update_user_role, admin_delete_user, delete_pricing_rule, create_pricing_rule, get_active_cash_shift, open_cash_shift, close_cash_shift, admin_audit_log])
+        .invoke_handler(tauri::generate_handler![greet, list_cafe_stock_movements, record_cafe_stock_count, list_cafe_expiry_alerts, save_cafe_recipe, list_cafe_recipes, create_cafe_sale, list_cafe_items, save_cafe_item, adjust_cafe_stock, record_cafe_purchase, save_cafe_supplier, list_cafe_suppliers, cancel_membership, record_membership_payment, record_cash_movement, list_monthly_expenses, save_monthly_expense, checkout_child, cancel_visit, update_membership_overtime_rate, list_refundable_payments, record_expense, record_refund, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_set_user_permissions, admin_create_user, admin_set_user_active, admin_reset_user_password, admin_update_user_role, admin_delete_user, delete_pricing_rule, create_pricing_rule, get_active_cash_shift, open_cash_shift, close_cash_shift, admin_audit_log])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
