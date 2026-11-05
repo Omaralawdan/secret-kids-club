@@ -409,6 +409,7 @@ export default function App() {
     } catch(e){setError(String(e))}
   }
   async function cancelMembership(m:ChildMembership){
+    if(!db)return;
     const reason=window.prompt("سبب إلغاء الباقة:");
     if(!reason?.trim())return;
     try{await invoke("cancel_membership",{membershipId:m.id,reason});await refreshData(db);setMessage("تم إلغاء الباقة.");setError("")}catch(e){setError(String(e))}
