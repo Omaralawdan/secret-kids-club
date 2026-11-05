@@ -902,8 +902,8 @@ fn list_cafe_recipes(app:tauri::AppHandle)->Result<Vec<Value>,String>{
 }
 
 #[tauri::command]
-fn create_cafe_sale(app:tauri::AppHandle,items:Vec<Value>,payment_method:String)->Result<Value,String>{
-    if items.is_empty()||!["cash","instapay","wallet","visa","other"].contains(&payment_method.as_str()){return Err("أضف أصنافًا واختر طريقة دفع صحيحة.".into())}
+fn create_cafe_sale(app:tauri::AppHandle,items:Vec<Value>,payments:Vec<Value>)->Result<Value,String>{
+    if items.is_empty()||payments.is_empty(){return Err("أضف أصنافًا وحدد دفعة واحدة على الأقل.".into())}
     let mut db=auth_db(&app)?;let(actor,_)=require_role(&db,&["admin","manager","cashier"])?;require_permission(&db,"cafe")?;
     let tx=db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
     let shift_id:String=tx.query_row("SELECT id FROM local_cash_sessions WHERE closed_at IS NULL ORDER BY opened_at DESC LIMIT 1",[],|r|r.get(0)).optional().map_err(|e|e.to_string())?.ok_or("افتح الوردية قبل تسجيل بيع الكافيه.")?;
@@ -947,9 +947,21 @@ fn create_cafe_sale(app:tauri::AppHandle,items:Vec<Value>,payment_method:String)
             for (ingredient,per_yield) in ingredients{let required=per_yield.checked_mul(*qty).ok_or("كمية الوصفة كبيرة جدًا.")?.checked_add(yield_qty-1).ok_or("كمية الوصفة كبيرة جدًا.")?/yield_qty;tx.execute("INSERT INTO local_stock_movements(id,inventory_item_id,movement_type,quantity_milli,sale_id,reason,created_by,created_at) VALUES(?,?,'sale',?,?,?, ?,?)",params![uuid::Uuid::new_v4().to_string(),ingredient,required,sale_id,format!("استهلاك وصفة {}",name),actor,now]).map_err(|e|e.to_string())?;consume_expiry_batches(&tx,&ingredient,required)?;}
         }
     }
-    let stored_method=if ["visa","other"].contains(&payment_method.as_str()){"wallet"}else{payment_method.as_str()};
-    tx.execute("INSERT INTO local_payments(id,sale_id,visit_id,method,method_label,status,amount_minor,received_by,created_at,cash_session_id) VALUES(?,?,NULL,?,?,'confirmed',?,?,?,?)",params![uuid::Uuid::new_v4().to_string(),sale_id,stored_method,payment_method,subtotal,actor,now,shift_id]).map_err(|e|e.to_string())?;
-    tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'cafe_sale_created','sale',?,?,?)",params![actor,sale_id,json!({"sale_number":sale_no,"total_minor":subtotal,"payment_method":payment_method,"cash_session_id":shift_id}).to_string(),now]).map_err(|e|e.to_string())?;
+    let mut collected:i64=0;
+    let mut normalized_payments:Vec<(String,i64)>=Vec::new();
+    for payment in payments.iter(){
+        let method=payment.get("method").and_then(Value::as_str).ok_or("طريقة الدفع غير محددة.")?;
+        let amount=payment.get("amountMinor").and_then(Value::as_i64).ok_or("قيمة الدفعة غير صحيحة.")?;
+        if !["cash","instapay","wallet","visa","other"].contains(&method)||amount<=0{return Err("راجع طريقة الدفع ومبلغ كل دفعة؛ يجب أن تكون القيم أكبر من صفر.".into())}
+        collected=collected.checked_add(amount).ok_or("إجمالي الدفعات كبير جدًا.")?;
+        normalized_payments.push((method.to_string(),amount));
+    }
+    if collected!=subtotal{return Err(format!("مجموع الدفعات ({}) يجب أن يساوي إجمالي الفاتورة ({}).",collected,subtotal))}
+    for (method,amount) in normalized_payments.iter(){
+        let stored_method=if ["visa","other"].contains(&method.as_str()){"wallet"}else{method.as_str()};
+        tx.execute("INSERT INTO local_payments(id,sale_id,visit_id,method,method_label,status,amount_minor,received_by,created_at,cash_session_id) VALUES(?,?,NULL,?,?,'confirmed',?,?,?,?)",params![uuid::Uuid::new_v4().to_string(),sale_id,stored_method,method,amount,actor,now,shift_id]).map_err(|e|e.to_string())?;
+    }
+    tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'cafe_sale_created','sale',?,?,?)",params![actor,sale_id,json!({"sale_number":sale_no,"total_minor":subtotal,"payments":normalized_payments.iter().map(|(method,amount)|json!({"method":method,"amount_minor":amount})).collect::<Vec<_>>(),"cash_session_id":shift_id}).to_string(),now]).map_err(|e|e.to_string())?;
     tx.commit().map_err(|e|e.to_string())?;Ok(json!({"saleId":sale_id,"saleNumber":sale_no,"totalMinor":subtotal,"createdAt":now,"items":prepared.iter().map(|(_,name,qty,_,line_total,_)|json!({"name":name,"quantityMilli":qty,"lineTotalMinor":line_total})).collect::<Vec<_>>()}))
 }
 
