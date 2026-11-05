@@ -557,13 +557,19 @@ fn get_active_cash_shift(app: tauri::AppHandle) -> Result<Value, String> {
           COALESCE((SELECT SUM(e.amount_minor) FROM local_expenses e WHERE e.cash_session_id=s.id AND e.method='cash'),0),
           COALESCE((SELECT SUM(r.amount_minor) FROM local_refunds r WHERE r.cash_session_id=s.id AND r.method='cash'),0),
           COALESCE((SELECT SUM(m.amount_minor) FROM local_cash_movements m WHERE m.cash_session_id=s.id AND m.movement_type='cash_added'),0),
-          COALESCE((SELECT SUM(m.amount_minor) FROM local_cash_movements m WHERE m.cash_session_id=s.id AND m.movement_type='cash_removed'),0)
+          COALESCE((SELECT SUM(m.amount_minor) FROM local_cash_movements m WHERE m.cash_session_id=s.id AND m.movement_type='cash_removed'),0),
+          COALESCE((SELECT SUM(p.amount_minor) FROM local_payments p WHERE p.cash_session_id=s.id AND p.visit_id IS NOT NULL AND p.method='cash' AND p.status='confirmed'),0),
+          COALESCE((SELECT SUM(p.amount_minor) FROM local_payments p WHERE p.cash_session_id=s.id AND p.visit_id IS NOT NULL AND p.method='instapay' AND p.status='confirmed'),0),
+          COALESCE((SELECT SUM(p.amount_minor) FROM local_payments p WHERE p.cash_session_id=s.id AND p.visit_id IS NOT NULL AND p.method='wallet' AND p.status='confirmed'),0),
+          COALESCE((SELECT SUM(p.amount_minor) FROM local_payments p WHERE p.cash_session_id=s.id AND p.sale_id IS NOT NULL AND p.method='cash' AND p.status='confirmed'),0),
+          COALESCE((SELECT SUM(p.amount_minor) FROM local_payments p WHERE p.cash_session_id=s.id AND p.sale_id IS NOT NULL AND p.method='instapay' AND p.status='confirmed'),0),
+          COALESCE((SELECT SUM(p.amount_minor) FROM local_payments p WHERE p.cash_session_id=s.id AND p.sale_id IS NOT NULL AND p.method='wallet' AND p.status='confirmed'),0)
          FROM local_cash_sessions s LEFT JOIN local_users u ON u.id=s.opened_by
          WHERE s.closed_at IS NULL ORDER BY s.opened_at DESC LIMIT 1",
         [], |row| {
             let opening:i64=row.get(1)?; let cash:i64=row.get(4)?; let electronic:i64=row.get(5)?;
-            let expenses:i64=row.get(6)?; let refunds:i64=row.get(7)?; let additions:i64=row.get(8)?; let removals:i64=row.get(9)?;
-            Ok(json!({"id":row.get::<_,String>(0)?,"openingFloatMinor":opening,"openedAt":row.get::<_,String>(2)?,"openedBy":row.get::<_,String>(3)?,"cashSalesMinor":cash,"electronicSalesMinor":electronic,"cashExpensesMinor":expenses,"cashRefundsMinor":refunds,"cashAdditionsMinor":additions,"cashRemovalsMinor":removals,"expectedCashMinor":opening.saturating_add(cash).saturating_add(additions).saturating_sub(removals).saturating_sub(expenses).saturating_sub(refunds)}))
+            let expenses:i64=row.get(6)?; let refunds:i64=row.get(7)?; let additions:i64=row.get(8)?; let removals:i64=row.get(9)?; let kids_cash:i64=row.get(10)?; let kids_instapay:i64=row.get(11)?; let kids_wallet:i64=row.get(12)?; let cafe_cash:i64=row.get(13)?; let cafe_instapay:i64=row.get(14)?; let cafe_wallet:i64=row.get(15)?;
+            Ok(json!({"id":row.get::<_,String>(0)?,"openingFloatMinor":opening,"openedAt":row.get::<_,String>(2)?,"openedBy":row.get::<_,String>(3)?,"cashSalesMinor":cash,"electronicSalesMinor":electronic,"cashExpensesMinor":expenses,"cashRefundsMinor":refunds,"cashAdditionsMinor":additions,"cashRemovalsMinor":removals,"kidsAreaCashMinor":kids_cash,"kidsAreaInstapayMinor":kids_instapay,"kidsAreaWalletMinor":kids_wallet,"cafeCashMinor":cafe_cash,"cafeInstapayMinor":cafe_instapay,"cafeWalletMinor":cafe_wallet,"expectedCashMinor":opening.saturating_add(cash).saturating_add(additions).saturating_sub(removals).saturating_sub(expenses).saturating_sub(refunds)}))
         }
     ).optional().map_err(|e| e.to_string())?;
     Ok(shift.unwrap_or(Value::Null))
