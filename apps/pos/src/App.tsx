@@ -179,6 +179,7 @@ export default function App() {
   const receiptFrameRef = useRef<HTMLIFrameElement>(null);
 
   const [selectedBookingId, setSelectedBookingId] = useState<string | null>(null);
+  const [selectedBookingOriginalStatus, setSelectedBookingOriginalStatus] = useState<string | null>(null);
   const [guardianName, setGuardianName] = useState("");
   const [guardianRelation, setGuardianRelation] = useState("Mother");
   const [guardianPhone, setGuardianPhone] = useState("");
@@ -475,6 +476,7 @@ export default function App() {
       return;
     }
     setSelectedBookingId(booking.id);
+    setSelectedBookingOriginalStatus(booking.status);
     setGuardianName(booking.guardianName);
     setGuardianPhone(booking.phone);
     setGuardianRelation("Guardian");
@@ -671,6 +673,7 @@ export default function App() {
       setGuardianName("");
       setGuardianPhone("");
       setSelectedBookingId(null);
+      setSelectedBookingOriginalStatus(null);
       setVisitCouponCode("");
       setGuardianRelation("Mother");
       setChildren([
@@ -683,6 +686,19 @@ export default function App() {
       );
     } catch (err) {
       try {
+        if (visitInserted) {
+          const couponRows = await db.select<{coupon_id:string|null}[]>(
+            "SELECT coupon_id FROM local_visits WHERE id = ?",
+            [visitId]
+          );
+          const appliedCouponId = couponRows[0]?.coupon_id;
+          if (appliedCouponId) {
+            await db.execute(
+              "UPDATE local_coupons SET used_count=CASE WHEN used_count>0 THEN used_count-1 ELSE 0 END WHERE id = ?",
+              [appliedCouponId]
+            );
+          }
+        }
         for (const childId of createdVisitChildIds) {
           await db.execute(
             "DELETE FROM local_visit_child_pricing WHERE visit_child_id = ?",
@@ -692,6 +708,12 @@ export default function App() {
         }
         if (visitInserted) {
           await db.execute("DELETE FROM local_visits WHERE id = ?", [visitId]);
+        }
+        if (selectedBookingId && selectedBookingOriginalStatus) {
+          await db.execute(
+            "UPDATE local_bookings SET status = ? WHERE id = ? AND status = 'confirmed'",
+            [selectedBookingOriginalStatus, selectedBookingId]
+          );
         }
       } catch {
         // Preserve the original error for the cashier.
