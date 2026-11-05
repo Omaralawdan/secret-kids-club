@@ -181,6 +181,7 @@ export default function App() {
   const [guardianRelation, setGuardianRelation] = useState("Mother");
   const [guardianPhone, setGuardianPhone] = useState("");
   const [paymentMethod, setPaymentMethod] = useState<"cash" | "instapay" | "wallet" | "visa" | "other">("cash");
+  const [visitCouponCode, setVisitCouponCode] = useState("");
   const [customerLookupMessage, setCustomerLookupMessage] = useState("");
   const [previousChildren, setPreviousChildren] = useState<{name:string;lastVisit:string}[]>([]);
   const [guardianSuggestions, setGuardianSuggestions] = useState<{phone:string;name:string}[]>([]);
@@ -621,6 +622,10 @@ export default function App() {
         );
       }
 
+      let appliedVisitCoupon:{discountMinor:number;totalMinor:number;allocations:{visitChildId:string;discountMinor:number}[]}|null=null;
+      if (visitCouponCode.trim()) {
+        appliedVisitCoupon=await invoke<{discountMinor:number;totalMinor:number;allocations:{visitChildId:string;discountMinor:number}[]}>('apply_visit_coupon',{visitId,couponCode:visitCouponCode.trim()});
+      }
       if (selectedBookingId) {
         const updatedBooking = await db.execute("UPDATE local_bookings SET status='confirmed' WHERE id=? AND status IN ('booked','confirmed')", [selectedBookingId]);
         if (updatedBooking.rowsAffected !== 1) throw new Error("الحجز لم يعد متاحًا للتأكيد. راجع حالة الحجز.");
@@ -630,23 +635,24 @@ export default function App() {
       setReceiptQueue((current) => [...current, buildReceiptHtml({
         visitNumber, guardianName: guardianName.trim(), guardianPhone: guardianPhone.trim(),
         childName: childRows.map(row => row.child.name).join("، "),
-        children: childRows.map(row => ({name:row.child.name,bookedMinutes:Math.round(row.child.durationHours*60),baseAmountMinor:priceFor(row.child),discountAmountMinor:0})),
+        children: childRows.map(row => ({name:row.child.name,bookedMinutes:Math.round(row.child.durationHours*60),baseAmountMinor:priceFor(row.child),discountAmountMinor:appliedVisitCoupon?.allocations.find(x=>x.visitChildId===row.id)?.discountMinor||0})),
         checkedInAt: timestamp, expectedCheckoutAt: visitExpectedCheckout, paymentMethod,
         bookedMinutes: Math.max(...childRows.map(row => Math.round(row.child.durationHours*60))),
-        baseAmountMinor: amountBeforeDiscount, discountAmountMinor: 0,
+        baseAmountMinor: amountBeforeDiscount, discountAmountMinor: appliedVisitCoupon?.discountMinor||0,
         venueName, venueAddress, venuePhone, issuer: "Cashier",
       }, language)]);
       setGuardianName("");
       setGuardianPhone("");
       setSelectedBookingId(null);
+      setVisitCouponCode("");
       setGuardianRelation("Mother");
       setChildren([
         { key: makeId(), name: "", ruleId: "", durationHours: 1, hourlyRateMinor: null, priceMinor: null },
       ]);
       setMessage(
         ar
-          ? `تم تسجيل الزيارة رقم ${visitNumber}. السعر المبدئي: ${money(amountBeforeDiscount, language)}`
-          : `Visit #${visitNumber} saved. Initial total: ${money(amountBeforeDiscount, language)}.`
+          ? `تم تسجيل الزيارة رقم ${visitNumber}. السعر بعد الخصم: ${money(amountBeforeDiscount-(appliedVisitCoupon?.discountMinor||0), language)}`
+          : `Visit #${visitNumber} saved. Total after discount: ${money(amountBeforeDiscount-(appliedVisitCoupon?.discountMinor||0), language)}.`
       );
     } catch (err) {
       try {
@@ -1113,6 +1119,7 @@ export default function App() {
             <button type="button" className="secondary-button add-child" onClick={addChild}>{`+ ${tr("Add another child")}`}</button>
           </section>
 
+          {hasPermission("discounts")&&<label className="full-width">كود خصم الزيارة (اختياري)<input value={visitCouponCode} onChange={e=>setVisitCouponCode(e.target.value.toUpperCase())} placeholder="KIDS10"/></label>}
           <section className="summary-panel">
             <div>
               <span className="muted">{tr("Initial visit total")}</span>
