@@ -124,7 +124,7 @@ function buildReceiptHtml(data: ReceiptData, language: Language): string {
   html += row(label("Booked duration", "المدة المحجوزة"), escapeReceipt(formatDuration(data.bookedMinutes, language)));
   // Actual elapsed duration is intentionally not shown on the customer receipt.
   html += '<div class="section">' + label("Payment details", "تفاصيل الحساب") + '</div>';
-  if (data.paymentMethod) html += row(label("Payment method", "طريقة الدفع"), escapeReceipt(({cash:"Cash",instapay:"InstaPay",wallet:"E-Wallet"} as Record<string,string>)[data.paymentMethod] || data.paymentMethod));
+  if (data.paymentMethod) html += row(label("Payment method", "طريقة الدفع"), escapeReceipt(({cash:"Cash",instapay:"InstaPay",wallet:"E-Wallet",visa:"Visa",other:"Other"} as Record<string,string>)[data.paymentMethod] || data.paymentMethod));
   if (data.children?.length) {
     html += amount(label("Children subtotal", "إجمالي أسعار الأطفال"), data.children.reduce((sum, child) => sum + child.baseAmountMinor, 0));
     html += amount(label("Total discount", "إجمالي الخصم"), data.children.reduce((sum, child) => sum + child.discountAmountMinor, 0));
@@ -401,7 +401,8 @@ export default function App() {
       await db.execute("INSERT INTO local_sales(id,sale_number_local,visit_id,status,subtotal_minor,discount_minor,total_minor,cashier_user_id,created_at,sync_state) VALUES(?, ?, NULL,'completed',?,0,?,?,?,'pending')",[saleId,saleNo,plan.price_minor,plan.price_minor,cashierId,purchased.toISOString()]);
       await db.execute("INSERT INTO local_sale_items(id,sale_id,item_type,inventory_item_id,description_snapshot,quantity_milli,unit_price_minor,line_total_minor) VALUES(?, ?, 'other', NULL, ?,1000,?,?)",[makeId(),saleId,"Membership package: "+plan.name+" - "+memberName.trim(),plan.price_minor,plan.price_minor]);
       await db.execute("INSERT INTO local_child_memberships(id,child_id,child_name_snapshot,guardian_phone_snapshot,plan_id,purchased_at,starts_at,expires_at,included_minutes,used_minutes,status,sync_state) VALUES(?,NULL,?,?,?,?,?,?,?,0,'active','pending')",[membershipId,memberName.trim(),memberPhone.trim(),plan.id,purchased.toISOString(),purchased.toISOString(),expires.toISOString(),plan.included_minutes]);
-      await db.execute("INSERT INTO local_payments(id,sale_id,visit_id,method,status,amount_minor,received_by,created_at,sync_state,cash_session_id) VALUES(?,?,NULL,?,'confirmed',?,?,?,'pending',?)",[makeId(),saleId,memberPaymentMethod,plan.price_minor,cashierId,purchased.toISOString(),cashSessionId]);
+      const storedMemberMethod=memberPaymentMethod==="visa"||memberPaymentMethod==="other"?"wallet":memberPaymentMethod;
+       await db.execute("INSERT INTO local_payments(id,sale_id,visit_id,method,method_label,status,amount_minor,received_by,created_at,sync_state,cash_session_id) VALUES(?,?,NULL,?,?,'confirmed',?,?,?,'pending',?)",[makeId(),saleId,storedMemberMethod,memberPaymentMethod,plan.price_minor,cashierId,purchased.toISOString(),cashSessionId]);
       setMemberName("");setMemberPhone("");await refreshData(db);setMessage("تم تسجيل الطفل في الباقة وتسجيل تحصيل قيمتها.");setError("")
     } catch(e){setError(String(e))}
   }
@@ -1116,7 +1117,7 @@ export default function App() {
             <form className="form-grid" onSubmit={enrollMembership}>
               <label>{ar?"اسم الطفل":"Child name"}<input value={memberName} onChange={e=>setMemberName(e.target.value)} required/></label>
               <label>{ar?"رقم هاتف ولي الأمر":"Guardian phone"}<input value={memberPhone} onChange={e=>setMemberPhone(e.target.value)} required inputMode="tel"/></label>
-              <label>{ar?"الباقة":"Package"}<select value={memberPlanId} onChange={e=>setMemberPlanId(e.target.value)} required><option value="">{ar?"اختار الباقة":"Choose a package"}</option>{membershipPlans.map(p=><option key={p.id} value={p.id}>{p.name} · {p.validity_days===7?(ar?"أسبوع":"Weekly"):(ar?"شهر":"Monthly")} · {money(p.price_minor,language)} · {formatDuration(p.included_minutes,language)}</option>)}</select></label><label>{ar?"طريقة تحصيل الباقة":"Package payment method"}<select value={memberPaymentMethod} onChange={e=>setMemberPaymentMethod(e.target.value as "cash"|"instapay"|"wallet")}><option value="cash">{ar?"كاش":"Cash"}</option><option value="instapay">InstaPay</option><option value="wallet">{ar?"محفظة إلكترونية":"E-Wallet"}</option></select></label>
+              <label>{ar?"الباقة":"Package"}<select value={memberPlanId} onChange={e=>setMemberPlanId(e.target.value)} required><option value="">{ar?"اختار الباقة":"Choose a package"}</option>{membershipPlans.map(p=><option key={p.id} value={p.id}>{p.name} · {p.validity_days===7?(ar?"أسبوع":"Weekly"):(ar?"شهر":"Monthly")} · {money(p.price_minor,language)} · {formatDuration(p.included_minutes,language)}</option>)}</select></label><label>{ar?"طريقة تحصيل الباقة":"Package payment method"}<select value={memberPaymentMethod} onChange={e=>setMemberPaymentMethod(e.target.value as "cash"|"instapay"|"wallet")}><option value="cash">{ar?"كاش":"Cash"}</option><option value="instapay">InstaPay</option><option value="wallet">{ar?"محفظة إلكترونية":"E-Wallet"}</option><option value="visa">{ar?"فيزا":"Visa"}</option><option value="other">{ar?"أخرى":"Other"}</option></select></label>
               <div className="full-width"><button className="primary-button" type="submit" disabled={!membershipPlans.length}>{ar?"تسجيل الاشتراك":"Enroll"}</button></div>
             </form>
             <h4>{ar?"المشتركون وحالة الباقات":"Subscribers and package status"}</h4>
