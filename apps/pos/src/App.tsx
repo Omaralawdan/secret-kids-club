@@ -497,7 +497,7 @@ export default function App() {
     setGuardianRelation("Guardian");
     setChildren(Array.from({ length: Math.max(1, booking.childCount) }, () => ({
       key: makeId(), name: "", ruleId: rules[0]?.id ?? "", durationHours,
-      hourlyRateMinor: null, hourlyPriceMinor: null, paymentMethod,
+      hourlyRateMinor: null, hourlyPriceMinor: null, hourlyRateText: "", hourlyPriceText: "", paymentMethod,
     })));
     setError("");
     setMessage(booking.type === "birthday"
