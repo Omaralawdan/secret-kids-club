@@ -1036,7 +1036,7 @@ export default function App() {
         </section>
         </>
       ) : screen === "cafe" ? (
-        <CafeCenter canManage={canManage} canManageItems={isAdmin || hasPermission("cafe_items")} canManagePricing={hasPermission("pricing")} canApplyDiscounts={hasPermission("discounts")} />
+        <CafeCenter canManage={canManage} canManageItems={isAdmin || hasPermission("cafe_items")} canManagePricing={hasPermission("pricing")} canApplyDiscounts={hasPermission("discounts")} activeChildren={activeChildren} />
       ) : screen === "admin" ? (
         <AdminTools user={authUser} onLogout={() => { void invoke("logout_user").finally(() => setAuthUser(null)); }}  />
       ) : screen === "reports" ? (
