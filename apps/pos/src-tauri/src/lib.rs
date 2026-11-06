@@ -726,9 +726,8 @@ fn get_active_cash_shift(app: tauri::AppHandle) -> Result<Value, String> {
             // missing a column used only by the financial summary. Never treat
             // the session as closed and never permit closing on partial totals.
             let base: Option<Value> = db.query_row(
-                "SELECT s.id,s.opening_float_minor,s.opened_at,COALESCE(u.display_name,s.opened_by)
+                "SELECT s.id,s.opening_float_minor,s.opened_at,s.opened_by
                  FROM local_cash_sessions s
-                 LEFT JOIN local_users u ON u.id=s.opened_by
                  WHERE s.closed_at IS NULL
                  ORDER BY s.opened_at DESC LIMIT 1",
                 [],
