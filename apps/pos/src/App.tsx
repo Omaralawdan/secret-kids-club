@@ -348,7 +348,7 @@ export default function App() {
   const ready = databaseStatus === "Connected" && db !== null;
   const authRoles: string[] = (() => { try { return authUser ? JSON.parse(authUser.roles) : []; } catch { return []; } })();
   const authPermissionKeys: string[] = (() => { if(authRoles.includes("admin"))return ["all"]; try { const p=authUser?.permissions?JSON.parse(authUser.permissions):[]; if(Array.isArray(p)&&p.includes("all"))return ["all"]; if(Array.isArray(p)&&p.includes("__custom__"))return p.filter((x:string)=>x!=="__custom__"); } catch {} return authRoles.includes("admin")?["all"]:authRoles.includes("manager")?["reception","active","packages","cafe","cafe_items","reports","shift","pricing","bookings","overtime_waive","discounts"]:authRoles.includes("cashier")?["reception","active","packages","cafe","shift","bookings","discounts"]:authRoles.includes("viewer")?["reports"]:[]; })();
-  const hasPermission = (key:string) => (key === "shift" && authRoles.includes("cashier")) || authPermissionKeys.includes("all") || authPermissionKeys.includes(key);
+  const hasPermission = (key:string) => authPermissionKeys.includes("all") || authPermissionKeys.includes(key);
   const isAdmin = authRoles.includes("admin");
   const canManage = isAdmin || authRoles.includes("manager");
   const canOperate = canManage || authRoles.includes("cashier");
@@ -1033,7 +1033,7 @@ export default function App() {
         </section>
         </>
       ) : screen === "cafe" && canOperate && hasPermission("cafe") ? (
-        <CafeCenter mode="sales" canManage={canManage} canManageItems={isAdmin || hasPermission("cafe_items")} canManagePricing={hasPermission("pricing")} canApplyDiscounts={hasPermission("discounts")} activeChildren={activeChildren} />
+        <CafeCenter mode="sales" canManage={false} canManageItems={false} canManagePricing={false} canApplyDiscounts={hasPermission("discounts")} activeChildren={activeChildren} />
       ) : screen === "cafe_management" && canOperate && hasPermission("cafe_items") ? (
         <CafeCenter mode="management" canManage={canManage} canManageItems={isAdmin || hasPermission("cafe_items")} canManagePricing={hasPermission("pricing")} canApplyDiscounts={hasPermission("discounts")} activeChildren={activeChildren} />
       ) : screen === "admin" && canOperate && hasPermission("shift") ? (

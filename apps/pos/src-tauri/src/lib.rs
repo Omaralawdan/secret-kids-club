@@ -522,8 +522,6 @@ fn require_role(db:&Connection,allowed:&[&str])->Result<(String,Vec<String>),Str
 fn require_permission(db:&Connection,permission:&str)->Result<(String,Vec<String>),String>{
  let(id,roles)=active_user(db)?;
  if roles.iter().any(|r|r=="admin"){return Ok((id,roles))}
- // Cashiers must always be able to start and close their own shifts.
- if permission=="shift" && roles.iter().any(|r|r=="cashier"){return Ok((id,roles))}
  let stored:String=db.query_row("SELECT permissions_json FROM local_users WHERE id=?",params![id],|r|r.get(0)).map_err(|e|e.to_string())?;
  let parsed:Vec<String>=serde_json::from_str(&stored).unwrap_or_default();
  let allowed=if parsed.iter().any(|p|p=="all"){true}else if parsed.iter().any(|p|p=="__custom__"){parsed.iter().any(|p|p==permission)}else if roles.iter().any(|r|r=="manager"){["reception","active","packages","cafe","cafe_items","reports","shift","pricing","bookings","overtime_waive","discounts"].contains(&permission)}else if roles.iter().any(|r|r=="cashier"){["reception","active","packages","cafe","shift","bookings","discounts"].contains(&permission)}else if roles.iter().any(|r|r=="viewer"){permission=="reports"}else{false};
