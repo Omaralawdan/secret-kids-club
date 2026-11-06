@@ -1989,21 +1989,24 @@ fn run_startup_migrations(app: &tauri::AppHandle) -> Result<(), Box<dyn Error>> 
             (24, "cafe_expiry_batch_tracking", include_str!("../migrations/024_cafe_expiry_batch_tracking.sql")),
         ];
 
-        db.execute_batch("BEGIN IMMEDIATE;")?;
-        let migration_result = (|| -> Result<(), Box<dyn Error>> {
-            db.execute_batch(
-                "CREATE TABLE IF NOT EXISTS local_app_migrations (
-                    version INTEGER PRIMARY KEY,
-                    description TEXT NOT NULL,
-                    applied_at TEXT NOT NULL
-                );",
-            )?;
+        db.execute_batch(
+            "CREATE TABLE IF NOT EXISTS local_app_migrations (
+                version INTEGER PRIMARY KEY,
+                description TEXT NOT NULL,
+                applied_at TEXT NOT NULL
+            );",
+        )?;
 
-            for (version, description, sql) in migrations {
-                // Migration 15 is handled here instead of replaying its SQL file.
-                // Installed databases have several historical membership schemas; build
-                // each optional column safely and only run backfills when their source
-                // columns exist. Never assume a legacy timestamp column is present.
+        // Apply each migration in its own savepoint. Older releases wrapped the
+        // entire history in one transaction, so one legacy ALTER/TRIGGER failure
+        // rolled back every later schema addition (bookings, shift stock opening,
+        // café images, and membership sale links). Independent savepoints preserve
+        // every successful migration while allowing later compatible migrations
+        // to run. The original database is never dropped or recreated.
+        let mut migration_errors: Vec<String> = Vec::new();
+        for (version, description, sql) in migrations {
+            db.execute_batch("SAVEPOINT skc_schema_migration;")?;
+            let apply_result = (|| -> Result<(), Box<dyn Error>> {
                 if version == 15 {
                     if sqlite_table_exists(&db, "local_child_memberships")? {
                         ensure_sqlite_column(&db, "local_child_memberships", "purchased_at", "TEXT")?;
@@ -2050,13 +2053,7 @@ fn run_startup_migrations(app: &tauri::AppHandle) -> Result<(), Box<dyn Error>> 
                         )?;
                     }
                 } else {
-                    let apply_result = execute_legacy_migration(&db, sql);
-                    apply_result.map_err(|error| {
-                        io::Error::new(
-                            io::ErrorKind::Other,
-                            format!("Database migration {version} ({description}) failed: {error}"),
-                        )
-                    })?;
+                    execute_legacy_migration(&db, sql)?;
                 }
 
                 db.execute(
@@ -2064,16 +2061,60 @@ fn run_startup_migrations(app: &tauri::AppHandle) -> Result<(), Box<dyn Error>> 
                      VALUES(?1,?2,?3)",
                     params![version, description, Utc::now().to_rfc3339()],
                 )?;
-            }
-            Ok(())
-        })();
+                Ok(())
+            })();
 
-        if let Err(error) = migration_result {
-            let _ = db.execute_batch("ROLLBACK;");
-            return Err(error);
+            match apply_result {
+                Ok(()) => {
+                    db.execute_batch("RELEASE skc_schema_migration;")?;
+                    write_startup_log(&directory, &format!("Database migration {version} ({description}) applied or verified."));
+                }
+                Err(error) => {
+                    let message = format!("Database migration {version} ({description}) failed: {error}");
+                    db.execute_batch("ROLLBACK TO skc_schema_migration;")?;
+                    db.execute_batch("RELEASE skc_schema_migration;")?;
+                    write_startup_log(&directory, &message);
+                    migration_errors.push(message);
+                }
+            }
         }
-        db.execute_batch("COMMIT;")?;
+
+        // Explicitly verify the objects reported missing by the cashier. This
+        // makes the startup log identify a schema gap instead of leaving the
+        // React screens to fail later with opaque "no such table/column" errors.
+        let mut missing_schema: Vec<String> = Vec::new();
+        for (table, label) in [
+            ("local_bookings", "birthday bookings table"),
+            ("local_shift_inventory_opening", "shift inventory opening table"),
+        ] {
+            if !sqlite_table_exists(&db, table)? {
+                missing_schema.push(format!("missing {label} ({table})"));
+            }
+        }
+        if sqlite_table_exists(&db, "local_child_memberships")?
+            && !sqlite_column_exists(&db, "local_child_memberships", "sale_id")?
+        {
+            missing_schema.push("missing membership sale link (local_child_memberships.sale_id)".to_string());
+        }
+        if sqlite_table_exists(&db, "local_inventory_items")?
+            && !sqlite_column_exists(&db, "local_inventory_items", "image_data_url")?
+        {
+            missing_schema.push("missing café item image field (local_inventory_items.image_data_url)".to_string());
+        }
+
+        if !missing_schema.is_empty() {
+            migration_errors.extend(missing_schema);
+        }
+        if !migration_errors.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                migration_errors.join("; "),
+            ).into());
+        }
         Ok(())
+    })();
+
+            Ok(())
     })();
 
     match result {
