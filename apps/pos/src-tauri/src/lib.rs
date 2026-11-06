@@ -1678,7 +1678,9 @@ mod checkout_tests {
                 status TEXT NOT NULL,
                 checked_in_at TEXT NOT NULL,
                 checked_out_at TEXT,
-                final_amount_minor INTEGER NOT NULL DEFAULT 0
+                final_amount_minor INTEGER NOT NULL DEFAULT 0,
+                booking_id TEXT,
+                entry_sale_id TEXT
             );
             CREATE TABLE local_visit_children (
                 id TEXT PRIMARY KEY,
@@ -1695,9 +1697,18 @@ mod checkout_tests {
             INSERT INTO local_session(singleton_id,actor_user_id) VALUES(1,'test-user');
             CREATE TABLE local_cash_sessions (id TEXT PRIMARY KEY, opened_at TEXT, closed_at TEXT);
             INSERT INTO local_cash_sessions(id,opened_at,closed_at) VALUES('shift-test','2000-01-01T00:00:00Z',NULL);
+            CREATE TABLE local_sales (
+                id TEXT PRIMARY KEY, sale_number_local INTEGER, visit_id TEXT, status TEXT,
+                subtotal_minor INTEGER, discount_minor INTEGER, total_minor INTEGER,
+                cashier_user_id TEXT, created_at TEXT
+            );
+            CREATE TABLE local_sale_items (
+                id TEXT PRIMARY KEY, sale_id TEXT, item_type TEXT, description_snapshot TEXT,
+                quantity_milli INTEGER, unit_price_minor INTEGER, line_total_minor INTEGER
+            );
             CREATE TABLE local_payments (
-                id TEXT PRIMARY KEY, visit_id TEXT, method TEXT, status TEXT,
-                amount_minor INTEGER, received_by TEXT, created_at TEXT, cash_session_id TEXT
+                id TEXT PRIMARY KEY, sale_id TEXT, visit_id TEXT, method TEXT, method_label TEXT,
+                status TEXT, amount_minor INTEGER, received_by TEXT, created_at TEXT, cash_session_id TEXT
             );
             CREATE TABLE local_visit_child_pricing (
                 id TEXT PRIMARY KEY,
@@ -1803,6 +1814,13 @@ mod checkout_tests {
         assert_eq!(visit.0, "completed");
         assert!(visit.1.is_some());
         assert_eq!(visit.2, 10200);
+
+        let checkout_payment: (i64, String) = db.query_row(
+            "SELECT amount_minor, method_label FROM local_payments WHERE visit_id='visit-1'",
+            [], |r| Ok((r.get(0)?,r.get(1)?))
+        ).unwrap();
+        assert_eq!(checkout_payment, (200, "cash".to_string()),
+            "Checkout must collect overtime only, not the original entry fee");
 
         drop(db);
         let _ = std::fs::remove_file(path);
