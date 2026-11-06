@@ -50,7 +50,6 @@ export default function AdminTools({user,onLogout}:{user:AuthUser;onLogout:()=>v
  <section className="report-field-panel"><h3>تغيير كلمة المرور</h3><form className="report-controls" onSubmit={e=>void changePassword(e)}><label>كلمة المرور الحالية<input type="password" autoComplete="current-password" value={currentPassword} onChange={e=>setCurrentPassword(e.target.value)} required/></label><label>كلمة المرور الجديدة (12 حرفًا على الأقل)<input type="password" autoComplete="new-password" minLength={12} value={newPassword} onChange={e=>setNewPassword(e.target.value)} required/></label><button className="primary-button">تغيير كلمة المرور</button></form></section>
  <section className="report-field-panel">
   <div className="report-field-title"><h3>الوردية النشطة والصندوق</h3><button type="button" className="secondary-button" onClick={()=>void refresh()} disabled={shiftLoading}>تحديث الحالة</button></div>
-  <p className="muted">النقدية المتوقعة = رصيد البداية + تحصيلات الكاش - مصروفات الكاش - استردادات الكاش. لا يمكن إغلاق الوردية قبل تسجيل خروج كل الأطفال ومراجعة النقدية الفعلية.</p>
   {activeShift ? (
    <div className="notice success"><strong>هناك وردية مفتوحة الآن</strong></div>
   ) : shiftLoadError ? <div className="notice error">تعذر التأكد من حالة الوردية. اضغط «تحديث الحالة» بعد معالجة الخطأ؛ لن نعرضها كمغلقة بالخطأ.</div> : <div className="notice">لا توجد وردية مفتوحة حاليًا. افتح وردية جديدة عند بدء العمل.</div>}
