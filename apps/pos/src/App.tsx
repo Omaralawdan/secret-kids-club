@@ -949,7 +949,9 @@ export default function App() {
                   ? (ar ? "مركز التقارير والتصدير" : "Reports Center")
                   : screen === "admin"
                     ? (ar ? "الموظفون والورديات" : "Staff & Shifts")
-                    : tr("Settings")}
+                    : screen === "cafe"
+                      ? (ar ? "الكافيه والمخزون" : "Café & Inventory")
+                      : tr("Settings")}
         </h2>
         <p>
           {screen === "reception"
@@ -968,7 +970,9 @@ export default function App() {
                   ? (ar ? "اختار البيانات والفلاتر والأعمدة وشكل التقرير ثم صدّره." : "Choose data, filters, columns, and export format.")
                   : screen === "admin"
                     ? (ar ? "إدارة الحسابات وكلمات المرور والورديات وسجل المراجعة." : "Manage accounts, passwords, shifts and audit history.")
-                    : tr("Choose the language used throughout the application.")}
+                    : screen === "cafe"
+                      ? (ar ? "إدارة مبيعات الكافيه والأصناف والوصفات والمخزون والمشتريات." : "Manage café sales, items, recipes, stock and purchases.")
+                      : tr("Choose the language used throughout the application.")}
         </p>
       </section>
 
