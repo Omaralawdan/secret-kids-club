@@ -342,8 +342,6 @@ export default function App() {
 
   function priceFor(child: ChildDraft) {
     const rule = rules.find((item) => item.id === child.ruleId);
-    if (!rule) return 0;
-
     return child.priceMinor === null ? 0 : Math.round(child.priceMinor);
   }
 
@@ -515,7 +513,6 @@ export default function App() {
       cleanChildren.some(
         (child) =>
           !child.name ||
-          !child.ruleId ||
           !Number.isFinite(child.durationHours) ||
           child.durationHours < 0.25 ||
           child.durationHours > 12 ||
@@ -529,15 +526,6 @@ export default function App() {
           ? "أدخل اسم كل طفل وسعره يدويًا وسعر ساعة الإضافي، والمدة من 0.25 إلى 12 ساعة."
           : "Enter each child's name and individual price, overtime hourly rate, and duration from 0.25 to 12 hours."
       );
-      return;
-    }
-
-    if (
-      cleanChildren.some(
-        (child) => !rules.some((rule) => rule.id === child.ruleId)
-      )
-    ) {
-      setError(tr("A selected pricing rule is no longer available. Refresh and try again."));
       return;
     }
 
@@ -614,8 +602,7 @@ export default function App() {
       visitInserted = true;
 
       for (const row of childRows) {
-        const selectedRule = rules.find((rule) => rule.id === row.child.ruleId);
-        if (!selectedRule) throw new Error(tr("Pricing rule not found."));
+        const selectedRule = rules.find((rule) => rule.id === row.child.ruleId) ?? null;
 
         const bookedMinutes = Math.round(row.child.durationHours * 60);
         const baseAmount = priceFor(row.child);
@@ -637,15 +624,15 @@ export default function App() {
           [
             row.pricingId,
             row.id,
-            selectedRule.pricing_type,
-            selectedRule.id,
+            selectedRule?.pricing_type ?? "fixed",
+            selectedRule?.id ?? null,
             baseAmount,
             baseAmount,
             bookedMinutes,
             JSON.stringify({
-              ruleName: selectedRule.name,
-              pricingType: selectedRule.pricing_type,
-              initialEstimate: selectedRule.pricing_type === "hourly",
+              ruleName: selectedRule?.name ?? "تسعير يدوي",
+              pricingType: selectedRule?.pricing_type ?? "fixed",
+              initialEstimate: selectedRule?.pricing_type === "hourly",
               paymentMethod: row.child.paymentMethod,
               bookedDurationMinutes: bookedMinutes,
               hourlyRateMinor: row.child.hourlyRateMinor,
@@ -1201,8 +1188,8 @@ export default function App() {
             {rules.length === 0 && (
               <div className="empty-state">
                 <strong>{tr("No pricing rules configured yet.")}</strong>
-                <p>{tr("Open Pricing setup and add your actual prices before registering a visit.")}</p>
-                <button type="button" className="secondary-button" onClick={() => setScreen("pricing")}>{tr("Set up pricing")}</button>
+                <p>{ar ? "يمكنك إدخال سعر كل طفل وسعر ساعة الإضافي يدويًا دون إنشاء قاعدة تسعير." : "You can enter each child's price and overtime hourly rate manually without creating a pricing rule."}</p>
+                {hasPermission("pricing") && <button type="button" className="secondary-button" onClick={() => setScreen("pricing")}>{tr("Set up pricing")}</button>}
               </div>
             )}
             <div className="children-list">
@@ -1215,8 +1202,8 @@ export default function App() {
                       <input value={child.name} onChange={(e) => updateChild(child.key, "name", e.target.value)} required placeholder={tr("Child's name")} />
                     </label>
                     <label className="child-pricing">{tr("Pricing rule")}
-                      <select value={child.ruleId} onChange={(e) => updateChild(child.key, "ruleId", e.target.value)} required>
-                        <option value="">{tr("Select price")}</option>
+                      <select value={child.ruleId} onChange={(e) => updateChild(child.key, "ruleId", e.target.value)}>
+                        <option value="">{ar ? "تسعير يدوي" : "Manual price"}</option>
                         {rules.map((rule) => <option key={rule.id} value={rule.id}>{rule.name} · {tr(rule.pricing_type)}</option>)}
                       </select>
                     </label>
@@ -1234,10 +1221,10 @@ export default function App() {
                       />
                       <span className="muted">{ar ? "المدة مستقلة لكل طفل؛ السعر الأساسي الذي أدخلته لهذا الطفل لا يتغير مع الأطفال الآخرين." : "Duration is set per child; this child's manually entered base price is independent of other children."}</span>
                     </label>
-                    {selected && <label className="child-pricing">{ar ? "سعر الساعة / ساعة الإضافي (جنيه)" : "Hourly / overtime rate (EGP)"}<input type="text" inputMode="decimal" required value={child.hourlyRateMinor === null ? "" : (child.hourlyRateMinor / 100).toFixed(2)} onChange={e => updateChild(child.key, "hourlyRateMinor", e.target.value === "" ? null : tryEgpToMinor(e.target.value))} placeholder={ar ? "اكتب سعر الساعة" : "Enter hourly rate"} /><span className="muted">{selected.pricing_type === "hourly" ? (ar ? "يُستخدم لحساب السعر الأساسي والوقت الإضافي." : "Used for the booked hourly price and overtime.") : (ar ? "يُستخدم لحساب أي وقت يتجاوز مدة الحجز." : "Used to calculate time beyond the booked duration.")}</span></label>}
+                    <label className="child-pricing">{ar ? "سعر ساعة الإضافي (جنيه)" : "Overtime hourly rate (EGP)"}<input type="text" inputMode="decimal" required value={child.hourlyRateMinor === null ? "" : (child.hourlyRateMinor / 100).toFixed(2)} onChange={e => updateChild(child.key, "hourlyRateMinor", e.target.value === "" ? null : tryEgpToMinor(e.target.value))} placeholder={ar ? "اكتب سعر الساعة" : "Enter hourly rate"} /><span className="muted">{selected?.pricing_type === "hourly" ? (ar ? "يُستخدم لحساب السعر الأساسي والوقت الإضافي." : "Used for the booked hourly price and overtime.") : (ar ? "يُستخدم لحساب أي وقت يتجاوز مدة الحجز." : "Used to calculate time beyond the booked duration.")}</span></label>
                     <div className="child-price">
                       <span>{tr("Price estimate")}</span>
-                      <strong>{selected ? money(priceFor(child), language) : "—"}</strong>
+                      <strong>{money(priceFor(child), language)}</strong>
                     </div>
                     <button type="button" className="remove-button" onClick={() => removeChild(child.key)} disabled={children.length === 1} aria-label={`Remove child ${index + 1}`}>×</button>
                   </div>
@@ -1254,7 +1241,7 @@ export default function App() {
               <strong className="total">{money(total, language)}</strong>
               <p>{ar ? "قبل الخصومات؛ يتم حساب الوقت الإضافي عند الخروج بالدقيقة." : "Before discounts; applicable overtime is calculated per minute at checkout."}</p>
             </div>
-            <button className="primary-button" type="submit" disabled={!ready || saving || rules.length === 0}>
+            <button className="primary-button" type="submit" disabled={!ready || saving}>
               {saving ? tr("Saving visit…") : (ar ? "حفظ ودخول" : "Save & Check In")}
             </button>
           </section>
