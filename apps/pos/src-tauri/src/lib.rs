@@ -32,7 +32,7 @@ fn database_path(app: &tauri::AppHandle) -> Result<PathBuf, Box<dyn Error>> {
 }
 
 fn checkout_transaction(path: &Path, visit_child_id: &str) -> Result<(), Box<dyn Error>> {
-    checkout_transaction_with_overtime(path, visit_child_id, true, None, false, None, None)
+    checkout_transaction_with_overtime(path, visit_child_id, true, None, false, None, None, None)
 }
 
 fn checkout_transaction_with_overtime(
@@ -43,6 +43,7 @@ fn checkout_transaction_with_overtime(
     overtime_waived: bool,
     overtime_waiver_reason: Option<String>,
     actor_user_id: Option<String>,
+    cafe_payment_method: Option<String>,
 ) -> Result<(), Box<dyn Error>> {
     let mut connection = Connection::open_with_flags(
         path,
@@ -348,6 +349,38 @@ fn checkout_transaction_with_overtime(
         |row| row.get(0),
     )?;
 
+    // Café invoices linked to the guardian visit remain due until the final child leaves.
+    if remaining == 0 && overtime_collected {
+        let pending_cafe_sales = {
+            let mut st = tx.prepare(
+                "SELECT s.id, MAX(0,s.total_minor
+                  - COALESCE((SELECT SUM(p.amount_minor) FROM local_payments p WHERE p.sale_id=s.id AND p.status='confirmed'),0)
+                  + COALESCE((SELECT SUM(r.amount_minor) FROM local_refunds r JOIN local_payments p ON p.id=r.payment_id WHERE p.sale_id=s.id),0))
+                 FROM local_sales s WHERE s.visit_id=? AND s.status IN ('completed','partially_refunded')
+                   AND EXISTS(SELECT 1 FROM local_sale_items i WHERE i.sale_id=s.id AND i.item_type='cafe_product')"
+            )?;
+            let rows=st.query_map(params![visit_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?)))?;
+            rows.collect::<Result<Vec<_>,_>>()?
+        };
+        let pending_total:i64=pending_cafe_sales.iter().map(|(_,amount)|*amount).sum();
+        if pending_total>0 {
+            let requested=cafe_payment_method.as_deref().ok_or_else(||io::Error::other("حدد طريقة تحصيل مستحق الكافيه قبل إنهاء الزيارة."))?;
+            if !["cash","instapay","wallet","visa","other"].contains(&requested) {
+                return Err(io::Error::other("طريقة دفع مستحق الكافيه غير صحيحة.").into());
+            }
+            let method=if ["cash","instapay","wallet"].contains(&requested) { requested } else { "wallet" };
+            let shift_id:String=tx.query_row("SELECT id FROM local_cash_sessions WHERE closed_at IS NULL ORDER BY opened_at DESC LIMIT 1",[],|r|r.get(0))?;
+            let actor=actor_user_id.as_deref().unwrap_or("system");
+            for (sale_id,amount) in pending_cafe_sales {
+                if amount<=0 { continue; }
+                tx.execute(
+                    "INSERT INTO local_payments(id,sale_id,visit_id,method,method_label,status,amount_minor,received_by,created_at,cash_session_id) VALUES(?,?,?,?,?,'confirmed',?,?,?,?)",
+                    params![uuid::Uuid::new_v4().to_string(),sale_id,visit_id,method,requested,amount,actor,checkout_time_string,shift_id]
+                )?;
+            }
+        }
+    }
+
     if remaining == 0 {
         let total: i64 = tx.query_row(
             r#"
@@ -445,6 +478,7 @@ fn checkout_child(
     overtime_collection_note: Option<String>,
     overtime_waived: bool,
     overtime_waiver_reason: Option<String>,
+    cafe_payment_method: Option<String>,
 ) -> Result<(), String> {
     if visit_child_id.trim().is_empty() {
         return Err("Missing child visit ID.".to_string());
@@ -458,7 +492,7 @@ fn checkout_child(
     drop(db);
 
     let path = database_path(&app).map_err(|error| error.to_string())?;
-    checkout_transaction_with_overtime(&path, &visit_child_id, overtime_collected, overtime_collection_note, overtime_waived, overtime_waiver_reason, Some(actor)).map_err(|error| error.to_string())
+    checkout_transaction_with_overtime(&path, &visit_child_id, overtime_collected, overtime_collection_note, overtime_waived, overtime_waiver_reason, Some(actor), cafe_payment_method).map_err(|error| error.to_string())
 }
 
 
