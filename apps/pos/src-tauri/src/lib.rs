@@ -1523,9 +1523,12 @@ fn cancel_cafe_sale(
                     params![batch_qty,batch_id]).map_err(|e| e.to_string())?;
             }
         }
+        // A consumed/prepared item is already deducted by its original sale movement.
+        // Record its waste without subtracting the same quantity a second time.
+        let reversal_type = if stock_disposition == "return_in" { "return_in" } else { "waste_record" };
         tx.execute(
             "INSERT INTO local_stock_movements(id,inventory_item_id,movement_type,quantity_milli,sale_id,reason,created_by,created_at) VALUES(?,?,?,?,?,?,?,?)",
-            params![uuid::Uuid::new_v4().to_string(),item_id,stock_disposition,quantity,sale_id,format!("{}: {}",stock_label,reason.trim()),actor,now]
+            params![uuid::Uuid::new_v4().to_string(),item_id,reversal_type,quantity,sale_id,format!("{}: {}",stock_label,reason.trim()),actor,now]
         ).map_err(|e| e.to_string())?;
     }
 
