@@ -570,9 +570,22 @@ fn admin_list_users(app:tauri::AppHandle)->Result<Vec<Value>,String>{
 }
 #[tauri::command]
 fn admin_set_user_permissions(app:tauri::AppHandle,user_id:String,permissions:Vec<String>)->Result<(),String>{
- let allowed=["reception","active","packages","cafe","reports","shift","pricing","settings","bookings","overtime_waive","discounts"];
+ let allowed=["reception","active","packages","cafe","cafe_items","reports","shift","pricing","settings","bookings","overtime_waive","discounts"];
  if permissions.iter().any(|p|!allowed.contains(&p.as_str())){return Err("تم إرسال صلاحية غير معروفة.".into())}
- let mut db=auth_db(&app)?;let(actor,_)=require_role(&db,&["admin","manager"])?;let tx=db.transaction().map_err(|e|e.to_string())?;
+ let mut db=auth_db(&app)?;
+ let (actor,actor_roles)=require_role(&db,&["admin","manager"])?;
+ let current_role_json:String=db.query_row("SELECT role_codes_json FROM local_users WHERE id=?",params![user_id],|r|r.get(0)).map_err(|_|"الموظف غير موجود.".to_string())?;
+ let target_roles:Vec<String>=serde_json::from_str(&current_role_json).map_err(|_|"بيانات دور الموظف غير صالحة.".to_string())?;
+ if !actor_roles.iter().any(|r|r=="admin") {
+   if actor==user_id || target_roles.iter().any(|r|r=="admin"||r=="manager") {
+     return Err("مدير الوردية يمكنه تخصيص صلاحيات الكاشير ومستخدم التقارير فقط.".into());
+   }
+   let manager_assignable=["reception","active","packages","cafe","cafe_items","reports","shift","bookings","overtime_waive","discounts"];
+   if permissions.iter().any(|p|!manager_assignable.contains(&p.as_str())) {
+     return Err("لا يمكن لمدير الوردية منح صلاحيات إعداد الأسعار أو الإعدادات أو إدارة النظام.".into());
+   }
+ }
+ let tx=db.transaction().map_err(|e|e.to_string())?;
  let before:String=tx.query_row("SELECT permissions_json FROM local_users WHERE id=?",params![user_id],|r|r.get(0)).map_err(|_|"الموظف غير موجود.".to_string())?;
  let mut saved=permissions.clone();saved.push("__custom__".to_string());tx.execute("UPDATE local_users SET permissions_json=? WHERE id=?",params![json!(saved).to_string(),user_id]).map_err(|e|e.to_string())?;
  tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,before_json,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'user_permissions_changed','user',?,?,?,?)",params![actor,user_id,before,json!(saved).to_string(),Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
@@ -593,7 +606,7 @@ fn admin_set_user_active(app:tauri::AppHandle,user_id:String,is_active:bool)->Re
 #[tauri::command]
 fn admin_reset_user_password(app: tauri::AppHandle, user_id: String, new_password: String) -> Result<(), String> {
     if new_password.chars().count() < 12 { return Err("كلمة المرور يجب أن تكون 12 حرفًا على الأقل.".into()); }
-    let mut db=auth_db(&app)?; require_permission(&db,"pricing")?; let (actor,_)=require_role(&db,&["admin","manager","cashier"])?;
+    let mut db=auth_db(&app)?; let (actor,_)=require_role(&db,&["admin"])?;
     let mut salt=[0u8;16]; rand::thread_rng().fill_bytes(&mut salt);
     let tx=db.transaction().map_err(|e|e.to_string())?;
     let exists:i64=tx.query_row("SELECT COUNT(*) FROM local_users WHERE id=?",params![user_id],|r|r.get(0)).map_err(|e|e.to_string())?;
@@ -605,7 +618,7 @@ fn admin_reset_user_password(app: tauri::AppHandle, user_id: String, new_passwor
 #[tauri::command]
 fn admin_update_user_role(app: tauri::AppHandle, user_id: String, role: String) -> Result<(), String> {
     if !["admin","manager","cashier","viewer"].contains(&role.as_str()) { return Err("الدور غير صالح.".into()); }
-    let mut db=auth_db(&app)?; require_permission(&db,"pricing")?; let (actor,_)=require_role(&db,&["admin","manager","cashier"])?; let (current,_)=active_user(&db)?;
+    let mut db=auth_db(&app)?; let (actor,_)=require_role(&db,&["admin"])?; let (current,_)=active_user(&db)?;
     if current==user_id && role!="admin" { return Err("لا يمكنك إزالة صلاحية مدير النظام من حسابك الحالي.".into()); }
     let tx=db.transaction().map_err(|e|e.to_string())?;
     let before:String=tx.query_row("SELECT role_codes_json FROM local_users WHERE id=?",params![user_id],|r|r.get(0)).map_err(|e|e.to_string())?;
@@ -615,7 +628,7 @@ fn admin_update_user_role(app: tauri::AppHandle, user_id: String, role: String) 
 }
 #[tauri::command]
 fn admin_delete_user(app: tauri::AppHandle, user_id: String) -> Result<(), String> {
-    let mut db=auth_db(&app)?; require_permission(&db,"pricing")?; let (actor,_)=require_role(&db,&["admin","manager","cashier"])?; let (current,_)=active_user(&db)?;
+    let mut db=auth_db(&app)?; let (actor,_)=require_role(&db,&["admin"])?; let (current,_)=active_user(&db)?;
     if current==user_id { return Err("لا يمكنك حذف الحساب الذي تستخدمه حاليًا.".into()); }
     let tx=db.transaction().map_err(|e|e.to_string())?;
     let active_shift:i64=tx.query_row("SELECT COUNT(*) FROM local_cash_sessions WHERE closed_at IS NULL AND opened_by=?",params![user_id],|r|r.get(0)).map_err(|e|e.to_string())?;
