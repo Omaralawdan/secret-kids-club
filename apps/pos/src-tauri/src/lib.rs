@@ -522,6 +522,8 @@ fn require_role(db:&Connection,allowed:&[&str])->Result<(String,Vec<String>),Str
 fn require_permission(db:&Connection,permission:&str)->Result<(String,Vec<String>),String>{
  let(id,roles)=active_user(db)?;
  if roles.iter().any(|r|r=="admin"){return Ok((id,roles))}
+ // Cashiers must always be able to start and close their own shifts.
+ if permission=="shift" && roles.iter().any(|r|r=="cashier"){return Ok((id,roles))}
  let stored:String=db.query_row("SELECT permissions_json FROM local_users WHERE id=?",params![id],|r|r.get(0)).map_err(|e|e.to_string())?;
  let parsed:Vec<String>=serde_json::from_str(&stored).unwrap_or_default();
  let allowed=if parsed.iter().any(|p|p=="all"){true}else if parsed.iter().any(|p|p=="__custom__"){parsed.iter().any(|p|p==permission)}else if roles.iter().any(|r|r=="manager"){["reception","active","packages","cafe","cafe_items","reports","shift","pricing","bookings","overtime_waive","discounts"].contains(&permission)}else if roles.iter().any(|r|r=="cashier"){["reception","active","packages","cafe","shift","bookings","discounts"].contains(&permission)}else if roles.iter().any(|r|r=="viewer"){permission=="reports"}else{false};
@@ -886,8 +888,7 @@ fn close_cash_shift(app:tauri::AppHandle,counted_cash_minor:i64,variance_reason:
  let(id,float,_opened)=shift.ok_or("لا توجد وردية مفتوحة.")?;
  let active_visits:i64=tx.query_row("SELECT COUNT(*) FROM local_visits WHERE status='active'",[],|r|r.get(0)).map_err(|e|e.to_string())?;
  if active_visits>0 { return Err("لا يمكن إغلاق الوردية وهناك أطفال لم يتم تسجيل خروجهم بعد.".into()); }
- let required_inventory_count:i64=tx.query_row("SELECT COUNT(*) FROM (SELECT inventory_item_id FROM local_shift_inventory_opening WHERE cash_session_id=? UNION SELECT id FROM local_inventory_items WHERE is_active=1) x LEFT JOIN local_shift_inventory_counts c ON c.cash_session_id=? AND c.inventory_item_id=x.inventory_item_id WHERE c.id IS NULL",params![id,id],|r|r.get(0)).map_err(|e|e.to_string())?;
- if required_inventory_count>0 { return Err(format!("يجب جرد جميع أصناف المخزون قبل إغلاق الوردية. الأصناف المتبقية: {}",required_inventory_count)); }
+ // Stocktaking is optional at cash close; any saved counts are still reconciled below.
  let stale_inventory_count:i64=tx.query_row("SELECT COUNT(*) FROM local_shift_inventory_counts c WHERE c.cash_session_id=? AND EXISTS(SELECT 1 FROM local_stock_movements m WHERE m.inventory_item_id=c.inventory_item_id AND m.created_at>c.counted_at)",params![id],|r|r.get(0)).map_err(|e|e.to_string())?;
  if stale_inventory_count>0 { return Err("تم تسجيل حركة مخزون بعد الجرد. حدّث جرد الأصناف المتأثرة قبل إغلاق الوردية.".into()); }
  let now=Utc::now().to_rfc3339();
