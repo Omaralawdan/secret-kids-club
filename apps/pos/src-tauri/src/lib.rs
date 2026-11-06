@@ -1590,6 +1590,7 @@ pub fn run() {
         Migration { version: 19, description: "custom_pricing_guards", sql: include_str!("../migrations/019_custom_pricing_guards.sql"), kind: MigrationKind::Up },
         Migration { version: 20, description: "visit_coupons", sql: include_str!("../migrations/020_visit_coupons.sql"), kind: MigrationKind::Up },
         Migration { version: 21, description: "shift_inventory_reconciliation", sql: include_str!("../migrations/021_shift_inventory_reconciliation.sql"), kind: MigrationKind::Up },
+        Migration { version: 22, description: "visit_entry_collection", sql: include_str!("../migrations/022_visit_entry_collection.sql"), kind: MigrationKind::Up },
     ];
 
     tauri::Builder::default()
