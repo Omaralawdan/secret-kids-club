@@ -1868,6 +1868,22 @@ fn execute_legacy_migration(db: &Connection, sql: &str) -> Result<(), Box<dyn Er
 
             // SQLite has no portable ADD COLUMN IF NOT EXISTS. Check the schema
             // first so replaying legacy migrations only adds genuinely missing fields.
+            if tokens.len() >= 3
+                && tokens[0].eq_ignore_ascii_case("CREATE")
+                && tokens[1].eq_ignore_ascii_case("TABLE")
+            {
+                let table_token = tokens.iter().position(|token| token.eq_ignore_ascii_case("TABLE"))
+                    .and_then(|position| tokens.get(position + 1))
+                    .map(|token| token.trim_matches('"').trim_end_matches('('));
+                if let Some(table) = table_token {
+                    if sqlite_table_exists(db, table)? {
+                        statement.clear();
+                        inside_trigger = false;
+                        continue;
+                    }
+                }
+            }
+
             if tokens.len() >= 6
                 && tokens[0].eq_ignore_ascii_case("ALTER")
                 && tokens[1].eq_ignore_ascii_case("TABLE")
