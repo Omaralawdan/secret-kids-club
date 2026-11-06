@@ -280,6 +280,33 @@ fn checkout_transaction_with_overtime(
         )
         .into());
     }
+    // The entry amount was collected at check-in. Collect only this child's
+    // overtime now, never the original visit amount again.
+    if overtime_minutes > 0 && overtime_collected && !overtime_waived && overtime_amount > 0 {
+        let shift_id: String = tx.query_row(
+            "SELECT id FROM local_cash_sessions WHERE closed_at IS NULL ORDER BY opened_at DESC LIMIT 1",
+            [], |row| row.get(0)
+        )?;
+        let actor = actor_user_id.as_deref().unwrap_or("system");
+        let requested = calculation.get("paymentMethod").and_then(Value::as_str).unwrap_or("cash");
+        let method_label = if ["cash","instapay","wallet","visa","other"].contains(&requested) { requested } else { "cash" };
+        let method = if ["cash","instapay","wallet"].contains(&method_label) { method_label } else { "wallet" };
+        let sale_id = uuid::Uuid::new_v4().to_string();
+        let sale_no: i64 = tx.query_row("SELECT COALESCE(MAX(sale_number_local),0)+1 FROM local_sales", [], |row| row.get(0))?;
+        tx.execute(
+            "INSERT INTO local_sales(id,sale_number_local,visit_id,status,subtotal_minor,discount_minor,total_minor,cashier_user_id,created_at) VALUES(?,?,?,'completed',?,0,?,?,?)",
+            params![sale_id,sale_no,visit_id,overtime_amount,overtime_amount,actor,checkout_time_string],
+        )?;
+        tx.execute(
+            "INSERT INTO local_sale_items(id,sale_id,item_type,description_snapshot,quantity_milli,unit_price_minor,line_total_minor) VALUES(?,?,'play_entry','وقت إضافي',1000,?,?)",
+            params![uuid::Uuid::new_v4().to_string(),sale_id,overtime_amount,overtime_amount],
+        )?;
+        tx.execute(
+            "INSERT INTO local_payments(id,sale_id,visit_id,method,method_label,status,amount_minor,received_by,created_at,cash_session_id) VALUES(?,?,?,?,?,'confirmed',?,?,?,?)",
+            params![uuid::Uuid::new_v4().to_string(),sale_id,visit_id,method,method_label,overtime_amount,actor,checkout_time_string,shift_id],
+        )?;
+    }
+
     if overtime_waived {
         tx.execute(
             "INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,reason,before_json,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'overtime_waived','visit_child',?,?,?,?,?)",
@@ -345,34 +372,6 @@ fn checkout_transaction_with_overtime(
             )?;
         }
 
-        let collected_total: i64 = tx.query_row(
-            "SELECT COALESCE(SUM(MAX(0, p.final_amount_minor - CASE WHEN p.overtime_collected=0 THEN p.overtime_amount_minor ELSE 0 END)),0) FROM local_visit_child_pricing p JOIN local_visit_children vc ON vc.id=p.visit_child_id WHERE vc.visit_id=?",
-            params![visit_id], |row| row.get(0)
-        )?;
-        if collected_total > 0 {
-            let actor: String = tx.query_row("SELECT COALESCE(actor_user_id,'system') FROM local_session WHERE singleton_id=1", [], |row| row.get(0))?;
-            let shift_id: String = tx.query_row("SELECT id FROM local_cash_sessions WHERE closed_at IS NULL ORDER BY opened_at DESC LIMIT 1", [], |row| row.get(0)).optional()?.ok_or_else(|| io::Error::other("افتح وردية قبل تسجيل أي تحصيل."))?;
-            let payment_rows = {
-                let mut stmt = tx.prepare("SELECT p.final_amount_minor,p.overtime_amount_minor,p.overtime_collected,p.calculation_json FROM local_visit_child_pricing p JOIN local_visit_children vc ON vc.id=p.visit_child_id WHERE vc.visit_id=? ORDER BY vc.rowid")?;
-                let rows = stmt.query_map(params![visit_id], |row| Ok((row.get::<_,i64>(0)?,row.get::<_,i64>(1)?,row.get::<_,i64>(2)?,row.get::<_,String>(3)?)))?;
-                rows.collect::<Result<Vec<_>,_>>()?
-            };
-            let mut inserted_total=0i64;
-            for (final_amount,overtime_amount,overtime_collected,calculation_json) in payment_rows {
-                let amount=final_amount.saturating_sub(if overtime_collected==0{overtime_amount}else{0});
-                if amount<=0 { continue; }
-                let child_calculation:Value=serde_json::from_str(&calculation_json)?;
-                let requested=child_calculation.get("paymentMethod").and_then(Value::as_str).unwrap_or("cash");
-                let method_label=if ["cash","instapay","wallet","visa","other"].contains(&requested){requested}else{"cash"};
-                let method=if ["cash","instapay","wallet"].contains(&method_label){method_label}else{"wallet"};
-                tx.execute(
-                    "INSERT INTO local_payments(id,visit_id,method,method_label,status,amount_minor,received_by,created_at,cash_session_id) VALUES(lower(hex(randomblob(16))),?,?,?,?,?,?,?,?)",
-                    params![visit_id,method,method_label,"confirmed",amount,actor,checkout_time_string,shift_id],
-                )?;
-                inserted_total=inserted_total.checked_add(amount).ok_or_else(||io::Error::other("إجمالي التحصيل تجاوز الحد المسموح."))?;
-            }
-            if inserted_total!=collected_total { return Err(io::Error::other("مجموع دفعات الأطفال لا يطابق إجمالي التحصيل.").into()); }
-        }
     }
 
     // All child, pricing, and final-visit updates commit together.
@@ -1233,6 +1232,82 @@ fn list_cafe_recipes(app:tauri::AppHandle)->Result<Vec<Value>,String>{
 }
 
 #[tauri::command]
+fn collect_visit_entry(app: tauri::AppHandle, visit_id: String) -> Result<Value, String> {
+    if visit_id.trim().is_empty() { return Err("رقم الزيارة غير صالح.".into()); }
+    let mut db = auth_db(&app)?;
+    require_permission(&db,"reception")?;
+    let (actor, _) = require_role(&db,&["admin","manager","cashier"])?;
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
+    let existing: Option<String> = tx.query_row(
+        "SELECT entry_sale_id FROM local_visits WHERE id=? AND status='active'",
+        params![visit_id], |r| r.get(0)
+    ).optional().map_err(|e|e.to_string())?.flatten();
+    if let Some(sale_id) = existing {
+        let total: i64 = tx.query_row("SELECT total_minor FROM local_sales WHERE id=?",params![sale_id],|r|r.get(0)).map_err(|e|e.to_string())?;
+        tx.commit().map_err(|e|e.to_string())?;
+        return Ok(json!({"saleId":sale_id,"totalMinor":total,"alreadyCollected":true}));
+    }
+    let shift_id: String = tx.query_row(
+        "SELECT id FROM local_cash_sessions WHERE closed_at IS NULL ORDER BY opened_at DESC LIMIT 1",
+        [], |r| r.get(0)
+    ).optional().map_err(|e|e.to_string())?.ok_or("افتح الوردية قبل تحصيل دخول الأطفال.")?;
+    let rows = {
+        let mut st = tx.prepare(
+            "SELECT vc.child_name_snapshot,p.pricing_type,p.final_amount_minor,p.calculation_json,p.membership_id
+             FROM local_visit_children vc JOIN local_visit_child_pricing p ON p.visit_child_id=vc.id
+             WHERE vc.visit_id=? ORDER BY vc.rowid"
+        ).map_err(|e|e.to_string())?;
+        let mapped = st.query_map(params![visit_id], |r| Ok((
+            r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?,
+            r.get::<_,String>(3)?,r.get::<_,Option<String>>(4)?
+        ))).map_err(|e|e.to_string())?;
+        mapped.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())?
+    };
+    if rows.is_empty() { return Err("لا توجد تفاصيل أطفال لتحصيل الزيارة.".into()); }
+    let chargeable: Vec<_> = rows.into_iter()
+        .filter(|(_,kind,amount,_,membership)| kind!="membership" && membership.is_none() && *amount>0)
+        .collect();
+    let total: i64 = chargeable.iter().try_fold(0i64,|sum,row|sum.checked_add(row.2))
+        .ok_or("إجمالي تحصيل الدخول تجاوز الحد المسموح.")?;
+    if total == 0 {
+        tx.commit().map_err(|e|e.to_string())?;
+        return Ok(json!({"saleId":null,"totalMinor":0,"alreadyCollected":false}));
+    }
+    let sale_id = uuid::Uuid::new_v4().to_string();
+    let sale_no: i64 = tx.query_row("SELECT COALESCE(MAX(sale_number_local),0)+1 FROM local_sales",[],|r|r.get(0)).map_err(|e|e.to_string())?;
+    let now = Utc::now().to_rfc3339();
+    tx.execute(
+        "INSERT INTO local_sales(id,sale_number_local,visit_id,status,subtotal_minor,discount_minor,total_minor,cashier_user_id,created_at) VALUES(?,?,?,'completed',?,0,?,?,?)",
+        params![sale_id,sale_no,visit_id,total,total,actor,now]
+    ).map_err(|e|e.to_string())?;
+    for (child_name,_,amount,calculation_json,_) in chargeable {
+        tx.execute(
+            "INSERT INTO local_sale_items(id,sale_id,item_type,description_snapshot,quantity_milli,unit_price_minor,line_total_minor) VALUES(?,?,'play_entry',?,1000,?,?)",
+            params![uuid::Uuid::new_v4().to_string(),sale_id,format!("دخول منطقة الأطفال - {}",child_name),amount,amount]
+        ).map_err(|e|e.to_string())?;
+        let calculation: Value = serde_json::from_str(&calculation_json).map_err(|e|e.to_string())?;
+        let requested = calculation.get("paymentMethod").and_then(Value::as_str).unwrap_or("cash");
+        let method_label = if ["cash","instapay","wallet","visa","other"].contains(&requested) { requested } else { "cash" };
+        let method = if ["cash","instapay","wallet"].contains(&method_label) { method_label } else { "wallet" };
+        tx.execute(
+            "INSERT INTO local_payments(id,sale_id,visit_id,method,method_label,status,amount_minor,received_by,created_at,cash_session_id) VALUES(?,?,?,?,?,'confirmed',?,?,?,?)",
+            params![uuid::Uuid::new_v4().to_string(),sale_id,visit_id,method,method_label,amount,actor,now,shift_id]
+        ).map_err(|e|e.to_string())?;
+    }
+    let changed = tx.execute(
+        "UPDATE local_visits SET entry_sale_id=? WHERE id=? AND status='active' AND entry_sale_id IS NULL",
+        params![sale_id,visit_id]
+    ).map_err(|e|e.to_string())?;
+    if changed != 1 { return Err("تعذر تثبيت تحصيل الدخول؛ لم يتم تسجيل أي دفعة.".into()); }
+    tx.execute(
+        "INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'visit_entry_collected','visit',?,?,?)",
+        params![actor,visit_id,json!({"sale_id":sale_id,"total_minor":total,"cash_session_id":shift_id}).to_string(),now]
+    ).map_err(|e|e.to_string())?;
+    tx.commit().map_err(|e|e.to_string())?;
+    Ok(json!({"saleId":sale_id,"saleNumber":sale_no,"totalMinor":total,"alreadyCollected":false}))
+}
+
+#[tauri::command]
 fn create_cafe_sale(app:tauri::AppHandle,items:Vec<Value>,payments:Vec<Value>,coupon_code:Option<String>)->Result<Value,String>{
     if items.is_empty()||payments.is_empty(){return Err("أضف أصنافًا وحدد دفعة واحدة على الأقل.".into())}
     let mut db=auth_db(&app)?;let(actor,_)=require_role(&db,&["admin","manager","cashier"])?;require_permission(&db,"cafe")?;if coupon_code.as_deref().map(|v|!v.trim().is_empty()).unwrap_or(false){require_permission(&db,"discounts")?;}
@@ -1524,7 +1599,7 @@ pub fn run() {
                 .add_migrations("sqlite:secret-kids-club.db", migrations)
                 .build(),
         )
-        .invoke_handler(tauri::generate_handler![greet, list_coupons, save_coupon, set_coupon_active, apply_visit_coupon, create_membership_sale, list_bookings, save_booking, update_booking_status, list_cafe_stock_movements, record_cafe_stock_count, list_cafe_expiry_alerts, save_cafe_recipe, list_cafe_recipes, create_cafe_sale, list_cafe_items, save_cafe_item, adjust_cafe_stock, record_cafe_purchase, save_cafe_supplier, list_cafe_suppliers, cancel_membership, record_membership_payment, record_cash_movement, list_monthly_expenses, save_monthly_expense, checkout_child, extend_visit_child, cancel_visit, update_membership_overtime_rate, list_refundable_payments, record_expense, record_refund, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_set_user_permissions, admin_create_user, admin_set_user_active, admin_reset_user_password, admin_update_user_role, admin_delete_user, delete_pricing_rule, create_pricing_rule, get_active_cash_shift, get_shift_inventory_reconciliation, record_shift_inventory_count, open_cash_shift, close_cash_shift, admin_audit_log])
+        .invoke_handler(tauri::generate_handler![greet, list_coupons, save_coupon, set_coupon_active, apply_visit_coupon, create_membership_sale, list_bookings, save_booking, update_booking_status, list_cafe_stock_movements, record_cafe_stock_count, list_cafe_expiry_alerts, save_cafe_recipe, list_cafe_recipes, create_cafe_sale, collect_visit_entry, list_cafe_items, save_cafe_item, adjust_cafe_stock, record_cafe_purchase, save_cafe_supplier, list_cafe_suppliers, cancel_membership, record_membership_payment, record_cash_movement, list_monthly_expenses, save_monthly_expense, checkout_child, extend_visit_child, cancel_visit, update_membership_overtime_rate, list_refundable_payments, record_expense, record_refund, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_set_user_permissions, admin_create_user, admin_set_user_active, admin_reset_user_password, admin_update_user_role, admin_delete_user, delete_pricing_rule, create_pricing_rule, get_active_cash_shift, get_shift_inventory_reconciliation, record_shift_inventory_count, open_cash_shift, close_cash_shift, admin_audit_log])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
