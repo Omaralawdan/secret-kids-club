@@ -353,6 +353,18 @@ export default function App() {
   const canManage = isAdmin || authRoles.includes("manager");
   const canOperate = canManage || authRoles.includes("cashier");
   const reportAccess = (canOperate || authRoles.includes("viewer")) && hasPermission("reports");
+  const permittedScreens:Screen[] = [
+    ...(canOperate&&hasPermission("reception")?["reception" as Screen]:[]),
+    ...(canOperate&&hasPermission("active")?["active" as Screen]:[]),
+    ...(canOperate&&hasPermission("bookings")?["bookings" as Screen]:[]),
+    ...(canOperate&&hasPermission("packages")?["packages" as Screen]:[]),
+    ...(canOperate&&hasPermission("pricing")?["pricing" as Screen]:[]),
+    ...(isAdmin&&hasPermission("settings")?["settings" as Screen]:[]),
+    ...(reportAccess?["reports" as Screen]:[]),
+    ...(canOperate&&hasPermission("cafe")?["cafe" as Screen]:[]),
+    ...(canOperate&&hasPermission("shift")?["admin" as Screen]:[]),
+  ];
+  useEffect(()=>{if(authUser&&!permittedScreens.includes(screen)){setScreen(permittedScreens[0]??"reports")}},[authUser,screen,authPermissionKeys.join("|")]);
   if (!authUser) return <AuthGate onAuthenticated={(user) => { setAuthUser(user); try { const roles=JSON.parse(user.roles) as string[];let perms:string[]=[];try{perms=user.permissions?JSON.parse(user.permissions):[]}catch{};if(roles.includes("viewer"))setScreen("reports");else if(perms.includes("__custom__")){const selected=perms.filter(x=>x!=="__custom__");setScreen(selected.includes("reception")?"reception":selected.includes("packages")?"packages":selected.includes("active")?"active":selected.includes("cafe")?"cafe":selected.includes("bookings")?"bookings":selected.includes("reports")?"reports":selected.includes("pricing")?"pricing":selected.includes("settings")?"settings":"admin");} } catch {} }} databaseReady={ready} />;
 
   async function createRule(event: FormEvent<HTMLFormElement>) {
@@ -1001,9 +1013,9 @@ export default function App() {
         </section>
       )}
 
-      {screen === "bookings" ? (
+      {screen === "bookings" && canOperate && hasPermission("bookings") ? (
         <BookingsCenter onUseBooking={useBookingForCheckIn} />
-      ) : screen === "packages" ? (
+      ) : screen === "packages" && canOperate && hasPermission("packages") ? (
         <>
         <section className="panel"><h3>{ar?"تسجيل أو تجديد باقة":"Register or renew a package"}</h3>
           <form className="form-grid" onSubmit={enrollMembership}>
@@ -1021,11 +1033,11 @@ export default function App() {
           {isAdmin&&<button className="secondary-button" onClick={()=>setScreen("pricing")}>{ar?"إدارة وإنشاء الباقات":"Manage and create packages"}</button>}
         </section>
         </>
-      ) : screen === "cafe" ? (
+      ) : screen === "cafe" && canOperate && hasPermission("cafe") ? (
         <CafeCenter canManage={canManage} canManageItems={isAdmin || hasPermission("cafe_items")} canManagePricing={hasPermission("pricing")} canApplyDiscounts={hasPermission("discounts")} activeChildren={activeChildren} />
-      ) : screen === "admin" ? (
+      ) : screen === "admin" && canOperate && hasPermission("shift") ? (
         <AdminTools user={authUser} onLogout={() => { void invoke("logout_user").finally(() => setAuthUser(null)); }}  />
-      ) : screen === "reports" ? (
+      ) : screen === "reports" && reportAccess ? (
         <ReportsCenter db={db} language={language} isAdmin={isAdmin} canManage={canManage} />
       ) : screen === "settings" && isAdmin ? (
         <section className="panel settings-panel">
@@ -1058,7 +1070,7 @@ export default function App() {
           </div>
           <div className="settings-preview"><strong>{ar ? "معاينة الإيصال" : "Receipt preview"}</strong><span>{venueName || "Secret Kids Club"}</span><span>{venuePhone || "01122799113"}</span></div>
         </section>
-      ) : screen === "active" ? (
+      ) : screen === "active" && canOperate && hasPermission("active") ? (
         <section className="panel">
           <div className="panel-title">
             <div>
@@ -1148,7 +1160,7 @@ export default function App() {
               : "Overtime shown here is an estimate. The final amount is saved when checking out."}
           </p>
         </section>
-      ) : screen === "reception" ? (
+      ) : screen === "reception" && canOperate && hasPermission("reception") ? (
         <form className="workspace" onSubmit={createVisit}>
           <section className="panel">
             <div className="panel-title">
