@@ -1831,6 +1831,72 @@ fn write_startup_log(directory: &Path, message: &str) {
     }
 }
 
+fn execute_legacy_migration(db: &Connection, sql: &str) -> Result<(), Box<dyn Error>> {
+    let mut statement = String::new();
+    let mut inside_trigger = false;
+
+    for line in sql.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            statement.push('\n');
+            continue;
+        }
+        statement.push_str(line);
+        statement.push('\n');
+
+        if !inside_trigger && statement.to_ascii_uppercase().contains("CREATE TRIGGER") {
+            inside_trigger = true;
+        }
+
+        if trimmed.starts_with("--") {
+            continue;
+        }
+
+        let statement_complete = if inside_trigger {
+            trimmed.eq_ignore_ascii_case("END;")
+        } else {
+            trimmed.ends_with(';')
+        };
+
+        if statement_complete {
+            let executable = statement
+                .lines()
+                .filter(|part| !part.trim_start().starts_with("--"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let tokens = executable.split_whitespace().collect::<Vec<_>>();
+
+            // SQLite has no portable ADD COLUMN IF NOT EXISTS. Check the schema
+            // first so replaying legacy migrations only adds genuinely missing fields.
+            if tokens.len() >= 6
+                && tokens[0].eq_ignore_ascii_case("ALTER")
+                && tokens[1].eq_ignore_ascii_case("TABLE")
+                && tokens[3].eq_ignore_ascii_case("ADD")
+                && tokens[4].eq_ignore_ascii_case("COLUMN")
+            {
+                let table = tokens[2].trim_matches('"');
+                let column = tokens[5].trim_matches('"');
+                if sqlite_column_exists(db, table, column)? {
+                    statement.clear();
+                    inside_trigger = false;
+                    continue;
+                }
+            }
+
+            if !executable.trim().is_empty() {
+                db.execute_batch(&statement)?;
+            }
+            statement.clear();
+            inside_trigger = false;
+        }
+    }
+
+    if !statement.trim().is_empty() {
+        db.execute_batch(&statement)?;
+    }
+    Ok(())
+}
+
 fn run_startup_migrations(app: &tauri::AppHandle) -> Result<(), Box<dyn Error>> {
     let directory = app.path().app_config_dir()?;
     fs::create_dir_all(&directory)?;
@@ -1839,9 +1905,36 @@ fn run_startup_migrations(app: &tauri::AppHandle) -> Result<(), Box<dyn Error>> 
     write_startup_log(&directory, "Starting local database initialization.");
 
     let result = (|| -> Result<(), Box<dyn Error>> {
-        let mut db = Connection::open(&database_file)?;
+        let db = Connection::open(&database_file)?;
         db.pragma_update(None, "foreign_keys", "ON")?;
         let has_existing_schema = database_existed && sqlite_table_exists(&db, "local_users")?;
+
+        let migrations: [(i64, &str, &str); 24] = [
+            (1, "create_local_pos_schema", include_str!("../migrations/001_local_schema_migration.sql")),
+            (2, "add_pricing_discounts_and_memberships", include_str!("../migrations/002_pricing_schema.sql")),
+            (3, "customer_profiles_and_membership_usage", include_str!("../migrations/003_customer_profiles_and_membership_usage.sql")),
+            (4, "auth_shifts_audit", include_str!("../migrations/004_auth_shifts_audit.sql")),
+            (5, "role_write_guards", include_str!("../migrations/005_role_write_guards.sql")),
+            (6, "pricing_role_policy", include_str!("../migrations/006_pricing_role_policy.sql")),
+            (7, "partial_collection_and_membership_sales", include_str!("../migrations/007_partial_collection_and_membership_sales.sql")),
+            (8, "membership_overtime_rate", include_str!("../migrations/008_membership_overtime_rate.sql")),
+            (9, "waivers_and_visit_cancellations", include_str!("../migrations/009_waivers_and_visit_cancellations.sql")),
+            (10, "shift_payments_expenses_refunds", include_str!("../migrations/010_shift_payments_expenses_refunds.sql")),
+            (11, "shift_variance_reason", include_str!("../migrations/011_shift_variance_reason.sql")),
+            (12, "operations_inventory_and_fixed_expenses", include_str!("../migrations/012_operations_inventory_and_fixed_expenses.sql")),
+            (13, "custom_employee_permissions", include_str!("../migrations/013_custom_employee_permissions.sql")),
+            (14, "extended_payment_methods", include_str!("../migrations/014_extended_payment_methods.sql")),
+            (15, "membership_partial_payments", include_str!("../migrations/015_membership_partial_payments.sql")),
+            (16, "bookings_and_birthday_parties", include_str!("../migrations/016_bookings_and_birthday_parties.sql")),
+            (17, "coupons", include_str!("../migrations/017_coupons.sql")),
+            (18, "booking_visit_link", include_str!("../migrations/018_booking_visit_link.sql")),
+            (19, "custom_pricing_guards", include_str!("../migrations/019_custom_pricing_guards.sql")),
+            (20, "visit_coupons", include_str!("../migrations/020_visit_coupons.sql")),
+            (21, "shift_inventory_reconciliation", include_str!("../migrations/021_shift_inventory_reconciliation.sql")),
+            (22, "visit_entry_collection", include_str!("../migrations/022_visit_entry_collection.sql")),
+            (23, "cafe_item_images", include_str!("../migrations/023_cafe_item_images.sql")),
+            (24, "cafe_expiry_batch_tracking", include_str!("../migrations/024_cafe_expiry_batch_tracking.sql")),
+        ];
 
         db.execute_batch("BEGIN IMMEDIATE;")?;
         let migration_result = (|| -> Result<(), Box<dyn Error>> {
@@ -1853,76 +1946,24 @@ fn run_startup_migrations(app: &tauri::AppHandle) -> Result<(), Box<dyn Error>> 
                 );",
             )?;
 
-            if has_existing_schema {
-                // Existing installations predate the SQL plugin migration ledger.
-                // Never replay migrations 1-21 against their live business tables.
+            for (version, description, sql) in migrations {
+                let apply_result = if has_existing_schema {
+                    execute_legacy_migration(&db, sql)
+                } else {
+                    db.execute_batch(sql).map_err(|error| Box::new(error) as Box<dyn Error>)
+                };
+                apply_result.map_err(|error| {
+                    io::Error::new(
+                        io::ErrorKind::Other,
+                        format!("Database migration {version} ({description}) failed: {error}"),
+                    )
+                })?;
+
                 db.execute(
                     "INSERT OR IGNORE INTO local_app_migrations(version,description,applied_at)
-                     VALUES(21,'legacy_database_baseline',?1)",
-                    params![Utc::now().to_rfc3339()],
+                     VALUES(?1,?2,?3)",
+                    params![version, description, Utc::now().to_rfc3339()],
                 )?;
-
-                ensure_sqlite_column(&db, "local_visits", "entry_sale_id", "TEXT REFERENCES local_sales(id)")?;
-                db.execute_batch(
-                    "CREATE UNIQUE INDEX IF NOT EXISTS local_visits_entry_sale_idx
-                     ON local_visits(entry_sale_id) WHERE entry_sale_id IS NOT NULL;",
-                )?;
-
-                ensure_sqlite_column(&db, "local_inventory_items", "image_data_url", "TEXT")?;
-                db.execute_batch(include_str!("../migrations/024_cafe_expiry_batch_tracking.sql"))?;
-
-                for (version, description) in [
-                    (22, "visit_entry_collection"),
-                    (23, "cafe_item_images"),
-                    (24, "cafe_expiry_batch_tracking"),
-                ] {
-                    db.execute(
-                        "INSERT OR IGNORE INTO local_app_migrations(version,description,applied_at)
-                         VALUES(?1,?2,?3)",
-                        params![version, description, Utc::now().to_rfc3339()],
-                    )?;
-                }
-            } else {
-                // A genuinely new database gets the complete schema exactly once.
-                let migrations: [(i64, &str, &str); 24] = [
-                    (1, "create_local_pos_schema", include_str!("../migrations/001_local_schema_migration.sql")),
-                    (2, "add_pricing_discounts_and_memberships", include_str!("../migrations/002_pricing_schema.sql")),
-                    (3, "customer_profiles_and_membership_usage", include_str!("../migrations/003_customer_profiles_and_membership_usage.sql")),
-                    (4, "auth_shifts_audit", include_str!("../migrations/004_auth_shifts_audit.sql")),
-                    (5, "role_write_guards", include_str!("../migrations/005_role_write_guards.sql")),
-                    (6, "pricing_role_policy", include_str!("../migrations/006_pricing_role_policy.sql")),
-                    (7, "partial_collection_and_membership_sales", include_str!("../migrations/007_partial_collection_and_membership_sales.sql")),
-                    (8, "membership_overtime_rate", include_str!("../migrations/008_membership_overtime_rate.sql")),
-                    (9, "waivers_and_visit_cancellations", include_str!("../migrations/009_waivers_and_visit_cancellations.sql")),
-                    (10, "shift_payments_expenses_refunds", include_str!("../migrations/010_shift_payments_expenses_refunds.sql")),
-                    (11, "shift_variance_reason", include_str!("../migrations/011_shift_variance_reason.sql")),
-                    (12, "operations_inventory_and_fixed_expenses", include_str!("../migrations/012_operations_inventory_and_fixed_expenses.sql")),
-                    (13, "custom_employee_permissions", include_str!("../migrations/013_custom_employee_permissions.sql")),
-                    (14, "extended_payment_methods", include_str!("../migrations/014_extended_payment_methods.sql")),
-                    (15, "membership_partial_payments", include_str!("../migrations/015_membership_partial_payments.sql")),
-                    (16, "bookings_and_birthday_parties", include_str!("../migrations/016_bookings_and_birthday_parties.sql")),
-                    (17, "coupons", include_str!("../migrations/017_coupons.sql")),
-                    (18, "booking_visit_link", include_str!("../migrations/018_booking_visit_link.sql")),
-                    (19, "custom_pricing_guards", include_str!("../migrations/019_custom_pricing_guards.sql")),
-                    (20, "visit_coupons", include_str!("../migrations/020_visit_coupons.sql")),
-                    (21, "shift_inventory_reconciliation", include_str!("../migrations/021_shift_inventory_reconciliation.sql")),
-                    (22, "visit_entry_collection", include_str!("../migrations/022_visit_entry_collection.sql")),
-                    (23, "cafe_item_images", include_str!("../migrations/023_cafe_item_images.sql")),
-                    (24, "cafe_expiry_batch_tracking", include_str!("../migrations/024_cafe_expiry_batch_tracking.sql")),
-                ];
-                for (version, description, sql) in migrations {
-                    db.execute_batch(sql).map_err(|error| {
-                        io::Error::new(
-                            io::ErrorKind::Other,
-                            format!("Database migration {version} ({description}) failed: {error}"),
-                        )
-                    })?;
-                    db.execute(
-                        "INSERT OR IGNORE INTO local_app_migrations(version,description,applied_at)
-                         VALUES(?1,?2,?3)",
-                        params![version, description, Utc::now().to_rfc3339()],
-                    )?;
-                }
             }
             Ok(())
         })();
