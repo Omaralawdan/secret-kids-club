@@ -1861,7 +1861,7 @@ fn execute_legacy_migration(db: &Connection, sql: &str) -> Result<(), Box<dyn Er
         }
 
         let statement_complete = if inside_trigger {
-            trimmed.eq_ignore_ascii_case("END;")
+            trimmed.to_ascii_uppercase().ends_with("END;")
         } else {
             trimmed.ends_with(';')
         };
@@ -2053,7 +2053,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod checkout_tests {
-    use super::checkout_transaction;
+    use super::{checkout_transaction, execute_legacy_migration, sqlite_object_exists};
     use chrono::{Duration, SecondsFormat, Utc};
     use rusqlite::{params, Connection};
     use std::path::{Path, PathBuf};
@@ -2415,4 +2415,19 @@ mod checkout_tests {
         drop(db);
         let _ = std::fs::remove_file(path);
     }
+
+    #[test]
+    fn migration_skips_existing_trigger_and_creates_following_trigger() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE local_users (username TEXT, permissions_json TEXT);\n             CREATE TRIGGER require_admin_for_user_identity_update\n             BEFORE UPDATE OF username ON local_users\n             BEGIN SELECT 1; END;"
+        ).unwrap();
+
+        let migration = "CREATE TRIGGER require_admin_for_user_identity_update\n             BEFORE UPDATE OF username ON local_users\n             BEGIN SELECT 1; END;\n\n             CREATE TRIGGER require_manager_for_user_permissions_update\n             BEFORE UPDATE OF permissions_json ON local_users\n             BEGIN SELECT 1; END;";
+
+        execute_legacy_migration(&db, migration).unwrap();
+        assert!(sqlite_object_exists(&db, "trigger", "require_admin_for_user_identity_update").unwrap());
+        assert!(sqlite_object_exists(&db, "trigger", "require_manager_for_user_permissions_update").unwrap());
+    }
+
 }
