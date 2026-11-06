@@ -1798,6 +1798,14 @@ fn sqlite_table_exists(db: &Connection, table: &str) -> rusqlite::Result<bool> {
     )
 }
 
+fn sqlite_object_exists(db: &Connection, object_type: &str, name: &str) -> rusqlite::Result<bool> {
+    db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type=?1 AND name=?2)",
+        params![object_type, name],
+        |row| row.get(0),
+    )
+}
+
 fn sqlite_column_exists(db: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
     let mut statement = db.prepare(&format!("PRAGMA table_info({table})"))?;
     let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
@@ -1868,6 +1876,31 @@ fn execute_legacy_migration(db: &Connection, sql: &str) -> Result<(), Box<dyn Er
 
             // SQLite has no portable ADD COLUMN IF NOT EXISTS. Check the schema
             // first so replaying legacy migrations only adds genuinely missing fields.
+            if tokens.len() >= 3 && tokens[0].eq_ignore_ascii_case("CREATE") {
+                let object = if tokens[1].eq_ignore_ascii_case("TRIGGER") {
+                    Some(("trigger", 2usize))
+                } else if tokens[1].eq_ignore_ascii_case("INDEX") {
+                    Some(("index", 2usize))
+                } else if tokens.len() >= 4
+                    && tokens[1].eq_ignore_ascii_case("UNIQUE")
+                    && tokens[2].eq_ignore_ascii_case("INDEX")
+                {
+                    Some(("index", 3usize))
+                } else {
+                    None
+                };
+                if let Some((object_type, name_position)) = object {
+                    if let Some(name) = tokens.get(name_position) {
+                        let name = name.trim_matches('"');
+                        if sqlite_object_exists(db, object_type, name)? {
+                            statement.clear();
+                            inside_trigger = false;
+                            continue;
+                        }
+                    }
+                }
+            }
+
             if tokens.len() >= 3
                 && tokens[0].eq_ignore_ascii_case("CREATE")
                 && tokens[1].eq_ignore_ascii_case("TABLE")
