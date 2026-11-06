@@ -225,6 +225,11 @@ fn checkout_transaction_with_overtime(
     calculation["overtimeWaived"] = json!(overtime_waived);
     calculation["overtimeWaiverReason"] = json!(overtime_waiver_reason.as_deref().unwrap_or(""));
     calculation["checkoutCalculatedAt"] = json!(checkout_time_string);
+    let extension_amount = calculation.get("extensionAmountMinor").and_then(Value::as_i64).unwrap_or(0).max(0);
+    if extension_amount > 0 {
+        calculation["extensionCollected"] = json!(overtime_collected);
+        calculation["extensionCollectionNote"] = json!(if overtime_collected { "" } else { overtime_collection_note.as_deref().unwrap_or("").trim() });
+    }
 
     let child_update = tx.execute(
         r#"
@@ -282,9 +287,9 @@ fn checkout_transaction_with_overtime(
     }
     // Entry charges are already settled at check-in. Collect only extensions
     // and overtime that the cashier explicitly confirms as collected.
-    let extension_amount = calculation.get("extensionAmountMinor").and_then(Value::as_i64).unwrap_or(0).max(0);
+    let extension_to_collect = if overtime_collected { extension_amount } else { 0 };
     let overtime_to_collect = if overtime_collected && !overtime_waived { overtime_amount } else { 0 };
-    let checkout_extra = extension_amount.checked_add(overtime_to_collect)
+    let checkout_extra = extension_to_collect.checked_add(overtime_to_collect)
         .ok_or_else(|| io::Error::other("Checkout extra amount overflowed."))?;
     if checkout_extra > 0 {
         let shift_id: String = tx.query_row(
