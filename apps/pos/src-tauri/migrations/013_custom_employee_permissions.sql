@@ -1,5 +1,10 @@
 -- Allow managers to customize only the operational permissions of staff.
+-- This migration can be replayed on legacy databases where one or both
+-- triggers were created by a partially completed earlier startup.
 DROP TRIGGER IF EXISTS require_admin_for_user_privilege_update;
+DROP TRIGGER IF EXISTS require_admin_for_user_identity_update;
+DROP TRIGGER IF EXISTS require_manager_for_user_permissions_update;
+
 CREATE TRIGGER require_admin_for_user_identity_update
 BEFORE UPDATE OF username,password_salt,password_hash,role_codes_json,is_active ON local_users
 WHEN NOT EXISTS (
