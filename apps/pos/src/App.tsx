@@ -348,7 +348,7 @@ export default function App() {
   const ready = databaseStatus === "Connected" && db !== null;
   const authRoles: string[] = (() => { try { return authUser ? JSON.parse(authUser.roles) : []; } catch { return []; } })();
   const authPermissionKeys: string[] = (() => { if(authRoles.includes("admin"))return ["all"]; try { const p=authUser?.permissions?JSON.parse(authUser.permissions):[]; if(Array.isArray(p)&&p.includes("all"))return ["all"]; if(Array.isArray(p)&&p.includes("__custom__"))return p.filter((x:string)=>x!=="__custom__"); } catch {} return authRoles.includes("admin")?["all"]:authRoles.includes("manager")?["reception","active","packages","cafe","cafe_items","reports","shift","pricing","bookings","overtime_waive","discounts"]:authRoles.includes("cashier")?["reception","active","packages","cafe","shift","bookings","discounts"]:authRoles.includes("viewer")?["reports"]:[]; })();
-  const hasPermission = (key:string) => authPermissionKeys.includes("all") || authPermissionKeys.includes(key);
+  const hasPermission = (key:string) => (key === "shift" && authRoles.includes("cashier")) || authPermissionKeys.includes("all") || authPermissionKeys.includes(key);
   const isAdmin = authRoles.includes("admin");
   const canManage = isAdmin || authRoles.includes("manager");
   const canOperate = canManage || authRoles.includes("cashier");
@@ -1212,13 +1212,13 @@ export default function App() {
                     <label className="child-name">{tr("Child name")}
                       <input value={child.name} onChange={(e) => updateChild(child.key, "name", e.target.value)} required placeholder={tr("Child's name")} />
                     </label>
-                    <label className="child-pricing">{tr("Pricing rule")}
+                    <label className="child-pricing child-rule-field">{tr("Pricing rule")}
                       <select value={child.ruleId} onChange={(e) => updateChild(child.key, "ruleId", e.target.value)}>
                         <option value="">{ar ? "تسعير يدوي" : "Manual price"}</option>
                         {rules.map((rule) => <option key={rule.id} value={rule.id}>{rule.name} · {tr(rule.pricing_type)}</option>)}
                       </select>
                     </label>
-                    <label className="child-pricing">{ar ? "طريقة دفع الطفل" : "Child payment method"}<select value={child.paymentMethod} onChange={e=>updateChild(child.key,"paymentMethod",e.target.value as ChildDraft["paymentMethod"])}><option value="cash">{ar?"كاش":"Cash"}</option><option value="instapay">InstaPay</option><option value="wallet">{ar?"محفظة":"E-Wallet"}</option><option value="visa">{ar?"فيزا":"Visa"}</option><option value="other">{ar?"أخرى":"Other"}</option></select></label><label className="child-pricing">{ar ? "سعر الطفل (جنيه)" : "Child price (EGP)"}<input type="text" inputMode="decimal" required value={child.priceMinor === null ? "" : (child.priceMinor / 100).toFixed(2)} onChange={e => updateChild(child.key, "priceMinor", e.target.value === "" ? null : tryEgpToMinor(e.target.value))} placeholder={ar ? "اكتب سعر هذا الطفل" : "Enter this child's price"} /></label>
+                    <label className="child-pricing child-base-price">{ar ? "سعر الطفل (جنيه)" : "Child price (EGP)"}<input type="text" inputMode="decimal" required value={child.priceMinor === null ? "" : (child.priceMinor / 100).toFixed(2)} onChange={e => updateChild(child.key, "priceMinor", e.target.value === "" ? null : tryEgpToMinor(e.target.value))} placeholder={ar ? "اكتب سعر هذا الطفل" : "Enter this child's price"} /></label>
                     <label className="booked-hours-field">
                       {ar ? "مدة الحجز (بالساعات)" : "Booked duration (hours)"}
                       <input
@@ -1230,9 +1230,9 @@ export default function App() {
                         step="0.25"
                         onChange={(e) => updateChild(child.key, "durationHours", Number(e.target.value))}
                       />
-                      <span className="muted">{ar ? "المدة مستقلة لكل طفل؛ السعر الأساسي الذي أدخلته لهذا الطفل لا يتغير مع الأطفال الآخرين." : "Duration is set per child; this child's manually entered base price is independent of other children."}</span>
+                      <span className="muted">{ar ? "المدة مستقلة لكل طفل." : "Duration is set separately for each child."}</span>
                     </label>
-                    <label className="child-pricing">{ar ? "سعر ساعة الإضافي (جنيه)" : "Overtime hourly rate (EGP)"}<input type="text" inputMode="decimal" required value={child.hourlyRateMinor === null ? "" : (child.hourlyRateMinor / 100).toFixed(2)} onChange={e => updateChild(child.key, "hourlyRateMinor", e.target.value === "" ? null : tryEgpToMinor(e.target.value))} placeholder={ar ? "اكتب سعر الساعة" : "Enter hourly rate"} /><span className="muted">{selected?.pricing_type === "hourly" ? (ar ? "يُستخدم لحساب السعر الأساسي والوقت الإضافي." : "Used for the booked hourly price and overtime.") : (ar ? "يُستخدم لحساب أي وقت يتجاوز مدة الحجز." : "Used to calculate time beyond the booked duration.")}</span></label>
+                    <label className="child-pricing child-overtime">{ar ? "سعر ساعة الإضافي (جنيه)" : "Overtime hourly rate (EGP)"}<input type="text" inputMode="decimal" required value={child.hourlyRateMinor === null ? "" : (child.hourlyRateMinor / 100).toFixed(2)} onChange={e => updateChild(child.key, "hourlyRateMinor", e.target.value === "" ? null : tryEgpToMinor(e.target.value))} placeholder={ar ? "اكتب سعر الساعة" : "Enter hourly rate"} /><span className="muted">{selected?.pricing_type === "hourly" ? (ar ? "يُستخدم لحساب السعر الأساسي والوقت الإضافي." : "Used for the booked hourly price and overtime.") : (ar ? "يُستخدم لحساب أي وقت يتجاوز مدة الحجز." : "Used to calculate time beyond the booked duration.")}</span></label>
                     <div className="child-price">
                       <span>{tr("Price estimate")}</span>
                       <strong>{money(priceFor(child), language)}</strong>
