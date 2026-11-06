@@ -999,7 +999,7 @@ fn record_cash_movement(app: tauri::AppHandle, movement_type: String, amount_min
     }
     let mut db=auth_db(&app)?;
     require_permission(&db,"shift")?;
-    let (actor,_)=require_role(&db,&["admin","manager"])?;
+    let (actor,_)=require_role(&db,&["admin","manager","cashier"])?;
     let tx=db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
     let shift_id:String=tx.query_row("SELECT id FROM local_cash_sessions WHERE closed_at IS NULL ORDER BY opened_at DESC LIMIT 1",[],|r|r.get(0)).optional().map_err(|e|e.to_string())?.ok_or("لا توجد وردية مفتوحة.")?;
     let id=uuid::Uuid::new_v4().to_string();
@@ -2007,7 +2007,11 @@ fn run_startup_migrations(app: &tauri::AppHandle) -> Result<(), Box<dyn Error>> 
         for (version, description, sql) in migrations {
             db.execute_batch("SAVEPOINT skc_schema_migration;")?;
             let apply_result = (|| -> Result<(), Box<dyn Error>> {
-                if version == 15 {
+                if version == 23 {
+                    if sqlite_table_exists(&db, "local_inventory_items")? {
+                        ensure_sqlite_column(&db, "local_inventory_items", "image_data_url", "TEXT")?;
+                    }
+                } else if version == 15 {
                     if sqlite_table_exists(&db, "local_child_memberships")? {
                         ensure_sqlite_column(&db, "local_child_memberships", "purchased_at", "TEXT")?;
                         ensure_sqlite_column(&db, "local_child_memberships", "sale_id", "TEXT REFERENCES local_sales(id)")?;
