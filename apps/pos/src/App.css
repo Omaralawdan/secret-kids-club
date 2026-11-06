@@ -250,3 +250,19 @@ html { font-size: calc(16px * var(--app-scale, 1)); }
  .child-row .child-name,.child-row .child-rule-field,.child-row .child-base-price,.child-row .booked-hours-field,.child-row .child-overtime,.child-row .child-price { grid-column:2; }
  .child-row .remove-button { grid-column:3; grid-row:1; }
 }
+
+
+/* Readable employee permission cards and hourly pricing fields. */
+.employee-permissions { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.employee-permissions label { align-items: flex-start; min-height: 48px; height: auto; white-space: normal; overflow-wrap: anywhere; word-break: normal; line-height: 1.55; padding: 9px 11px; }
+.employee-permissions label span { flex: 1 1 auto; min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+.employee-permissions label input[type="checkbox"] { flex: 0 0 17px; margin-top: 2px; }
+.child-row .child-rule-field { grid-column: 2; }
+.child-row .booked-hours-field { grid-column: 3; }
+.child-row .child-overtime { grid-column: 4; }
+.child-row .child-price { grid-column: 2 / span 3; }
+@media (max-width:760px) {
+ .employee-permissions { grid-template-columns: 1fr; }
+ .employee-permissions label { min-height: 42px; }
+ .child-row .child-name,.child-row .child-rule-field,.child-row .booked-hours-field,.child-row .child-overtime,.child-row .child-price { grid-column: 2; }
+}
