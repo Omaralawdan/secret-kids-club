@@ -2430,4 +2430,43 @@ mod checkout_tests {
         assert!(sqlite_object_exists(&db, "trigger", "require_manager_for_user_permissions_update").unwrap());
     }
 
+
+    #[test]
+    fn membership_payment_migration_adds_missing_purchase_timestamp_to_legacy_table() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE local_child_memberships (
+                id TEXT PRIMARY KEY,
+                child_name_snapshot TEXT NOT NULL,
+                plan_id TEXT NOT NULL,
+                starts_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL
+            );
+            CREATE TABLE local_sales (id TEXT PRIMARY KEY, created_at TEXT NOT NULL);
+            CREATE TABLE local_sale_items (
+                id TEXT PRIMARY KEY,
+                sale_id TEXT NOT NULL,
+                description_snapshot TEXT NOT NULL
+            );
+            CREATE TABLE local_membership_plans (id TEXT PRIMARY KEY, name TEXT NOT NULL);
+            INSERT INTO local_membership_plans(id,name) VALUES ('plan-1','Monthly');
+            INSERT INTO local_child_memberships(id,child_name_snapshot,plan_id,starts_at,expires_at)
+              VALUES ('membership-1','Child','plan-1','2026-11-01T10:00:00Z','2026-12-01T10:00:00Z');
+            INSERT INTO local_sales(id,created_at) VALUES ('sale-1','2026-11-01T10:01:00Z');
+            INSERT INTO local_sale_items(id,sale_id,description_snapshot)
+              VALUES ('line-1','sale-1','Membership package: Monthly - Child');"
+        ).unwrap();
+
+        let migration = include_str!("../migrations/015_membership_partial_payments.sql");
+        execute_legacy_migration(&db, migration).unwrap();
+
+        let (purchased_at, sale_id): (String, Option<String>) = db.query_row(
+            "SELECT purchased_at, sale_id FROM local_child_memberships WHERE id='membership-1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert_eq!(purchased_at, "2026-11-01T10:00:00Z");
+        assert_eq!(sale_id.as_deref(), Some("sale-1"));
+    }
+
 }
