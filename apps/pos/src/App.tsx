@@ -806,6 +806,13 @@ export default function App() {
     }
     let extensionAmountMinor = 0;
     try { extensionAmountMinor = Math.max(0, Number(JSON.parse(child.calculation_json).extensionAmountMinor) || 0); } catch {}
+    let cafeDueMinor = 0;
+    let cafePaymentMethod: string | null = null;
+    const remainingVisitChildren = activeChildren.filter(x => x.visit_id === child.visit_id).length;
+    if (remainingVisitChildren === 1) {
+      try { cafeDueMinor = Math.max(0, await invoke<number>("get_visit_cafe_due", { visitId: child.visit_id })); }
+      catch (e) { setError(String(e)); return; }
+    }
     if (estimatedOvertimeMinutes > 0 && hourlyRate !== null && hasPermission("overtime_waive")) {
       overtimeWaived = window.confirm(ar
         ? "هل المدير سيعفي الطفل من قيمة الوقت الإضافي؟ موافق = إعفاء، إلغاء = متابعة التحصيل."
@@ -815,13 +822,20 @@ export default function App() {
         if (!overtimeWaiverReason) { setError(ar ? "سبب الإعفاء مطلوب." : "A waiver reason is required."); return; }
       }
     }
-    if (extensionAmountMinor > 0 || (estimatedOvertimeMinutes > 0 && !overtimeWaived)) {
+    if (extensionAmountMinor > 0 || (estimatedOvertimeMinutes > 0 && !overtimeWaived) || cafeDueMinor > 0) {
       const overtimeEstimate = estimatedOvertimeMinutes > 0 && hourlyRate !== null ? Math.round(hourlyRate * estimatedOvertimeMinutes / 60) : 0;
       overtimeCollected = window.confirm(ar
-        ? "هل تم تحصيل قيمة التمديد ("+money(extensionAmountMinor,language)+") والوقت الإضافي ("+money(overtimeWaived?0:overtimeEstimate,language)+")؟ موافق = تم التحصيل، إلغاء = لم يتم التحصيل."
-        : "Were the extension ("+money(extensionAmountMinor,language)+") and overtime ("+money(overtimeWaived?0:overtimeEstimate,language)+") collected? OK = collected, Cancel = not collected.");
+        ? "هل تم تحصيل المبالغ التالية؟ تمديد: "+money(extensionAmountMinor,language)+" · وقت إضافي: "+money(overtimeWaived?0:overtimeEstimate,language)+" · الكافيه: "+money(cafeDueMinor,language)+". موافق = تم التحصيل، إلغاء = لم يتم التحصيل."
+        : "Were these amounts collected? Extension: "+money(extensionAmountMinor,language)+" · Overtime: "+money(overtimeWaived?0:overtimeEstimate,language)+" · Café: "+money(cafeDueMinor,language)+". OK = collected, Cancel = not collected.");
+      if (overtimeCollected && cafeDueMinor > 0) {
+        const method = window.prompt(ar
+          ? "طريقة تحصيل مستحق الكافيه: cash / instapay / wallet / visa / other"
+          : "Café payment method: cash / instapay / wallet / visa / other", "cash")?.trim().toLowerCase() || "";
+        if (!["cash","instapay","wallet","visa","other"].includes(method)) { setError(ar ? "طريقة دفع الكافيه غير صحيحة." : "Invalid café payment method."); return; }
+        cafePaymentMethod = method;
+      }
       if (!overtimeCollected) {
-        overtimeCollectionNote = window.prompt(ar ? "اكتب سبب عدم تحصيل المبلغ الإضافي (إجباري):" : "Enter the required reason the extra amount was not collected:", "")?.trim() || null;
+        overtimeCollectionNote = window.prompt(ar ? "اكتب سبب عدم تحصيل المبلغ الإضافي ومستحق الكافيه (إجباري):" : "Enter the required reason these extra charges / café balance were not collected:", "")?.trim() || null;
         if (!overtimeCollectionNote) { setError(ar ? "سبب عدم التحصيل مطلوب." : "A reason is required when extra charges are not collected."); return; }
       }
     }
@@ -837,6 +851,7 @@ export default function App() {
         overtimeCollectionNote,
         overtimeWaived,
         overtimeWaiverReason,
+        cafePaymentMethod,
       });
 
       const receiptRows = await db.select<{
