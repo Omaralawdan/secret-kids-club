@@ -142,7 +142,7 @@ function buildReceiptHtml(data: ReceiptData, language: Language): string {
     html += amount(label("Discount", "الخصم"), data.discountAmountMinor);
   }
   if (finalReceipt) { html += row(label("Overtime duration", "مدة الوقت الإضافي"), escapeReceipt(formatDuration(data.overtimeMinutes || 0, language))); html += amount(label(data.overtimeWaived ? "Overtime amount waived" : "Overtime amount", data.overtimeWaived ? "قيمة الإضافي المعفاة" : "قيمة الوقت الإضافي"), data.overtimeAmountMinor || 0); if (data.overtimeWaived) html += row(label("Waiver reason", "سبب الإعفاء"), escapeReceipt(data.overtimeWaiverReason || "")); }
-  html += '<div class="row total"><span>' + label(finalReceipt ? "FINAL TOTAL" : "INITIAL ESTIMATE", finalReceipt ? "الإجمالي النهائي" : "السعر المبدئي") + '</span><strong>' + escapeReceipt(money(finalReceipt ? (data.totalAmountMinor || 0) : (data.baseAmountMinor - data.discountAmountMinor), language)) + '</strong></div>';
+  html += '<div class="row total"><span>' + label(finalReceipt ? "FINAL TOTAL" : "ENTRY AMOUNT COLLECTED", finalReceipt ? "الإجمالي النهائي" : "المبلغ المحصل عند الدخول") + '</span><strong>' + escapeReceipt(money(finalReceipt ? (data.totalAmountMinor || 0) : (data.baseAmountMinor - data.discountAmountMinor), language)) + '</strong></div>';
   html += '<div class="section">' + label("Receipt details", "بيانات الإيصال") + '</div>' + row(label("Issued by", "مُصدر الإيصال"), escapeReceipt(data.issuer || label("Cashier", "الكاشير")));
   html += '<footer class="foot">' + label("Thank you for visiting! ❤️", "نورتونا في Secret Kids Club ❤️") + '<br>' + label("We loved having you. See you again soon! 🎈", "اتبسطنا بوجودكم، ومستنيينكم تنورونا تاني قريب! 🎈") + '</footer></main></body></html>';
   return html;
