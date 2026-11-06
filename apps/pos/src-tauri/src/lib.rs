@@ -770,7 +770,7 @@ fn close_cash_shift(app:tauri::AppHandle,counted_cash_minor:i64,variance_reason:
    let movement_type=if variance>0{"stock_in"}else{"stock_out"};
    let quantity=variance.checked_abs().ok_or("فرق المخزون تجاوز الحد المسموح.")?;
    tx.execute("INSERT INTO local_stock_movements(id,inventory_item_id,movement_type,quantity_milli,reason,created_by,created_at) VALUES(?,?,?,?,?,?,?)",params![uuid::Uuid::new_v4().to_string(),item_id,movement_type,quantity,format!("تسوية جرد الوردية: {}",reason),actor,now]).map_err(|e|e.to_string())?;
-   if variance<0 { consume_expiry_batches(&tx,&item_id,quantity)?; }
+   if variance<0 { consume_expiry_batches(&tx,&item_id,quantity,None)?; }
  }
  let inventory_count:i64=tx.query_row("SELECT COUNT(*) FROM local_shift_inventory_counts WHERE cash_session_id=?",params![id],|r|r.get(0)).map_err(|e|e.to_string())?;
  let inventory_variance_count:i64=tx.query_row("SELECT COUNT(*) FROM local_shift_inventory_counts WHERE cash_session_id=? AND variance_quantity_milli<>0",params![id],|r|r.get(0)).map_err(|e|e.to_string())?;
@@ -1207,7 +1207,7 @@ fn record_cafe_stock_count(app:tauri::AppHandle,item_id:String,counted_quantity_
     if variance!=0&&reason.trim().is_empty(){return Err("يجب تسجيل سبب فرق الجرد.".into())}
     let now=Utc::now().to_rfc3339();let id=uuid::Uuid::new_v4().to_string();
     tx.execute("INSERT INTO local_stock_counts(id,inventory_item_id,expected_quantity_milli,counted_quantity_milli,variance_quantity_milli,reason,counted_by,counted_at) VALUES(?,?,?,?,?,?,?,?)",params![id,item_id,expected,counted_quantity_milli,variance,reason.trim(),actor,now]).map_err(|e|e.to_string())?;
-    if variance>0{tx.execute("INSERT INTO local_stock_movements(id,inventory_item_id,movement_type,quantity_milli,reason,created_by,created_at) VALUES(?,?,'stock_in',?,?,?,?)",params![uuid::Uuid::new_v4().to_string(),item_id,variance,format!("تسوية جرد: {}",reason.trim()),actor,now]).map_err(|e|e.to_string())?;}else if variance<0{tx.execute("INSERT INTO local_stock_movements(id,inventory_item_id,movement_type,quantity_milli,reason,created_by,created_at) VALUES(?,?,'stock_out',?,?,?,?)",params![uuid::Uuid::new_v4().to_string(),item_id,variance.abs(),format!("تسوية جرد: {}",reason.trim()),actor,now]).map_err(|e|e.to_string())?;consume_expiry_batches(&tx,&item_id,variance.abs())?;}
+    if variance>0{tx.execute("INSERT INTO local_stock_movements(id,inventory_item_id,movement_type,quantity_milli,reason,created_by,created_at) VALUES(?,?,'stock_in',?,?,?,?)",params![uuid::Uuid::new_v4().to_string(),item_id,variance,format!("تسوية جرد: {}",reason.trim()),actor,now]).map_err(|e|e.to_string())?;}else if variance<0{tx.execute("INSERT INTO local_stock_movements(id,inventory_item_id,movement_type,quantity_milli,reason,created_by,created_at) VALUES(?,?,'stock_out',?,?,?,?)",params![uuid::Uuid::new_v4().to_string(),item_id,variance.abs(),format!("تسوية جرد: {}",reason.trim()),actor,now]).map_err(|e|e.to_string())?;consume_expiry_batches(&tx,&item_id,variance.abs(),None)?;}
     tx.execute("INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,reason,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'cafe_stock_counted','stock_count',?,?,?,?)",params![actor,id,reason.trim(),json!({"expected_milli":expected,"counted_milli":counted_quantity_milli,"variance_milli":variance}).to_string(),now]).map_err(|e|e.to_string())?;
     tx.commit().map_err(|e|e.to_string())?;Ok(json!({"expectedMilli":expected,"countedMilli":counted_quantity_milli,"varianceMilli":variance}))
 }
@@ -1383,13 +1383,14 @@ fn create_cafe_sale(app:tauri::AppHandle,items:Vec<Value>,payments:Vec<Value>,co
     for (item_id,name,qty,price,line_total,recipe_id) in prepared.iter(){
         tx.execute("INSERT INTO local_sale_items(id,sale_id,item_type,inventory_item_id,description_snapshot,quantity_milli,unit_price_minor,line_total_minor) VALUES(?,?,'cafe_product',?,?,?,?,?)",params![uuid::Uuid::new_v4().to_string(),sale_id,item_id,name,qty,price,line_total]).map_err(|e|e.to_string())?;
         if recipe_id.is_empty(){
-            tx.execute("INSERT INTO local_stock_movements(id,inventory_item_id,movement_type,quantity_milli,sale_id,reason,created_by,created_at) VALUES(?,?,'sale',?,?,?, ?,?)",params![uuid::Uuid::new_v4().to_string(),item_id,qty,sale_id,"بيع كافيه",actor,now]).map_err(|e|e.to_string())?;
-            consume_expiry_batches(&tx,item_id,*qty)?;
+            let movement_id=uuid::Uuid::new_v4().to_string();
+            tx.execute("INSERT INTO local_stock_movements(id,inventory_item_id,movement_type,quantity_milli,sale_id,reason,created_by,created_at) VALUES(?,?,'sale',?,?,?, ?,?)",params![movement_id,item_id,qty,sale_id,"بيع كافيه",actor,now]).map_err(|e|e.to_string())?;
+            consume_expiry_batches(&tx,item_id,*qty,Some(&movement_id))?;
         }else{
             let mut st=tx.prepare("SELECT inventory_item_id,quantity_milli FROM local_recipe_ingredients WHERE recipe_id=?").map_err(|e|e.to_string())?;
             let ingredients=st.query_map(params![recipe_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?))).map_err(|e|e.to_string())?.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())?;
             let yield_qty:i64=tx.query_row("SELECT yield_quantity_milli FROM local_recipes WHERE id=?",params![recipe_id],|r|r.get(0)).map_err(|e|e.to_string())?;
-            for (ingredient,per_yield) in ingredients{let required=per_yield.checked_mul(*qty).ok_or("كمية الوصفة كبيرة جدًا.")?.checked_add(yield_qty-1).ok_or("كمية الوصفة كبيرة جدًا.")?/yield_qty;tx.execute("INSERT INTO local_stock_movements(id,inventory_item_id,movement_type,quantity_milli,sale_id,reason,created_by,created_at) VALUES(?,?,'sale',?,?,?, ?,?)",params![uuid::Uuid::new_v4().to_string(),ingredient,required,sale_id,format!("استهلاك وصفة {}",name),actor,now]).map_err(|e|e.to_string())?;consume_expiry_batches(&tx,&ingredient,required)?;}
+            for (ingredient,per_yield) in ingredients{let required=per_yield.checked_mul(*qty).ok_or("كمية الوصفة كبيرة جدًا.")?.checked_add(yield_qty-1).ok_or("كمية الوصفة كبيرة جدًا.")?/yield_qty;let movement_id=uuid::Uuid::new_v4().to_string();tx.execute("INSERT INTO local_stock_movements(id,inventory_item_id,movement_type,quantity_milli,sale_id,reason,created_by,created_at) VALUES(?,?,'sale',?,?,?, ?,?)",params![movement_id,ingredient,required,sale_id,format!("استهلاك وصفة {}",name),actor,now]).map_err(|e|e.to_string())?;consume_expiry_batches(&tx,&ingredient,required,Some(&movement_id))?;}
         }
     }
     let mut collected:i64=0;
@@ -1509,6 +1510,19 @@ fn cancel_cafe_sale(
     let now = Utc::now().to_rfc3339();
     let stock_label = if stock_disposition == "return_in" { "إرجاع للمخزون بعد إلغاء فاتورة الكافيه" } else { "هالك بعد إلغاء فاتورة الكافيه" };
     for (item_id, quantity) in movements {
+        if stock_disposition == "return_in" {
+            let batches = {
+                let mut st = tx.prepare("SELECT batch_id,quantity_milli FROM local_stock_movement_batches WHERE movement_id IN (SELECT id FROM local_stock_movements WHERE sale_id=? AND inventory_item_id=? AND movement_type='sale') ORDER BY batch_id")
+                    .map_err(|e| e.to_string())?;
+                let rows = st.query_map(params![sale_id,item_id], |r| Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?)))
+                    .map_err(|e| e.to_string())?;
+                rows.collect::<Result<Vec<_>,_>>().map_err(|e| e.to_string())?
+            };
+            for (batch_id, batch_qty) in batches {
+                tx.execute("UPDATE local_expiry_batches SET quantity_milli=quantity_milli+? WHERE id=?",
+                    params![batch_qty,batch_id]).map_err(|e| e.to_string())?;
+            }
+        }
         tx.execute(
             "INSERT INTO local_stock_movements(id,inventory_item_id,movement_type,quantity_milli,sale_id,reason,created_by,created_at) VALUES(?,?,?,?,?,?,?,?)",
             params![uuid::Uuid::new_v4().to_string(),item_id,stock_disposition,quantity,sale_id,format!("{}: {}",stock_label,reason.trim()),actor,now]
@@ -1550,14 +1564,14 @@ fn cancel_cafe_sale(
 }
 
 
-fn consume_expiry_batches(tx:&rusqlite::Transaction<'_>,item_id:&str,quantity_milli:i64)->Result<(),String>{
+fn consume_expiry_batches(tx:&rusqlite::Transaction<'_>,item_id:&str,quantity_milli:i64,movement_id:Option<&str>)->Result<(),String>{
     let batches={
         let mut st=tx.prepare("SELECT id,quantity_milli FROM local_expiry_batches WHERE inventory_item_id=? AND quantity_milli>0 ORDER BY expiry_date,created_at").map_err(|e|e.to_string())?;
         let rows=st.query_map(params![item_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?))).map_err(|e|e.to_string())?;
         rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())?
     };
     let mut remaining=quantity_milli;
-    for (id,available) in batches{if remaining<=0{break}let take=remaining.min(available);tx.execute("UPDATE local_expiry_batches SET quantity_milli=quantity_milli-? WHERE id=?",params![take,id]).map_err(|e|e.to_string())?;remaining-=take;}
+    for (id,available) in batches{if remaining<=0{break}let take=remaining.min(available);tx.execute("UPDATE local_expiry_batches SET quantity_milli=quantity_milli-? WHERE id=?",params![take,id]).map_err(|e|e.to_string())?;if let Some(movement_id)=movement_id{tx.execute("INSERT INTO local_stock_movement_batches(id,movement_id,batch_id,quantity_milli) VALUES(?,?,?,?)",params![uuid::Uuid::new_v4().to_string(),movement_id,id,take]).map_err(|e|e.to_string())?;}remaining-=take;}
     Ok(())
 }
 
@@ -1664,7 +1678,7 @@ fn adjust_cafe_stock(app:tauri::AppHandle,item_id:String,movement_type:String,qu
     let current:i64=tx.query_row("SELECT COALESCE(SUM(CASE WHEN movement_type IN ('purchase','stock_in','return_in','opening') THEN quantity_milli WHEN movement_type IN ('sale','waste','stock_out','return_supplier') THEN -quantity_milli ELSE 0 END),0) FROM local_stock_movements WHERE inventory_item_id=?",params![item_id],|r|r.get(0)).map_err(|e|e.to_string())?;
     if ["waste","stock_out","return_supplier"].contains(&movement_type.as_str())&&quantity_milli>current{return Err("الكمية أكبر من المخزون المتاح.".into())}
     tx.execute("INSERT INTO local_stock_movements(id,inventory_item_id,movement_type,quantity_milli,reason,created_by,created_at) VALUES(?,?,?,?,?,?,?)",params![uuid::Uuid::new_v4().to_string(),item_id,movement_type,quantity_milli,reason.trim(),actor,Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
-    if ["waste","stock_out","return_supplier"].contains(&movement_type.as_str()){consume_expiry_batches(&tx,&item_id,quantity_milli)?;}
+    if ["waste","stock_out","return_supplier"].contains(&movement_type.as_str()){consume_expiry_batches(&tx,&item_id,quantity_milli,None)?;}
     tx.commit().map_err(|e|e.to_string())?;Ok(())
 }
 
