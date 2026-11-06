@@ -1290,6 +1290,10 @@ fn collect_visit_entry(app: tauri::AppHandle, visit_id: String) -> Result<Value,
         "SELECT id FROM local_cash_sessions WHERE closed_at IS NULL ORDER BY opened_at DESC LIMIT 1",
         [], |r| r.get(0)
     ).optional().map_err(|e|e.to_string())?.ok_or("افتح الوردية قبل تحصيل دخول الأطفال.")?;
+    let (visit_subtotal, visit_discount, visit_total): (i64,i64,i64) = tx.query_row(
+        "SELECT amount_before_discount_minor,discount_amount_minor,final_amount_minor FROM local_visits WHERE id=?",
+        params![visit_id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))
+    ).map_err(|e|e.to_string())?;
     let rows = {
         let mut st = tx.prepare(
             "SELECT vc.child_name_snapshot,p.pricing_type,p.final_amount_minor,p.calculation_json,p.membership_id
@@ -1306,8 +1310,10 @@ fn collect_visit_entry(app: tauri::AppHandle, visit_id: String) -> Result<Value,
     let chargeable: Vec<_> = rows.into_iter()
         .filter(|(_,kind,amount,_,membership)| kind!="membership" && membership.is_none() && *amount>0)
         .collect();
-    let total: i64 = chargeable.iter().try_fold(0i64,|sum,row|sum.checked_add(row.2))
+    let collected_total: i64 = chargeable.iter().try_fold(0i64,|sum,row|sum.checked_add(row.2))
         .ok_or("إجمالي تحصيل الدخول تجاوز الحد المسموح.")?;
+    if collected_total != visit_total { return Err("إجمالي تحصيل دخول الأطفال لا يطابق صافي الزيارة.".into()); }
+    let total = visit_total;
     if total == 0 {
         tx.commit().map_err(|e|e.to_string())?;
         return Ok(json!({"saleId":null,"totalMinor":0,"alreadyCollected":false}));
@@ -1316,8 +1322,8 @@ fn collect_visit_entry(app: tauri::AppHandle, visit_id: String) -> Result<Value,
     let sale_no: i64 = tx.query_row("SELECT COALESCE(MAX(sale_number_local),0)+1 FROM local_sales",[],|r|r.get(0)).map_err(|e|e.to_string())?;
     let now = Utc::now().to_rfc3339();
     tx.execute(
-        "INSERT INTO local_sales(id,sale_number_local,visit_id,status,subtotal_minor,discount_minor,total_minor,cashier_user_id,created_at) VALUES(?,?,?,'completed',?,0,?,?,?)",
-        params![sale_id,sale_no,visit_id,total,total,actor,now]
+        "INSERT INTO local_sales(id,sale_number_local,visit_id,status,subtotal_minor,discount_minor,total_minor,cashier_user_id,created_at) VALUES(?,?,?,'completed',?,?,?,?,?)",
+        params![sale_id,sale_no,visit_id,visit_subtotal,visit_discount,total,actor,now]
     ).map_err(|e|e.to_string())?;
     for (child_name,_,amount,calculation_json,_) in chargeable {
         tx.execute(
