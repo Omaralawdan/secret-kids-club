@@ -684,7 +684,7 @@ fn get_active_cash_shift(app: tauri::AppHandle) -> Result<Value, String> {
     let db = auth_db(&app)?;
     require_permission(&db,"shift")?;
     require_role(&db, &["admin", "manager", "cashier"])?;
-    let shift: Option<Value> = db.query_row(
+    let shift: Result<Option<Value>, rusqlite::Error> = db.query_row(
         "SELECT s.id,s.opening_float_minor,s.opened_at,COALESCE(u.display_name,s.opened_by),
           COALESCE((SELECT SUM(p.amount_minor) FROM local_payments p WHERE p.cash_session_id=s.id AND COALESCE(p.method_label,p.method)='cash' AND p.status='confirmed'),0),
           COALESCE((SELECT SUM(p.amount_minor) FROM local_payments p WHERE p.cash_session_id=s.id AND p.method<>'cash' AND p.status='confirmed'),0),
@@ -714,8 +714,53 @@ fn get_active_cash_shift(app: tauri::AppHandle) -> Result<Value, String> {
             let expenses:i64=row.get(6)?; let refunds:i64=row.get(7)?; let additions:i64=row.get(8)?; let removals:i64=row.get(9)?; let kids_cash:i64=row.get(10)?; let kids_instapay:i64=row.get(11)?; let kids_wallet:i64=row.get(12)?; let cafe_cash:i64=row.get(13)?; let cafe_instapay:i64=row.get(14)?; let cafe_wallet:i64=row.get(15)?; let kids_visa:i64=row.get(16)?; let kids_other:i64=row.get(17)?; let cafe_visa:i64=row.get(18)?; let cafe_other:i64=row.get(19)?; let package_cash:i64=row.get(20)?; let package_instapay:i64=row.get(21)?; let package_wallet:i64=row.get(22)?; let package_visa:i64=row.get(23)?; let package_other:i64=row.get(24)?;
             Ok(json!({"id":row.get::<_,String>(0)?,"openingFloatMinor":opening,"openedAt":row.get::<_,String>(2)?,"openedBy":row.get::<_,String>(3)?,"cashSalesMinor":cash,"electronicSalesMinor":electronic,"cashExpensesMinor":expenses,"cashRefundsMinor":refunds,"cashAdditionsMinor":additions,"cashRemovalsMinor":removals,"kidsAreaCashMinor":kids_cash,"kidsAreaInstapayMinor":kids_instapay,"kidsAreaWalletMinor":kids_wallet,"cafeCashMinor":cafe_cash,"cafeInstapayMinor":cafe_instapay,"cafeWalletMinor":cafe_wallet,"kidsAreaVisaMinor":kids_visa,"kidsAreaOtherMinor":kids_other,"cafeVisaMinor":cafe_visa,"cafeOtherMinor":cafe_other,"packagesCashMinor":package_cash,"packagesInstapayMinor":package_instapay,"packagesWalletMinor":package_wallet,"packagesVisaMinor":package_visa,"packagesOtherMinor":package_other,"expectedCashMinor":opening.saturating_add(cash).saturating_add(additions).saturating_sub(removals).saturating_sub(expenses).saturating_sub(refunds)}))
         }
-    ).optional().map_err(|e| e.to_string())?;
-    Ok(shift.unwrap_or(Value::Null))
+    ).optional();
+    match shift {
+        Ok(Some(mut value)) => {
+            value["summaryAvailable"] = json!(true);
+            Ok(value)
+        }
+        Ok(None) => Ok(Value::Null),
+        Err(summary_error) => {
+            // Keep the real open session visible even when a legacy database is
+            // missing a column used only by the financial summary. Never treat
+            // the session as closed and never permit closing on partial totals.
+            let base: Option<Value> = db.query_row(
+                "SELECT s.id,s.opening_float_minor,s.opened_at,COALESCE(u.display_name,s.opened_by)
+                 FROM local_cash_sessions s
+                 LEFT JOIN local_users u ON u.id=s.opened_by
+                 WHERE s.closed_at IS NULL
+                 ORDER BY s.opened_at DESC LIMIT 1",
+                [],
+                |row| Ok(json!({
+                    "id": row.get::<_,String>(0)?,
+                    "openingFloatMinor": row.get::<_,i64>(1)?,
+                    "openedAt": row.get::<_,String>(2)?,
+                    "openedBy": row.get::<_,String>(3)?
+                })),
+            ).optional().map_err(|base_error| format!(
+                "تعذر قراءة الوردية: {base_error}; وتعذر تحميل ملخصها: {summary_error}"
+            ))?;
+            if let Some(mut value) = base {
+                for key in [
+                    "cashSalesMinor","electronicSalesMinor","cashExpensesMinor","cashRefundsMinor",
+                    "cashAdditionsMinor","cashRemovalsMinor","kidsAreaCashMinor","kidsAreaInstapayMinor",
+                    "kidsAreaWalletMinor","cafeCashMinor","cafeInstapayMinor","cafeWalletMinor",
+                    "kidsAreaVisaMinor","kidsAreaOtherMinor","cafeVisaMinor","cafeOtherMinor",
+                    "packagesCashMinor","packagesInstapayMinor","packagesWalletMinor","packagesVisaMinor",
+                    "packagesOtherMinor"
+                ] {
+                    value[key] = json!(0);
+                }
+                value["expectedCashMinor"] = value["openingFloatMinor"].clone();
+                value["summaryAvailable"] = json!(false);
+                value["summaryError"] = json!(summary_error.to_string());
+                Ok(value)
+            } else {
+                Ok(Value::Null)
+            }
+        }
+    }
 }
 
 fn shift_inventory_totals(db:&Connection,item_id:&str,opened_at:&str,until:&str)->Result<(i64,i64,i64,i64,i64,i64),String>{
