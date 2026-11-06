@@ -144,3 +144,19 @@ html { font-size: calc(16px * var(--app-scale, 1)); }
   .receipt-modal-actions { flex-direction: column-reverse; }
   .receipt-modal-actions button { width: 100%; }
 }
+
+
+/* Café touch-friendly product picker */
+.cafe-product-toolbar { display: grid; grid-template-columns: minmax(0, 2fr) minmax(150px, 1fr); gap: 12px; margin: 14px 0; }
+.cafe-product-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(145px, 1fr)); gap: 12px; margin: 14px 0 20px; }
+.cafe-product-card { display: flex; flex-direction: column; align-items: stretch; gap: 7px; min-width: 0; padding: 10px; border: 1px solid #e5e8ef; border-radius: 13px; background: #fff; color: #202b3c; text-align: right; cursor: pointer; font: inherit; }
+.cafe-product-card:disabled { opacity: .48; cursor: not-allowed; }
+.cafe-product-card img, .cafe-product-placeholder { display: grid; place-items: center; width: 100%; height: 112px; object-fit: cover; border-radius: 9px; background: #f4f5f8; }
+.cafe-product-placeholder { font-size: 34px; }
+.cafe-product-card strong { font-size: 14px; }
+.cafe-product-card > span:not(.cafe-product-placeholder) { color: #a51f35; font-weight: 800; }
+.cafe-product-card small { color: #6c7483; }
+.cafe-product-card b { padding: 6px 8px; border-radius: 8px; background: #f9e9ec; color: #a51f35; text-align: center; font-size: 12px; }
+.cafe-image-preview { display: flex; align-items: center; gap: 12px; }
+.cafe-image-preview img { width: 120px; height: 120px; object-fit: cover; border-radius: 10px; border: 1px solid #e5e8ef; }
+@media (max-width: 620px) { .cafe-product-toolbar { grid-template-columns: 1fr; } .cafe-product-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
