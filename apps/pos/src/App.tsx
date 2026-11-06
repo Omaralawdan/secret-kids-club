@@ -663,6 +663,8 @@ export default function App() {
       if (visitCouponCode.trim()) {
         appliedVisitCoupon=await invoke<{discountMinor:number;totalMinor:number;allocations:{visitChildId:string;discountMinor:number}[]}>('apply_visit_coupon',{visitId,couponCode:visitCouponCode.trim()});
       }
+      // Collect the kids-area entry charge now, once, and attribute it to this open shift.
+      await invoke("collect_visit_entry",{visitId});
       await refreshData(db);
       const visitExpectedCheckout = new Date(Math.max(...childRows.map(row => new Date(timestamp).getTime() + Math.round(row.child.durationHours * 60) * 60000))).toISOString();
       setReceiptQueue((current) => [...current, buildReceiptHtml({
@@ -691,6 +693,16 @@ export default function App() {
     } catch (err) {
       try {
         if (visitInserted) {
+          const entrySaleRows = await db.select<{entry_sale_id:string|null}[]>(
+            "SELECT entry_sale_id FROM local_visits WHERE id = ?",
+            [visitId]
+          );
+          const entrySaleId = entrySaleRows[0]?.entry_sale_id;
+          if (entrySaleId) {
+            await db.execute("DELETE FROM local_payments WHERE sale_id = ?", [entrySaleId]);
+            await db.execute("DELETE FROM local_sale_items WHERE sale_id = ?", [entrySaleId]);
+            await db.execute("DELETE FROM local_sales WHERE id = ?", [entrySaleId]);
+          }
           const couponRows = await db.select<{coupon_id:string|null}[]>(
             "SELECT coupon_id FROM local_visits WHERE id = ?",
             [visitId]
