@@ -57,6 +57,7 @@ export default function AdminTools({user,onLogout}:{user:AuthUser;onLogout:()=>v
     <p>بدأت: {new Date(activeShift.openedAt).toLocaleString("ar-EG")}</p>
     <p>فتحها: {activeShift.openedBy}</p>
     <p>رصيد البداية: {money(activeShift.openingFloatMinor)}</p>
+    {activeShift.summaryAvailable !== false && <>
     <p>تحصيلات الكاش: {money(activeShift.cashSalesMinor)}</p>
     <p>التحصيل الإلكتروني: {money(activeShift.electronicSalesMinor)}</p>
     <p>مصروفات الكاش: {money(activeShift.cashExpensesMinor)}</p>
@@ -67,6 +68,8 @@ export default function AdminTools({user,onLogout}:{user:AuthUser;onLogout:()=>v
     <p><strong>الإجمالي حسب وسيلة الدفع:</strong> كاش {money(activeShift.kidsAreaCashMinor+activeShift.cafeCashMinor+activeShift.packagesCashMinor)} · InstaPay {money(activeShift.kidsAreaInstapayMinor+activeShift.cafeInstapayMinor+activeShift.packagesInstapayMinor)} · محفظة {money(activeShift.kidsAreaWalletMinor+activeShift.cafeWalletMinor+activeShift.packagesWalletMinor)} · فيزا {money(activeShift.kidsAreaVisaMinor+activeShift.cafeVisaMinor+activeShift.packagesVisaMinor)} · أخرى {money(activeShift.kidsAreaOtherMinor+activeShift.cafeOtherMinor+activeShift.packagesOtherMinor)}</p>
     <p>إضافات الدرج: {money(activeShift.cashAdditionsMinor)}</p><p>مسحوبات الدرج: {money(activeShift.cashRemovalsMinor)}</p>
     <p><strong>النقدية المتوقعة حاليًا: {money(activeShift.expectedCashMinor)}</strong></p>
+    </>}
+
    </div>
   ) : shiftLoadError ? <div className="notice error">تعذر التأكد من حالة الوردية. اضغط «تحديث الحالة» بعد معالجة الخطأ؛ لن نعرضها كمغلقة بالخطأ.</div> : <div className="notice">لا توجد وردية مفتوحة حاليًا. افتح وردية جديدة عند بدء العمل.</div>}
   {!activeShift && !shiftLoadError && <form className="report-controls" onSubmit={openShift}><label>رصيد بداية الوردية بالجنيه<input type="text" inputMode="decimal" value={openingFloat} onChange={e=>setOpeningFloat(e.target.value)} required/></label><button className="primary-button" disabled={shiftLoading}>فتح الوردية</button></form>}
