@@ -2143,6 +2143,43 @@ fn run_startup_migrations(app: &tauri::AppHandle) -> Result<(), Box<dyn Error>> 
         if sqlite_table_exists(&db, "local_inventory_items")? {
             ensure_sqlite_column(&db, "local_inventory_items", "image_data_url", "TEXT")?;
         }
+        // Recreate operational tables with IF NOT EXISTS before repairing columns.
+        // This covers older databases where migration 10/12 stopped at a duplicate
+        // ALTER and rolled back the later CREATE TABLE statements.
+        db.execute_batch(
+            "CREATE TABLE IF NOT EXISTS local_expenses (
+                id TEXT PRIMARY KEY,
+                cash_session_id TEXT NOT NULL REFERENCES local_cash_sessions(id),
+                amount_minor INTEGER NOT NULL CHECK(amount_minor > 0),
+                category TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                method TEXT NOT NULL CHECK(method IN ('cash','instapay','wallet')),
+                created_by TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS local_refunds (
+                id TEXT PRIMARY KEY,
+                payment_id TEXT NOT NULL REFERENCES local_payments(id),
+                cash_session_id TEXT NOT NULL REFERENCES local_cash_sessions(id),
+                amount_minor INTEGER NOT NULL CHECK(amount_minor > 0),
+                reason TEXT NOT NULL,
+                method TEXT NOT NULL CHECK(method IN ('cash','instapay','wallet')),
+                refunded_by TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS local_cash_movements (
+                id TEXT PRIMARY KEY,
+                cash_session_id TEXT NOT NULL REFERENCES local_cash_sessions(id),
+                movement_type TEXT NOT NULL CHECK(movement_type IN ('cash_added','cash_removed')),
+                amount_minor INTEGER NOT NULL CHECK(amount_minor > 0),
+                source TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                created_by TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS local_refunds_cash_session_idx ON local_refunds(cash_session_id,method,created_at);
+            CREATE INDEX IF NOT EXISTS local_cash_movements_shift_idx ON local_cash_movements(cash_session_id,created_at);"
+        )?;
         // Repair the payment/session columns independently: legacy migration 10 or
         // 14 may have rolled back after a later statement failed. These additions
         // are idempotent and preserve every existing payment/expense/refund row.
