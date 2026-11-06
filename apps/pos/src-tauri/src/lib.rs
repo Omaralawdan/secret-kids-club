@@ -2143,6 +2143,33 @@ fn run_startup_migrations(app: &tauri::AppHandle) -> Result<(), Box<dyn Error>> 
         if sqlite_table_exists(&db, "local_inventory_items")? {
             ensure_sqlite_column(&db, "local_inventory_items", "image_data_url", "TEXT")?;
         }
+        // Repair the payment/session columns independently: legacy migration 10 or
+        // 14 may have rolled back after a later statement failed. These additions
+        // are idempotent and preserve every existing payment/expense/refund row.
+        if sqlite_table_exists(&db, "local_payments")? {
+            ensure_sqlite_column(&db, "local_payments", "cash_session_id", "TEXT REFERENCES local_cash_sessions(id)")?;
+            ensure_sqlite_column(&db, "local_payments", "method_label", "TEXT")?;
+            db.execute_batch(
+                "UPDATE local_payments SET method_label=method WHERE method_label IS NULL OR method_label='';
+                 UPDATE local_payments SET cash_session_id=(
+                   SELECT s.id FROM local_cash_sessions s
+                   WHERE s.opened_at<=local_payments.created_at
+                     AND (s.closed_at IS NULL OR s.closed_at>=local_payments.created_at)
+                   ORDER BY s.opened_at DESC LIMIT 1
+                 ) WHERE cash_session_id IS NULL;"
+            )?;
+            db.execute_batch("CREATE INDEX IF NOT EXISTS local_payments_cash_session_idx ON local_payments(cash_session_id,method,status,created_at);")?;
+        }
+        if sqlite_table_exists(&db, "local_expenses")? {
+            ensure_sqlite_column(&db, "local_expenses", "cash_session_id", "TEXT REFERENCES local_cash_sessions(id)")?;
+            ensure_sqlite_column(&db, "local_expenses", "method_label", "TEXT")?;
+            db.execute_batch("UPDATE local_expenses SET method_label=method WHERE method_label IS NULL OR method_label='';")?;
+        }
+        if sqlite_table_exists(&db, "local_refunds")? {
+            ensure_sqlite_column(&db, "local_refunds", "cash_session_id", "TEXT REFERENCES local_cash_sessions(id)")?;
+            ensure_sqlite_column(&db, "local_refunds", "method_label", "TEXT")?;
+            db.execute_batch("UPDATE local_refunds SET method_label=method WHERE method_label IS NULL OR method_label='';")?;
+        }
         db.execute_batch(include_str!("../migrations/021_shift_inventory_reconciliation.sql"))?;
         write_startup_log(&directory, "Critical legacy schema repairs verified (membership sale link, café image field, shift inventory tables). ");
 
