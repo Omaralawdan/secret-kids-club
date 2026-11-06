@@ -2094,7 +2094,12 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_sql::Builder::default().build())
         .setup(|app| {
-            run_startup_migrations(app.handle())?;
+            // A legacy database migration failure must not abort the native app startup.
+            // Keep the diagnostic in startup.log and let the React UI open so the user
+            // sees a recoverable screen instead of a white window that closes.
+            if let Err(error) = run_startup_migrations(app.handle()) {
+                eprintln!("Local database initialization failed: {error}");
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![greet, list_coupons, save_coupon, set_coupon_active, apply_visit_coupon, create_membership_sale, list_bookings, save_booking, update_booking_status, list_cafe_stock_movements, record_cafe_stock_count, list_cafe_expiry_alerts, save_cafe_recipe, list_cafe_recipes, create_cafe_sale, get_visit_cafe_due, list_cancellable_cafe_sales, cancel_cafe_sale, collect_visit_entry, list_cafe_items, save_cafe_item, adjust_cafe_stock, record_cafe_purchase, save_cafe_supplier, list_cafe_suppliers, cancel_membership, record_membership_payment, record_cash_movement, list_monthly_expenses, save_monthly_expense, checkout_child, extend_visit_child, cancel_visit, update_membership_overtime_rate, list_refundable_payments, record_expense, record_refund, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_set_user_permissions, admin_create_user, admin_set_user_active, admin_reset_user_password, admin_update_user_role, admin_delete_user, delete_pricing_rule, create_pricing_rule, get_active_cash_shift, get_shift_inventory_reconciliation, record_shift_inventory_count, open_cash_shift, close_cash_shift, admin_audit_log])
