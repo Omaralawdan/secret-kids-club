@@ -1,3 +1,9 @@
+-- Older installed databases may have created this table before purchased_at was part of its schema.
+ALTER TABLE local_child_memberships ADD COLUMN purchased_at TEXT;
+UPDATE local_child_memberships
+SET purchased_at = COALESCE(purchased_at, starts_at)
+WHERE purchased_at IS NULL;
+
 ALTER TABLE local_child_memberships ADD COLUMN sale_id TEXT REFERENCES local_sales(id);
 CREATE INDEX IF NOT EXISTS local_child_memberships_sale_idx ON local_child_memberships(sale_id);
 
