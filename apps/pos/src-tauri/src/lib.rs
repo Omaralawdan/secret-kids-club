@@ -2079,6 +2079,24 @@ fn run_startup_migrations(app: &tauri::AppHandle) -> Result<(), Box<dyn Error>> 
             }
         }
 
+        // Repair critical columns/tables after attempting the historical migrations.
+        // Some old databases have partially-applied migration 15/21/23; a later
+        // statement in a migration can fail and roll back the preceding ALTER TABLE.
+        // These idempotent repairs keep the existing data and make the cashier
+        // screens able to read the already-open shift and café catalogue.
+        if sqlite_table_exists(&db, "local_child_memberships")? {
+            ensure_sqlite_column(&db, "local_child_memberships", "sale_id", "TEXT REFERENCES local_sales(id)")?;
+            db.execute_batch(
+                "CREATE INDEX IF NOT EXISTS local_child_memberships_sale_idx
+                 ON local_child_memberships(sale_id);",
+            )?;
+        }
+        if sqlite_table_exists(&db, "local_inventory_items")? {
+            ensure_sqlite_column(&db, "local_inventory_items", "image_data_url", "TEXT")?;
+        }
+        db.execute_batch(include_str!("../migrations/021_shift_inventory_reconciliation.sql"))?;
+        write_startup_log(&directory, "Critical legacy schema repairs verified (membership sale link, café image field, shift inventory tables). ");
+
         // Explicitly verify the objects reported missing by the cashier. This
         // makes the startup log identify a schema gap instead of leaving the
         // React screens to fail later with opaque "no such table/column" errors.
