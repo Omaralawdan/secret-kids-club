@@ -2000,30 +2000,64 @@ fn run_startup_migrations(app: &tauri::AppHandle) -> Result<(), Box<dyn Error>> 
             )?;
 
             for (version, description, sql) in migrations {
-                // Repair the legacy membership timestamp before migration 15 references it.
-                // Keep this outside the SQL statement splitter so older databases cannot
-                // reach the backfill UPDATE without the required column.
-                if version == 15 && sqlite_table_exists(&db, "local_child_memberships")? {
-                    ensure_sqlite_column(
-                        &db,
-                        "local_child_memberships",
-                        "purchased_at",
-                        "TEXT",
-                    )?;
-                    db.execute_batch(
-                        "UPDATE local_child_memberships
-                         SET purchased_at = COALESCE(purchased_at, starts_at)
-                         WHERE purchased_at IS NULL;",
-                    )?;
-                }
+                // Migration 15 is handled here instead of replaying its SQL file.
+                // Installed databases have several historical membership schemas; build
+                // each optional column safely and only run backfills when their source
+                // columns exist. Never assume a legacy timestamp column is present.
+                if version == 15 {
+                    if sqlite_table_exists(&db, "local_child_memberships")? {
+                        ensure_sqlite_column(&db, "local_child_memberships", "purchased_at", "TEXT")?;
+                        ensure_sqlite_column(&db, "local_child_memberships", "sale_id", "TEXT REFERENCES local_sales(id)")?;
+                        if sqlite_column_exists(&db, "local_child_memberships", "starts_at")? {
+                            db.execute_batch(
+                                "UPDATE local_child_memberships
+                                 SET purchased_at = COALESCE(NULLIF(purchased_at, ''), starts_at)
+                                 WHERE purchased_at IS NULL OR purchased_at = '';",
+                            )?;
+                        }
 
-                let apply_result = execute_legacy_migration(&db, sql);
-                apply_result.map_err(|error| {
-                    io::Error::new(
-                        io::ErrorKind::Other,
-                        format!("Database migration {version} ({description}) failed: {error}"),
-                    )
-                })?;
+                        let can_link_sales =
+                            sqlite_table_exists(&db, "local_sales")?
+                            && sqlite_table_exists(&db, "local_sale_items")?
+                            && sqlite_table_exists(&db, "local_membership_plans")?
+                            && sqlite_column_exists(&db, "local_child_memberships", "plan_id")?
+                            && sqlite_column_exists(&db, "local_child_memberships", "child_name_snapshot")?
+                            && sqlite_column_exists(&db, "local_child_memberships", "purchased_at")?
+                            && sqlite_column_exists(&db, "local_sales", "created_at")?
+                            && sqlite_column_exists(&db, "local_sale_items", "description_snapshot")?;
+                        if can_link_sales {
+                            db.execute_batch(
+                                "UPDATE local_child_memberships
+                                 SET sale_id = (
+                                   SELECT s.id
+                                   FROM local_sales s
+                                   JOIN local_sale_items si ON si.sale_id = s.id
+                                   WHERE si.description_snapshot =
+                                     'Membership package: ' ||
+                                     (SELECT p.name FROM local_membership_plans p
+                                      WHERE p.id = local_child_memberships.plan_id) ||
+                                     ' - ' || local_child_memberships.child_name_snapshot
+                                   ORDER BY ABS(julianday(s.created_at) -
+                                     julianday(COALESCE(local_child_memberships.purchased_at, s.created_at)))
+                                   LIMIT 1
+                                 )
+                                 WHERE sale_id IS NULL;",
+                            )?;
+                        }
+                        db.execute_batch(
+                            "CREATE INDEX IF NOT EXISTS local_child_memberships_sale_idx
+                             ON local_child_memberships(sale_id);",
+                        )?;
+                    }
+                } else {
+                    let apply_result = execute_legacy_migration(&db, sql);
+                    apply_result.map_err(|error| {
+                        io::Error::new(
+                            io::ErrorKind::Other,
+                            format!("Database migration {version} ({description}) failed: {error}"),
+                        )
+                    })?;
+                }
 
                 db.execute(
                     "INSERT OR IGNORE INTO local_app_migrations(version,description,applied_at)
