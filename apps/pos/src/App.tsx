@@ -341,7 +341,6 @@ export default function App() {
   }
 
   function priceFor(child: ChildDraft) {
-    const rule = rules.find((item) => item.id === child.ruleId);
     return child.priceMinor === null ? 0 : Math.round(child.priceMinor);
   }
 
