@@ -1924,6 +1924,10 @@ fn run_startup_migrations(app: &tauri::AppHandle) -> Result<(), Box<dyn Error>> 
         let db = Connection::open(&database_file)?;
         db.pragma_update(None, "foreign_keys", "ON")?;
         let has_existing_schema = database_existed && sqlite_table_exists(&db, "local_users")?;
+        write_startup_log(
+            &directory,
+            if has_existing_schema { "Existing database detected; applying missing schema changes only." } else { "New database detected; applying full schema." },
+        );
 
         let migrations: [(i64, &str, &str); 24] = [
             (1, "create_local_pos_schema", include_str!("../migrations/001_local_schema_migration.sql")),
@@ -1963,11 +1967,7 @@ fn run_startup_migrations(app: &tauri::AppHandle) -> Result<(), Box<dyn Error>> 
             )?;
 
             for (version, description, sql) in migrations {
-                let apply_result = if has_existing_schema {
-                    execute_legacy_migration(&db, sql)
-                } else {
-                    db.execute_batch(sql).map_err(|error| Box::new(error) as Box<dyn Error>)
-                };
+                let apply_result = execute_legacy_migration(&db, sql);
                 apply_result.map_err(|error| {
                     io::Error::new(
                         io::ErrorKind::Other,
