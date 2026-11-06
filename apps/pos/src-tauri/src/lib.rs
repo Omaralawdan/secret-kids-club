@@ -720,7 +720,46 @@ fn get_active_cash_shift(app: tauri::AppHandle) -> Result<Value, String> {
             value["summaryAvailable"] = json!(true);
             Ok(value)
         }
-        Ok(None) => Ok(Value::Null),
+        Ok(None) => {
+            // Reconcile an unexpected empty summary result against the authoritative
+            // open-session count. This prevents the UI from offering a second shift
+            // when the session exists but the summary query returned no row.
+            let open_count: i64 = db.query_row(
+                "SELECT COUNT(*) FROM local_cash_sessions WHERE closed_at IS NULL",
+                [],
+                |row| row.get(0),
+            ).map_err(|e| format!("تعذر التحقق من الوردية المفتوحة: {e}"))?;
+            if open_count == 0 {
+                return Ok(Value::Null);
+            }
+            let mut value: Value = db.query_row(
+                "SELECT id,opening_float_minor,opened_at,opened_by
+                 FROM local_cash_sessions
+                 WHERE closed_at IS NULL
+                 ORDER BY opened_at DESC LIMIT 1",
+                [],
+                |row| Ok(json!({
+                    "id": row.get::<_,String>(0)?,
+                    "openingFloatMinor": row.get::<_,i64>(1)?,
+                    "openedAt": row.get::<_,String>(2)?,
+                    "openedBy": row.get::<_,String>(3)?
+                })),
+            ).map_err(|e| format!("هناك وردية مفتوحة لكن تعذر قراءة بياناتها: {e}"))?;
+            for key in [
+                "cashSalesMinor","electronicSalesMinor","cashExpensesMinor","cashRefundsMinor",
+                "cashAdditionsMinor","cashRemovalsMinor","kidsAreaCashMinor","kidsAreaInstapayMinor",
+                "kidsAreaWalletMinor","cafeCashMinor","cafeInstapayMinor","cafeWalletMinor",
+                "kidsAreaVisaMinor","kidsAreaOtherMinor","cafeVisaMinor","cafeOtherMinor",
+                "packagesCashMinor","packagesInstapayMinor","packagesWalletMinor","packagesVisaMinor",
+                "packagesOtherMinor"
+            ] {
+                value[key] = json!(0);
+            }
+            value["expectedCashMinor"] = value["openingFloatMinor"].clone();
+            value["summaryAvailable"] = json!(false);
+            value["summaryError"] = json!("تم العثور على الوردية من سجل الجلسات، لكن استعلام الملخص لم يُرجع صفًا.");
+            Ok(value)
+        },
         Err(summary_error) => {
             // Keep the real open session visible even when a legacy database is
             // missing a column used only by the financial summary. Never treat
