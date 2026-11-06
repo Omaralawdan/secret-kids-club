@@ -1768,6 +1768,7 @@ pub fn run() {
         Migration { version: 21, description: "shift_inventory_reconciliation", sql: include_str!("../migrations/021_shift_inventory_reconciliation.sql"), kind: MigrationKind::Up },
         Migration { version: 22, description: "visit_entry_collection", sql: include_str!("../migrations/022_visit_entry_collection.sql"), kind: MigrationKind::Up },
         Migration { version: 23, description: "cafe_item_images", sql: include_str!("../migrations/023_cafe_item_images.sql"), kind: MigrationKind::Up },
+        Migration { version: 24, description: "cafe_expiry_batch_tracking", sql: include_str!("../migrations/024_cafe_expiry_batch_tracking.sql"), kind: MigrationKind::Up },
     ];
 
     tauri::Builder::default()
