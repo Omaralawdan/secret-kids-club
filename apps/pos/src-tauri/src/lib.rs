@@ -2133,6 +2133,10 @@ fn run_startup_migrations(app: &tauri::AppHandle) -> Result<(), Box<dyn Error>> 
         // statement in a migration can fail and roll back the preceding ALTER TABLE.
         // These idempotent repairs keep the existing data and make the cashier
         // screens able to read the already-open shift and café catalogue.
+        if sqlite_table_exists(&db, "local_visits")? {
+            ensure_sqlite_column(&db, "local_visits", "entry_sale_id", "TEXT REFERENCES local_sales(id)")?;
+            db.execute_batch("CREATE UNIQUE INDEX IF NOT EXISTS local_visits_entry_sale_idx ON local_visits(entry_sale_id) WHERE entry_sale_id IS NOT NULL;")?;
+        }
         if sqlite_table_exists(&db, "local_child_memberships")? {
             ensure_sqlite_column(&db, "local_child_memberships", "sale_id", "TEXT REFERENCES local_sales(id)")?;
             db.execute_batch(
