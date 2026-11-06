@@ -31,6 +31,8 @@ type ChildDraft = {
   durationHours: number;
   hourlyRateMinor: number | null;
   hourlyPriceMinor: number | null;
+  hourlyRateText: string;
+  hourlyPriceText: string;
   paymentMethod: "cash" | "instapay" | "wallet" | "visa" | "other";
 };
 
@@ -193,7 +195,7 @@ export default function App() {
   const [previousChildren, setPreviousChildren] = useState<{name:string;lastVisit:string}[]>([]);
   const [guardianSuggestions, setGuardianSuggestions] = useState<{phone:string;name:string}[]>([]);
   const [children, setChildren] = useState<ChildDraft[]>([
-    { key: makeId(), name: "", ruleId: "", durationHours: 1, hourlyRateMinor: null, hourlyPriceMinor: null, paymentMethod },
+    { key: makeId(), name: "", ruleId: "", durationHours: 1, hourlyRateMinor: null, hourlyPriceMinor: null, hourlyRateText: "", hourlyPriceText: "", paymentMethod },
   ]);
 
   const [ruleName, setRuleName] = useState("");
@@ -306,21 +308,20 @@ export default function App() {
 
   function updateChild(
     key: string,
-    field: "name" | "ruleId" | "durationHours" | "hourlyRateMinor" | "hourlyPriceMinor" | "paymentMethod",
+    field: "name" | "ruleId" | "durationHours" | "hourlyRateMinor" | "hourlyPriceMinor" | "hourlyRateText" | "hourlyPriceText" | "paymentMethod",
     value: string | number | null
   ) {
     setChildren((current) =>
       current.map((child) => {
         if (child.key !== key) return child;
         if (field === "durationHours") return { ...child, durationHours: Number(value) };
+        if (field === "hourlyPriceText") return { ...child, hourlyPriceText: String(value ?? ""), hourlyPriceMinor: tryEgpToMinor(String(value ?? "")) };
+        if (field === "hourlyRateText") return { ...child, hourlyRateText: String(value ?? ""), hourlyRateMinor: tryEgpToMinor(String(value ?? "")) };
         if (field === "hourlyPriceMinor") return { ...child, hourlyPriceMinor: value === null ? null : Number(value) };
-        if (field === "hourlyRateMinor") {
-          const rate = value === null ? null : Number(value);
-          return { ...child, hourlyRateMinor: rate };
-        }
+        if (field === "hourlyRateMinor") return { ...child, hourlyRateMinor: value === null ? null : Number(value) };
         if (field === "ruleId") {
           const selected = rules.find(rule => rule.id === String(value));
-          return { ...child, ruleId: String(value), durationHours: selected?.duration_minutes ? selected.duration_minutes / 60 : child.durationHours, hourlyRateMinor: null };
+          return { ...child, ruleId: String(value), durationHours: selected?.duration_minutes ? selected.duration_minutes / 60 : child.durationHours, hourlyRateMinor: null, hourlyRateText: "" };
         }
         return { ...child, [field]: value as string };
       })
@@ -330,7 +331,7 @@ export default function App() {
   function addChild() {
     setChildren((current) => [
       ...current,
-      { key: makeId(), name: "", ruleId: "", durationHours: 1, hourlyRateMinor: null, hourlyPriceMinor: null, paymentMethod },
+      { key: makeId(), name: "", ruleId: "", durationHours: 1, hourlyRateMinor: null, hourlyPriceMinor: null, hourlyRateText: "", hourlyPriceText: "", paymentMethod },
     ]);
   }
 
@@ -679,7 +680,7 @@ export default function App() {
       setVisitCouponCode("");
       setGuardianRelation("Mother");
       setChildren([
-        { key: makeId(), name: "", ruleId: "", durationHours: 1, hourlyRateMinor: null, hourlyPriceMinor: null, paymentMethod },
+        { key: makeId(), name: "", ruleId: "", durationHours: 1, hourlyRateMinor: null, hourlyPriceMinor: null, hourlyRateText: "", hourlyPriceText: "", paymentMethod },
       ]);
       setMessage(
         ar
@@ -1185,7 +1186,7 @@ export default function App() {
                 {guardianSuggestions.length>0 && <div className="rule-list">{guardianSuggestions.map((g,i)=><button type="button" className="secondary-button" key={g.phone+i} onMouseDown={e=>e.preventDefault()} onClick={()=>{setGuardianPhone(g.phone);setGuardianName(g.name);setGuardianSuggestions([]);void (async()=>{if(!db)return;const history=await db.select<{name:string;lastVisit:string}[]>(`SELECT vc.child_name_snapshot AS name,MAX(v.checked_in_at) AS lastVisit FROM local_visits v JOIN local_visit_children vc ON vc.visit_id=v.id WHERE v.guardian_phone_snapshot=? GROUP BY vc.child_name_snapshot ORDER BY MAX(v.checked_in_at) DESC LIMIT 20`,[g.phone]);setPreviousChildren(history);setCustomerLookupMessage(ar?"تم تحميل بيانات المرافق والأطفال السابقين.":"Guardian and previous children loaded.");})().catch(()=>{});}}>{g.phone} · {g.name}</button>)}</div>}
                 {customerLookupMessage && <span className="muted">{customerLookupMessage}</span>}
               </label>
-              {previousChildren.length>0 && <div className="full-width panel"><strong>{ar ? "الأطفال المسجلون سابقًا لنفس رقم الهاتف" : "Children previously registered to this phone"}</strong><div className="rule-list">{previousChildren.map((item,i)=><button type="button" className="secondary-button" key={item.name+i} onClick={()=>{setChildren(current=>[...current,{key:makeId(),name:item.name,ruleId:"",durationHours:1,hourlyRateMinor:null,hourlyPriceMinor:null,paymentMethod}]);setMessage(ar ? "تمت إضافة الطفل؛ أدخل سعر الساعة ومدة الحجز." : "Child added. Enter the hourly price and booked duration.");}}>{item.name} · {formatDate(item.lastVisit,language)} · {ar ? "إضافة" : "Add"}</button>)}</div></div>}
+              {previousChildren.length>0 && <div className="full-width panel"><strong>{ar ? "الأطفال المسجلون سابقًا لنفس رقم الهاتف" : "Children previously registered to this phone"}</strong><div className="rule-list">{previousChildren.map((item,i)=><button type="button" className="secondary-button" key={item.name+i} onClick={()=>{setChildren(current=>[...current,{key:makeId(),name:item.name,ruleId:"",durationHours:1,hourlyRateMinor:null,hourlyPriceMinor:null,hourlyRateText:"",hourlyPriceText:"",paymentMethod}]);setMessage(ar ? "تمت إضافة الطفل؛ أدخل سعر الساعة ومدة الحجز." : "Child added. Enter the hourly price and booked duration.");}}>{item.name} · {formatDate(item.lastVisit,language)} · {ar ? "إضافة" : "Add"}</button>)}</div></div>}
               <label className="full-width">{ar ? "طريقة الدفع" : "Payment method"}
                 <select value={paymentMethod} onChange={e => {const method=e.target.value as "cash"|"instapay"|"wallet"|"visa"|"other";setPaymentMethod(method);setChildren(current=>current.map(child=>({...child,paymentMethod:method})));}}><option value="cash">{ar ? "كاش" : "Cash"}</option><option value="instapay">InstaPay</option><option value="wallet">{ar ? "محفظة إلكترونية" : "E-Wallet"}</option><option value="visa">{ar ? "فيزا" : "Visa"}</option><option value="other">{ar ? "أخرى" : "Other"}</option></select>
               </label>
@@ -1214,7 +1215,7 @@ export default function App() {
                       <input value={child.name} onChange={(e) => updateChild(child.key, "name", e.target.value)} required placeholder={tr("Child's name")} />
                     </label>
                     <label className="child-pricing child-rule-field">{ar ? "سعر الساعة (جنيه)" : "Hourly price (EGP)"}
-                      <input type="text" inputMode="decimal" required value={child.hourlyPriceMinor === null ? "" : (child.hourlyPriceMinor / 100).toFixed(2)} onChange={e => updateChild(child.key, "hourlyPriceMinor", e.target.value === "" ? null : tryEgpToMinor(e.target.value))} placeholder={ar ? "اكتب قيمة الساعة" : "Enter hourly price"} />
+                      <input type="text" inputMode="decimal" required value={child.hourlyPriceText} onChange={e => updateChild(child.key, "hourlyPriceText", e.target.value)} placeholder={ar ? "اكتب قيمة الساعة" : "Enter hourly price"} />
                     </label>
                     <label className="booked-hours-field">
                       {ar ? "مدة الحجز (بالساعات)" : "Booked duration (hours)"}
@@ -1229,7 +1230,7 @@ export default function App() {
                       />
                       <span className="muted">{ar ? "المدة مستقلة لكل طفل." : "Duration is set separately for each child."}</span>
                     </label>
-                    <label className="child-pricing child-overtime">{ar ? "سعر ساعة الإضافي (جنيه)" : "Overtime hourly rate (EGP)"}<input type="text" inputMode="decimal" required value={child.hourlyRateMinor === null ? "" : (child.hourlyRateMinor / 100).toFixed(2)} onChange={e => updateChild(child.key, "hourlyRateMinor", e.target.value === "" ? null : tryEgpToMinor(e.target.value))} placeholder={ar ? "اكتب سعر الساعة" : "Enter hourly rate"} /><span className="muted">{selected?.pricing_type === "hourly" ? (ar ? "يُستخدم لحساب السعر الأساسي والوقت الإضافي." : "Used for the booked hourly price and overtime.") : (ar ? "يُستخدم لحساب أي وقت يتجاوز مدة الحجز." : "Used to calculate time beyond the booked duration.")}</span></label>
+                    <label className="child-pricing child-overtime">{ar ? "سعر ساعة الإضافي (جنيه)" : "Overtime hourly rate (EGP)"}<input type="text" inputMode="decimal" required value={child.hourlyRateText} onChange={e => updateChild(child.key, "hourlyRateText", e.target.value)} placeholder={ar ? "اكتب سعر الساعة" : "Enter hourly rate"} /><span className="muted">{selected?.pricing_type === "hourly" ? (ar ? "يُستخدم لحساب السعر الأساسي والوقت الإضافي." : "Used for the booked hourly price and overtime.") : (ar ? "يُستخدم لحساب أي وقت يتجاوز مدة الحجز." : "Used to calculate time beyond the booked duration.")}</span></label>
                     <div className="child-price">
                       <span>{ar ? "إجمالي الحجز المحسوب" : "Calculated booking total"}</span>
                       <strong>{money(priceFor(child), language)}</strong>
