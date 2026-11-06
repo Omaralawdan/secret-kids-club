@@ -2114,9 +2114,6 @@ fn run_startup_migrations(app: &tauri::AppHandle) -> Result<(), Box<dyn Error>> 
         Ok(())
     })();
 
-            Ok(())
-    })();
-
     match result {
         Ok(()) => {
             write_startup_log(&directory, "Local database initialization completed.");
