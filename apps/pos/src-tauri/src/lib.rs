@@ -1412,6 +1412,144 @@ fn create_cafe_sale(app:tauri::AppHandle,items:Vec<Value>,payments:Vec<Value>,co
 }
 
 
+#[tauri::command]
+fn list_cancellable_cafe_sales(app: tauri::AppHandle) -> Result<Vec<Value>, String> {
+    let db = auth_db(&app)?;
+    require_role(&db, &["admin", "manager", "cashier"])?;
+    require_permission(&db, "cafe")?;
+    let mut st = db.prepare(
+        "SELECT s.id,s.sale_number_local,s.total_minor,s.created_at,
+          COALESCE((SELECT SUM(p.amount_minor) FROM local_payments p WHERE p.sale_id=s.id AND p.status='confirmed'),0)
+            - COALESCE((SELECT SUM(r.amount_minor) FROM local_refunds r JOIN local_payments p ON p.id=r.payment_id WHERE p.sale_id=s.id),0),
+          COALESCE((SELECT GROUP_CONCAT(si.description_snapshot || ' × ' || CAST(si.quantity_milli AS TEXT), '، ')
+            FROM local_sale_items si WHERE si.sale_id=s.id),'')
+         FROM local_sales s
+         WHERE s.status='completed' AND EXISTS(
+           SELECT 1 FROM local_sale_items si WHERE si.sale_id=s.id AND si.item_type='cafe_product'
+         )
+         ORDER BY s.created_at DESC LIMIT 50"
+    ).map_err(|e| e.to_string())?;
+    let rows = st.query_map([], |r| Ok(json!({
+        "saleId":r.get::<_,String>(0)?,
+        "saleNumber":r.get::<_,i64>(1)?,
+        "totalMinor":r.get::<_,i64>(2)?,
+        "createdAt":r.get::<_,String>(3)?,
+        "refundableMinor":r.get::<_,i64>(4)?,
+        "itemsSummary":r.get::<_,String>(5)?
+    }))).map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>,_>>().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn cancel_cafe_sale(
+    app: tauri::AppHandle,
+    sale_id: String,
+    stock_disposition: String,
+    reason: String,
+    admin_password: String,
+) -> Result<(), String> {
+    if sale_id.trim().is_empty() || reason.trim().is_empty()
+        || !["return_in", "waste"].contains(&stock_disposition.as_str()) {
+        return Err("اختر الفاتورة وحالة المخزون واكتب سبب الإلغاء.".into());
+    }
+    let mut db = auth_db(&app)?;
+    let (actor, _) = require_role(&db, &["admin", "manager", "cashier"])?;
+    require_permission(&db, "cafe")?;
+
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
+    let sale: Option<(i64,i64,String)> = tx.query_row(
+        "SELECT sale_number_local,total_minor,status FROM local_sales WHERE id=?",
+        params![sale_id],
+        |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))
+    ).optional().map_err(|e| e.to_string())?;
+    let (sale_number, _total_minor, status) = sale.ok_or("فاتورة الكافيه غير موجودة.")?;
+    if status != "completed" {
+        return Err("لا يمكن إلغاء هذه الفاتورة؛ ربما أُلغيت أو استُردت بالفعل.".into());
+    }
+    let cafe_item_count: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM local_sale_items WHERE sale_id=? AND item_type='cafe_product'",
+        params![sale_id], |r| r.get(0)
+    ).map_err(|e| e.to_string())?;
+    if cafe_item_count == 0 { return Err("الفاتورة لا تحتوي على منتجات كافيه.".into()); }
+
+    let paid_total: i64 = tx.query_row(
+        "SELECT COALESCE(SUM(amount_minor),0) FROM local_payments WHERE sale_id=? AND status='confirmed'",
+        params![sale_id], |r| r.get(0)
+    ).map_err(|e| e.to_string())?;
+    if paid_total > 0 {
+        if admin_password.is_empty() { return Err("كلمة مرور المدير مطلوبة لاعتماد إلغاء الفاتورة ورد المبلغ.".into()); }
+        let mut admins = tx.prepare("SELECT password_salt,password_hash FROM local_users WHERE is_active=1 AND instr(role_codes_json,'admin')>0")
+            .map_err(|e| e.to_string())?;
+        let admin_rows = admins.query_map([], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))
+            .map_err(|e| e.to_string())?;
+        let mut approved = false;
+        for row in admin_rows {
+            let (salt, hash) = row.map_err(|e| e.to_string())?;
+            let salt = hex::decode(salt).map_err(|e| e.to_string())?;
+            if hash_password(&admin_password, &salt) == hash { approved = true; break; }
+        }
+        drop(admins);
+        if !approved { return Err("كلمة مرور المدير غير صحيحة.".into()); }
+    }
+
+    let shift_id: String = tx.query_row(
+        "SELECT id FROM local_cash_sessions WHERE closed_at IS NULL ORDER BY opened_at DESC LIMIT 1",
+        [], |r| r.get(0)
+    ).optional().map_err(|e| e.to_string())?.ok_or("افتح الوردية قبل إلغاء فاتورة الكافيه.")?;
+
+    let movements = {
+        let mut st = tx.prepare("SELECT inventory_item_id,quantity_milli FROM local_stock_movements WHERE sale_id=? AND movement_type='sale'")
+            .map_err(|e| e.to_string())?;
+        let rows = st.query_map(params![sale_id], |r| Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?)))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>,_>>().map_err(|e| e.to_string())?
+    };
+    if movements.is_empty() { return Err("حركات خصم مخزون الفاتورة غير موجودة؛ أوقفنا الإلغاء لحماية رصيد المخزون.".into()); }
+
+    let now = Utc::now().to_rfc3339();
+    let stock_label = if stock_disposition == "return_in" { "إرجاع للمخزون بعد إلغاء فاتورة الكافيه" } else { "هالك بعد إلغاء فاتورة الكافيه" };
+    for (item_id, quantity) in movements {
+        tx.execute(
+            "INSERT INTO local_stock_movements(id,inventory_item_id,movement_type,quantity_milli,sale_id,reason,created_by,created_at) VALUES(?,?,?,?,?,?,?,?)",
+            params![uuid::Uuid::new_v4().to_string(),item_id,stock_disposition,quantity,sale_id,format!("{}: {}",stock_label,reason.trim()),actor,now]
+        ).map_err(|e| e.to_string())?;
+    }
+
+    if paid_total > 0 {
+        let payments = {
+            let mut st = tx.prepare(
+                "SELECT p.id,p.amount_minor,p.method,COALESCE(p.method_label,p.method),
+                  p.amount_minor-COALESCE((SELECT SUM(r.amount_minor) FROM local_refunds r WHERE r.payment_id=p.id),0)
+                 FROM local_payments p WHERE p.sale_id=? AND p.status='confirmed'"
+            ).map_err(|e| e.to_string())?;
+            let rows = st.query_map(params![sale_id], |r| Ok((
+                r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,i64>(4)?
+            ))).map_err(|e| e.to_string())?;
+            rows.collect::<Result<Vec<_>,_>>().map_err(|e| e.to_string())?
+        };
+        for (payment_id, _original_amount, stored_method, method_label, remaining) in payments {
+            if remaining <= 0 { continue; }
+            tx.execute(
+                "INSERT INTO local_refunds(id,payment_id,cash_session_id,amount_minor,reason,method,method_label,refunded_by,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                params![uuid::Uuid::new_v4().to_string(),payment_id,shift_id,remaining,
+                    format!("إلغاء فاتورة كافيه رقم {}: {}",sale_number,reason.trim()),
+                    stored_method,method_label,actor,now]
+            ).map_err(|e| e.to_string())?;
+        }
+        tx.execute("UPDATE local_sales SET status='refunded' WHERE id=?",params![sale_id]).map_err(|e| e.to_string())?;
+    } else {
+        tx.execute("UPDATE local_sales SET status='voided' WHERE id=?",params![sale_id]).map_err(|e| e.to_string())?;
+    }
+
+    tx.execute(
+        "INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,reason,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'cafe_sale_cancelled','sale',?,?,?,?)",
+        params![actor,sale_id,reason.trim(),json!({"sale_number":sale_number,"stock_disposition":stock_disposition,"refunded_minor":paid_total,"cash_session_id":shift_id}).to_string(),now]
+    ).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+
 fn consume_expiry_batches(tx:&rusqlite::Transaction<'_>,item_id:&str,quantity_milli:i64)->Result<(),String>{
     let batches={
         let mut st=tx.prepare("SELECT id,quantity_milli FROM local_expiry_batches WHERE inventory_item_id=? AND quantity_milli>0 ORDER BY expiry_date,created_at").map_err(|e|e.to_string())?;
@@ -1625,7 +1763,7 @@ pub fn run() {
                 .add_migrations("sqlite:secret-kids-club.db", migrations)
                 .build(),
         )
-        .invoke_handler(tauri::generate_handler![greet, list_coupons, save_coupon, set_coupon_active, apply_visit_coupon, create_membership_sale, list_bookings, save_booking, update_booking_status, list_cafe_stock_movements, record_cafe_stock_count, list_cafe_expiry_alerts, save_cafe_recipe, list_cafe_recipes, create_cafe_sale, collect_visit_entry, list_cafe_items, save_cafe_item, adjust_cafe_stock, record_cafe_purchase, save_cafe_supplier, list_cafe_suppliers, cancel_membership, record_membership_payment, record_cash_movement, list_monthly_expenses, save_monthly_expense, checkout_child, extend_visit_child, cancel_visit, update_membership_overtime_rate, list_refundable_payments, record_expense, record_refund, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_set_user_permissions, admin_create_user, admin_set_user_active, admin_reset_user_password, admin_update_user_role, admin_delete_user, delete_pricing_rule, create_pricing_rule, get_active_cash_shift, get_shift_inventory_reconciliation, record_shift_inventory_count, open_cash_shift, close_cash_shift, admin_audit_log])
+        .invoke_handler(tauri::generate_handler![greet, list_coupons, save_coupon, set_coupon_active, apply_visit_coupon, create_membership_sale, list_bookings, save_booking, update_booking_status, list_cafe_stock_movements, record_cafe_stock_count, list_cafe_expiry_alerts, save_cafe_recipe, list_cafe_recipes, create_cafe_sale, list_cancellable_cafe_sales, cancel_cafe_sale, collect_visit_entry, list_cafe_items, save_cafe_item, adjust_cafe_stock, record_cafe_purchase, save_cafe_supplier, list_cafe_suppliers, cancel_membership, record_membership_payment, record_cash_movement, list_monthly_expenses, save_monthly_expense, checkout_child, extend_visit_child, cancel_visit, update_membership_overtime_rate, list_refundable_payments, record_expense, record_refund, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_set_user_permissions, admin_create_user, admin_set_user_active, admin_reset_user_password, admin_update_user_role, admin_delete_user, delete_pricing_rule, create_pricing_rule, get_active_cash_shift, get_shift_inventory_reconciliation, record_shift_inventory_count, open_cash_shift, close_cash_shift, admin_audit_log])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
