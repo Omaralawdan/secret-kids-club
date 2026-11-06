@@ -1499,9 +1499,9 @@ fn cancel_cafe_sale(
     ).optional().map_err(|e| e.to_string())?.ok_or("افتح الوردية قبل إلغاء فاتورة الكافيه.")?;
 
     let movements = {
-        let mut st = tx.prepare("SELECT inventory_item_id,quantity_milli FROM local_stock_movements WHERE sale_id=? AND movement_type='sale'")
+        let mut st = tx.prepare("SELECT id,inventory_item_id,quantity_milli FROM local_stock_movements WHERE sale_id=? AND movement_type='sale'")
             .map_err(|e| e.to_string())?;
-        let rows = st.query_map(params![sale_id], |r| Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?)))
+        let rows = st.query_map(params![sale_id], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?)))
             .map_err(|e| e.to_string())?;
         rows.collect::<Result<Vec<_>,_>>().map_err(|e| e.to_string())?
     };
@@ -1509,12 +1509,12 @@ fn cancel_cafe_sale(
 
     let now = Utc::now().to_rfc3339();
     let stock_label = if stock_disposition == "return_in" { "إرجاع للمخزون بعد إلغاء فاتورة الكافيه" } else { "هالك بعد إلغاء فاتورة الكافيه" };
-    for (item_id, quantity) in movements {
+    for (movement_id, item_id, quantity) in movements {
         if stock_disposition == "return_in" {
             let batches = {
-                let mut st = tx.prepare("SELECT batch_id,quantity_milli FROM local_stock_movement_batches WHERE movement_id IN (SELECT id FROM local_stock_movements WHERE sale_id=? AND inventory_item_id=? AND movement_type='sale') ORDER BY batch_id")
+                let mut st = tx.prepare("SELECT batch_id,quantity_milli FROM local_stock_movement_batches WHERE movement_id=? ORDER BY batch_id")
                     .map_err(|e| e.to_string())?;
-                let rows = st.query_map(params![sale_id,item_id], |r| Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?)))
+                let rows = st.query_map(params![movement_id], |r| Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?)))
                     .map_err(|e| e.to_string())?;
                 rows.collect::<Result<Vec<_>,_>>().map_err(|e| e.to_string())?
             };
