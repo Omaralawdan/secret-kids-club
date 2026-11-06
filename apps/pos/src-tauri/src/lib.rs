@@ -580,7 +580,7 @@ fn admin_set_user_permissions(app:tauri::AppHandle,user_id:String,permissions:Ve
    if actor==user_id || target_roles.iter().any(|r|r=="admin"||r=="manager") {
      return Err("مدير الوردية يمكنه تخصيص صلاحيات الكاشير ومستخدم التقارير فقط.".into());
    }
-   let manager_assignable=["reception","active","packages","cafe","cafe_items","reports","shift","bookings","overtime_waive","discounts"];
+   let manager_assignable=["reception","active","packages","cafe","cafe_items","reports","shift","pricing","bookings","overtime_waive","discounts"];
    if permissions.iter().any(|p|!manager_assignable.contains(&p.as_str())) {
      return Err("لا يمكن لمدير الوردية منح صلاحيات إعداد الأسعار أو الإعدادات أو إدارة النظام.".into());
    }
