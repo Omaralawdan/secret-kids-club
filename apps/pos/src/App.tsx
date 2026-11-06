@@ -30,11 +30,11 @@ type ChildDraft = {
   ruleId: string;
   durationHours: number;
   hourlyRateMinor: number | null;
-  priceMinor: number | null;
+  hourlyPriceMinor: number | null;
   paymentMethod: "cash" | "instapay" | "wallet" | "visa" | "other";
 };
 
-type Screen = "reception" | "active" | "packages" | "pricing" | "settings" | "reports" | "admin" | "cafe" | "bookings";
+type Screen = "reception" | "active" | "packages" | "pricing" | "settings" | "reports" | "admin" | "cafe" | "cafe_management" | "bookings";
 
 type ActiveChild = {
   visit_id: string;
@@ -193,7 +193,7 @@ export default function App() {
   const [previousChildren, setPreviousChildren] = useState<{name:string;lastVisit:string}[]>([]);
   const [guardianSuggestions, setGuardianSuggestions] = useState<{phone:string;name:string}[]>([]);
   const [children, setChildren] = useState<ChildDraft[]>([
-    { key: makeId(), name: "", ruleId: "", durationHours: 1, hourlyRateMinor: null, priceMinor: null, paymentMethod },
+    { key: makeId(), name: "", ruleId: "", durationHours: 1, hourlyRateMinor: null, hourlyPriceMinor: null, paymentMethod },
   ]);
 
   const [ruleName, setRuleName] = useState("");
@@ -306,14 +306,14 @@ export default function App() {
 
   function updateChild(
     key: string,
-    field: "name" | "ruleId" | "durationHours" | "hourlyRateMinor" | "priceMinor" | "paymentMethod",
+    field: "name" | "ruleId" | "durationHours" | "hourlyRateMinor" | "hourlyPriceMinor" | "paymentMethod",
     value: string | number | null
   ) {
     setChildren((current) =>
       current.map((child) => {
         if (child.key !== key) return child;
         if (field === "durationHours") return { ...child, durationHours: Number(value) };
-        if (field === "priceMinor") return { ...child, priceMinor: value === null ? null : Number(value) };
+        if (field === "hourlyPriceMinor") return { ...child, hourlyPriceMinor: value === null ? null : Number(value) };
         if (field === "hourlyRateMinor") {
           const rate = value === null ? null : Number(value);
           return { ...child, hourlyRateMinor: rate };
@@ -330,7 +330,7 @@ export default function App() {
   function addChild() {
     setChildren((current) => [
       ...current,
-      { key: makeId(), name: "", ruleId: "", durationHours: 1, hourlyRateMinor: null, priceMinor: null, paymentMethod },
+      { key: makeId(), name: "", ruleId: "", durationHours: 1, hourlyRateMinor: null, hourlyPriceMinor: null, paymentMethod },
     ]);
   }
 
@@ -341,7 +341,7 @@ export default function App() {
   }
 
   function priceFor(child: ChildDraft) {
-    return child.priceMinor === null ? 0 : Math.round(child.priceMinor);
+    return child.hourlyPriceMinor === null ? 0 : Math.round(child.hourlyPriceMinor * child.durationHours);
   }
 
   const total = children.reduce((sum, child) => sum + priceFor(child), 0);
@@ -362,6 +362,7 @@ export default function App() {
     ...(isAdmin&&hasPermission("settings")?["settings" as Screen]:[]),
     ...(reportAccess?["reports" as Screen]:[]),
     ...(canOperate&&hasPermission("cafe")?["cafe" as Screen]:[]),
+    ...(canOperate&&hasPermission("cafe_items")?["cafe_management" as Screen]:[]),
     ...(canOperate&&hasPermission("shift")?["admin" as Screen]:[]),
   ];
   useEffect(()=>{if(authUser&&!permittedScreens.includes(screen)){setScreen(permittedScreens[0]??"reports")}},[authUser,screen,authPermissionKeys.join("|")]);
@@ -495,7 +496,7 @@ export default function App() {
     setGuardianRelation("Guardian");
     setChildren(Array.from({ length: Math.max(1, booking.childCount) }, () => ({
       key: makeId(), name: "", ruleId: rules[0]?.id ?? "", durationHours,
-      hourlyRateMinor: null, priceMinor: null, paymentMethod,
+      hourlyRateMinor: null, hourlyPriceMinor: null, paymentMethod,
     })));
     setError("");
     setMessage(booking.type === "birthday"
@@ -528,14 +529,14 @@ export default function App() {
           child.durationHours < 0.25 ||
           child.durationHours > 12 ||
           !Number.isInteger(child.durationHours * 4) ||
-          (child.priceMinor === null || !Number.isFinite(child.priceMinor) || child.priceMinor < 0) ||
+          (child.hourlyPriceMinor === null || !Number.isFinite(child.hourlyPriceMinor) || child.hourlyPriceMinor <= 0) ||
           (child.hourlyRateMinor === null || !Number.isFinite(child.hourlyRateMinor) || child.hourlyRateMinor <= 0)
       )
     ) {
       setError(
         ar
-          ? "أدخل اسم كل طفل وسعره يدويًا وسعر ساعة الإضافي، والمدة من 0.25 إلى 12 ساعة."
-          : "Enter each child's name and individual price, overtime hourly rate, and duration from 0.25 to 12 hours."
+          ? "أدخل اسم كل طفل وسعر الساعة وسعر ساعة الإضافي، والمدة من 0.25 إلى 12 ساعة."
+          : "Enter each child's name, hourly price, overtime hourly rate, and duration from 0.25 to 12 hours."
       );
       return;
     }
@@ -584,8 +585,6 @@ export default function App() {
         (sum, child) => sum + priceFor(child),
         0
       );
-      const firstRule = rules.find((rule) => rule.id === cleanChildren[0].ruleId);
-
       await db.execute(
         `INSERT INTO local_visits
          (id, visit_number_local, guardian_id, guardian_name_snapshot,
@@ -603,7 +602,7 @@ export default function App() {
           guardianPhone.trim(),
           cleanChildren.length,
           timestamp,
-          firstRule?.pricing_type ?? "fixed",
+          "hourly",
           amountBeforeDiscount,
           amountBeforeDiscount,
           timestamp,
@@ -613,8 +612,6 @@ export default function App() {
       visitInserted = true;
 
       for (const row of childRows) {
-        const selectedRule = rules.find((rule) => rule.id === row.child.ruleId) ?? null;
-
         const bookedMinutes = Math.round(row.child.durationHours * 60);
         const baseAmount = priceFor(row.child);
 
@@ -635,15 +632,16 @@ export default function App() {
           [
             row.pricingId,
             row.id,
-            selectedRule?.pricing_type ?? "fixed",
-            selectedRule?.id ?? null,
+            "hourly",
+            null,
             baseAmount,
             baseAmount,
             bookedMinutes,
             JSON.stringify({
-              ruleName: selectedRule?.name ?? "تسعير يدوي",
-              pricingType: selectedRule?.pricing_type ?? "fixed",
-              initialEstimate: selectedRule?.pricing_type === "hourly",
+              ruleName: "تسعير بالساعة",
+              pricingType: "hourly",
+              initialEstimate: true,
+              hourlyPriceMinor: row.child.hourlyPriceMinor,
               paymentMethod: row.child.paymentMethod,
               bookedDurationMinutes: bookedMinutes,
               hourlyRateMinor: row.child.hourlyRateMinor,
@@ -681,7 +679,7 @@ export default function App() {
       setVisitCouponCode("");
       setGuardianRelation("Mother");
       setChildren([
-        { key: makeId(), name: "", ruleId: "", durationHours: 1, hourlyRateMinor: null, priceMinor: null, paymentMethod },
+        { key: makeId(), name: "", ruleId: "", durationHours: 1, hourlyRateMinor: null, hourlyPriceMinor: null, paymentMethod },
       ]);
       setMessage(
         ar
@@ -952,7 +950,8 @@ export default function App() {
         {reportAccess && <button className={screen === "reports" ? "active" : ""} onClick={() => setScreen("reports")}>
           {ar ? "التقارير والتصدير" : "Reports & Export"}
         </button>}
-        {canOperate && hasPermission("cafe") && <button className={screen === "cafe" ? "active" : ""} onClick={() => setScreen("cafe")}>{ar ? "الكافيه والمخزون" : "Café & Inventory"}</button>}
+        {canOperate && hasPermission("cafe") && <button className={screen === "cafe" ? "active" : ""} onClick={() => setScreen("cafe")}>{ar ? "طلبات الكافيه" : "Café Orders"}</button>}
+        {canOperate && hasPermission("cafe_items") && <button className={screen === "cafe_management" ? "active" : ""} onClick={() => setScreen("cafe_management")}>{ar ? "إدارة الكافيه والمخزون" : "Café Management"}</button>}
         {canOperate && hasPermission("shift") && <button className={screen === "admin" ? "active" : ""} onClick={() => setScreen("admin")}>
           {ar ? "الوردية والصندوق" : "Shift & Cash"}
         </button>}
@@ -975,8 +974,8 @@ export default function App() {
                   ? (ar ? "مركز التقارير والتصدير" : "Reports Center")
                   : screen === "admin"
                     ? (ar ? "الموظفون والورديات" : "Staff & Shifts")
-                    : screen === "cafe"
-                      ? (ar ? "الكافيه والمخزون" : "Café & Inventory")
+                    : screen === "cafe" || screen === "cafe_management"
+                      ? (screen === "cafe" ? (ar ? "طلبات الكافيه" : "Café Orders") : (ar ? "إدارة الكافيه والمخزون" : "Café Management"))
                       : tr("Settings")}
         </h2>
         <p>
@@ -996,8 +995,8 @@ export default function App() {
                   ? (ar ? "اختار البيانات والفلاتر والأعمدة وشكل التقرير ثم صدّره." : "Choose data, filters, columns, and export format.")
                   : screen === "admin"
                     ? (ar ? "إدارة الحسابات وكلمات المرور والورديات وسجل المراجعة." : "Manage accounts, passwords, shifts and audit history.")
-                    : screen === "cafe"
-                      ? (ar ? "إدارة مبيعات الكافيه والأصناف والوصفات والمخزون والمشتريات." : "Manage café sales, items, recipes, stock and purchases.")
+                    : screen === "cafe" || screen === "cafe_management"
+                      ? (screen === "cafe" ? (ar ? "تسجيل طلبات الكافيه وتحصيلها وطباعة الإيصال." : "Create café orders, collect payment and print receipts.") : (ar ? "إدارة الأصناف والوصفات والمخزون والمشتريات والموردين." : "Manage items, recipes, inventory, purchases and suppliers."))
                       : tr("Choose the language used throughout the application.")}
         </p>
       </section>
@@ -1034,7 +1033,9 @@ export default function App() {
         </section>
         </>
       ) : screen === "cafe" && canOperate && hasPermission("cafe") ? (
-        <CafeCenter canManage={canManage} canManageItems={isAdmin || hasPermission("cafe_items")} canManagePricing={hasPermission("pricing")} canApplyDiscounts={hasPermission("discounts")} activeChildren={activeChildren} />
+        <CafeCenter mode="sales" canManage={canManage} canManageItems={isAdmin || hasPermission("cafe_items")} canManagePricing={hasPermission("pricing")} canApplyDiscounts={hasPermission("discounts")} activeChildren={activeChildren} />
+      ) : screen === "cafe_management" && canOperate && hasPermission("cafe_items") ? (
+        <CafeCenter mode="management" canManage={canManage} canManageItems={isAdmin || hasPermission("cafe_items")} canManagePricing={hasPermission("pricing")} canApplyDiscounts={hasPermission("discounts")} activeChildren={activeChildren} />
       ) : screen === "admin" && canOperate && hasPermission("shift") ? (
         <AdminTools user={authUser} onLogout={() => { void invoke("logout_user").finally(() => setAuthUser(null)); }}  />
       ) : screen === "reports" && reportAccess ? (
@@ -1199,7 +1200,7 @@ export default function App() {
             {rules.length === 0 && (
               <div className="empty-state">
                 <strong>{tr("No pricing rules configured yet.")}</strong>
-                <p>{ar ? "يمكنك إدخال سعر كل طفل وسعر ساعة الإضافي يدويًا دون إنشاء قاعدة تسعير." : "You can enter each child's price and overtime hourly rate manually without creating a pricing rule."}</p>
+                <p>{ar ? "أدخل سعر الساعة لكل طفل، وسيُحسب السعر الأساسي تلقائيًا حسب مدة الحجز، مع تحديد سعر ساعة الإضافي." : "Enter each child's hourly price; the booked price is calculated from the duration, with a separate overtime rate."}</p>
                 {hasPermission("pricing") && <button type="button" className="secondary-button" onClick={() => setScreen("pricing")}>{tr("Set up pricing")}</button>}
               </div>
             )}
@@ -1212,13 +1213,9 @@ export default function App() {
                     <label className="child-name">{tr("Child name")}
                       <input value={child.name} onChange={(e) => updateChild(child.key, "name", e.target.value)} required placeholder={tr("Child's name")} />
                     </label>
-                    <label className="child-pricing child-rule-field">{tr("Pricing rule")}
-                      <select value={child.ruleId} onChange={(e) => updateChild(child.key, "ruleId", e.target.value)}>
-                        <option value="">{ar ? "تسعير يدوي" : "Manual price"}</option>
-                        {rules.map((rule) => <option key={rule.id} value={rule.id}>{rule.name} · {tr(rule.pricing_type)}</option>)}
-                      </select>
+                    <label className="child-pricing child-rule-field">{ar ? "سعر الساعة (جنيه)" : "Hourly price (EGP)"}
+                      <input type="text" inputMode="decimal" required value={child.hourlyPriceMinor === null ? "" : (child.hourlyPriceMinor / 100).toFixed(2)} onChange={e => updateChild(child.key, "hourlyPriceMinor", e.target.value === "" ? null : tryEgpToMinor(e.target.value))} placeholder={ar ? "اكتب قيمة الساعة" : "Enter hourly price"} />
                     </label>
-                    <label className="child-pricing child-base-price">{ar ? "سعر الطفل (جنيه)" : "Child price (EGP)"}<input type="text" inputMode="decimal" required value={child.priceMinor === null ? "" : (child.priceMinor / 100).toFixed(2)} onChange={e => updateChild(child.key, "priceMinor", e.target.value === "" ? null : tryEgpToMinor(e.target.value))} placeholder={ar ? "اكتب سعر هذا الطفل" : "Enter this child's price"} /></label>
                     <label className="booked-hours-field">
                       {ar ? "مدة الحجز (بالساعات)" : "Booked duration (hours)"}
                       <input
@@ -1234,7 +1231,7 @@ export default function App() {
                     </label>
                     <label className="child-pricing child-overtime">{ar ? "سعر ساعة الإضافي (جنيه)" : "Overtime hourly rate (EGP)"}<input type="text" inputMode="decimal" required value={child.hourlyRateMinor === null ? "" : (child.hourlyRateMinor / 100).toFixed(2)} onChange={e => updateChild(child.key, "hourlyRateMinor", e.target.value === "" ? null : tryEgpToMinor(e.target.value))} placeholder={ar ? "اكتب سعر الساعة" : "Enter hourly rate"} /><span className="muted">{selected?.pricing_type === "hourly" ? (ar ? "يُستخدم لحساب السعر الأساسي والوقت الإضافي." : "Used for the booked hourly price and overtime.") : (ar ? "يُستخدم لحساب أي وقت يتجاوز مدة الحجز." : "Used to calculate time beyond the booked duration.")}</span></label>
                     <div className="child-price">
-                      <span>{tr("Price estimate")}</span>
+                      <span>{ar ? "إجمالي الحجز المحسوب" : "Calculated booking total"}</span>
                       <strong>{money(priceFor(child), language)}</strong>
                     </div>
                     <button type="button" className="remove-button" onClick={() => removeChild(child.key)} disabled={children.length === 1} aria-label={`Remove child ${index + 1}`}>×</button>
