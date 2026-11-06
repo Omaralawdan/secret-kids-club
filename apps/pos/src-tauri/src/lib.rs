@@ -2,10 +2,10 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde_json::{json, Value};
 use std::error::Error;
-use std::io;
+use std::io::{self, Write};
+use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 use tauri::Manager;
-use tauri_plugin_sql::{Migration, MigrationKind};
 use pbkdf2::pbkdf2_hmac;
 use sha2::Sha256;
 use rand::RngCore;
@@ -1790,57 +1790,172 @@ fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
 }
 
+fn sqlite_table_exists(db: &Connection, table: &str) -> rusqlite::Result<bool> {
+    db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+        params![table],
+        |row| row.get(0),
+    )
+}
+
+fn sqlite_column_exists(db: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
+    let mut statement = db.prepare(&format!("PRAGMA table_info({table})"))?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
+    for name in rows {
+        if name? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn ensure_sqlite_column(
+    db: &Connection,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> rusqlite::Result<()> {
+    if !sqlite_column_exists(db, table, column)? {
+        db.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {definition};"))?;
+    }
+    Ok(())
+}
+
+fn write_startup_log(directory: &Path, message: &str) {
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(directory.join("startup.log"))
+    {
+        let _ = writeln!(file, "{} {}", Utc::now().to_rfc3339(), message);
+    }
+}
+
+fn run_startup_migrations(app: &tauri::AppHandle) -> Result<(), Box<dyn Error>> {
+    let directory = app.path().app_config_dir()?;
+    fs::create_dir_all(&directory)?;
+    let database_file = directory.join("secret-kids-club.db");
+    let database_existed = database_file.is_file();
+    write_startup_log(&directory, "Starting local database initialization.");
+
+    let result = (|| -> Result<(), Box<dyn Error>> {
+        let mut db = Connection::open(&database_file)?;
+        db.pragma_update(None, "foreign_keys", "ON")?;
+        let has_existing_schema = database_existed && sqlite_table_exists(&db, "local_users")?;
+
+        db.execute_batch("BEGIN IMMEDIATE;")?;
+        let migration_result = (|| -> Result<(), Box<dyn Error>> {
+            db.execute_batch(
+                "CREATE TABLE IF NOT EXISTS local_app_migrations (
+                    version INTEGER PRIMARY KEY,
+                    description TEXT NOT NULL,
+                    applied_at TEXT NOT NULL
+                );",
+            )?;
+
+            if has_existing_schema {
+                // Existing installations predate the SQL plugin migration ledger.
+                // Never replay migrations 1-21 against their live business tables.
+                db.execute(
+                    "INSERT OR IGNORE INTO local_app_migrations(version,description,applied_at)
+                     VALUES(21,'legacy_database_baseline',?1)",
+                    params![Utc::now().to_rfc3339()],
+                )?;
+
+                ensure_sqlite_column(&db, "local_visits", "entry_sale_id", "TEXT REFERENCES local_sales(id)")?;
+                db.execute_batch(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS local_visits_entry_sale_idx
+                     ON local_visits(entry_sale_id) WHERE entry_sale_id IS NOT NULL;",
+                )?;
+
+                ensure_sqlite_column(&db, "local_inventory_items", "image_data_url", "TEXT")?;
+                db.execute_batch(include_str!("../migrations/024_cafe_expiry_batch_tracking.sql"))?;
+
+                for (version, description) in [
+                    (22, "visit_entry_collection"),
+                    (23, "cafe_item_images"),
+                    (24, "cafe_expiry_batch_tracking"),
+                ] {
+                    db.execute(
+                        "INSERT OR IGNORE INTO local_app_migrations(version,description,applied_at)
+                         VALUES(?1,?2,?3)",
+                        params![version, description, Utc::now().to_rfc3339()],
+                    )?;
+                }
+            } else {
+                // A genuinely new database gets the complete schema exactly once.
+                let migrations: [(i64, &str, &str); 24] = [
+                    (1, "create_local_pos_schema", include_str!("../migrations/001_local_schema_migration.sql")),
+                    (2, "add_pricing_discounts_and_memberships", include_str!("../migrations/002_pricing_schema.sql")),
+                    (3, "customer_profiles_and_membership_usage", include_str!("../migrations/003_customer_profiles_and_membership_usage.sql")),
+                    (4, "auth_shifts_audit", include_str!("../migrations/004_auth_shifts_audit.sql")),
+                    (5, "role_write_guards", include_str!("../migrations/005_role_write_guards.sql")),
+                    (6, "pricing_role_policy", include_str!("../migrations/006_pricing_role_policy.sql")),
+                    (7, "partial_collection_and_membership_sales", include_str!("../migrations/007_partial_collection_and_membership_sales.sql")),
+                    (8, "membership_overtime_rate", include_str!("../migrations/008_membership_overtime_rate.sql")),
+                    (9, "waivers_and_visit_cancellations", include_str!("../migrations/009_waivers_and_visit_cancellations.sql")),
+                    (10, "shift_payments_expenses_refunds", include_str!("../migrations/010_shift_payments_expenses_refunds.sql")),
+                    (11, "shift_variance_reason", include_str!("../migrations/011_shift_variance_reason.sql")),
+                    (12, "operations_inventory_and_fixed_expenses", include_str!("../migrations/012_operations_inventory_and_fixed_expenses.sql")),
+                    (13, "custom_employee_permissions", include_str!("../migrations/013_custom_employee_permissions.sql")),
+                    (14, "extended_payment_methods", include_str!("../migrations/014_extended_payment_methods.sql")),
+                    (15, "membership_partial_payments", include_str!("../migrations/015_membership_partial_payments.sql")),
+                    (16, "bookings_and_birthday_parties", include_str!("../migrations/016_bookings_and_birthday_parties.sql")),
+                    (17, "coupons", include_str!("../migrations/017_coupons.sql")),
+                    (18, "booking_visit_link", include_str!("../migrations/018_booking_visit_link.sql")),
+                    (19, "custom_pricing_guards", include_str!("../migrations/019_custom_pricing_guards.sql")),
+                    (20, "visit_coupons", include_str!("../migrations/020_visit_coupons.sql")),
+                    (21, "shift_inventory_reconciliation", include_str!("../migrations/021_shift_inventory_reconciliation.sql")),
+                    (22, "visit_entry_collection", include_str!("../migrations/022_visit_entry_collection.sql")),
+                    (23, "cafe_item_images", include_str!("../migrations/023_cafe_item_images.sql")),
+                    (24, "cafe_expiry_batch_tracking", include_str!("../migrations/024_cafe_expiry_batch_tracking.sql")),
+                ];
+                for (version, description, sql) in migrations {
+                    db.execute_batch(sql).map_err(|error| {
+                        io::Error::new(
+                            io::ErrorKind::Other,
+                            format!("Database migration {version} ({description}) failed: {error}"),
+                        )
+                    })?;
+                    db.execute(
+                        "INSERT OR IGNORE INTO local_app_migrations(version,description,applied_at)
+                         VALUES(?1,?2,?3)",
+                        params![version, description, Utc::now().to_rfc3339()],
+                    )?;
+                }
+            }
+            Ok(())
+        })();
+
+        if let Err(error) = migration_result {
+            let _ = db.execute_batch("ROLLBACK;");
+            return Err(error);
+        }
+        db.execute_batch("COMMIT;")?;
+        Ok(())
+    })();
+
+    match result {
+        Ok(()) => {
+            write_startup_log(&directory, "Local database initialization completed.");
+            Ok(())
+        }
+        Err(error) => {
+            write_startup_log(&directory, &format!("Local database initialization failed: {error}"));
+            Err(error)
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let migrations = vec![
-        Migration {
-            version: 1,
-            description: "create_local_pos_schema",
-            sql: include_str!("../migrations/001_local_schema_migration.sql"),
-            kind: MigrationKind::Up,
-        },
-        Migration {
-            version: 2,
-            description: "add_pricing_discounts_and_memberships",
-            sql: include_str!("../migrations/002_pricing_schema.sql"),
-            kind: MigrationKind::Up,
-        },
-        Migration {
-            version: 3,
-            description: "customer_profiles_and_membership_usage",
-            sql: include_str!("../migrations/003_customer_profiles_and_membership_usage.sql"),
-            kind: MigrationKind::Up,
-        },
-        Migration { version: 4, description: "auth_shifts_audit", sql: include_str!("../migrations/004_auth_shifts_audit.sql"), kind: MigrationKind::Up },
-        Migration { version: 5, description: "role_write_guards", sql: include_str!("../migrations/005_role_write_guards.sql"), kind: MigrationKind::Up },
-        Migration { version: 6, description: "pricing_role_policy", sql: include_str!("../migrations/006_pricing_role_policy.sql"), kind: MigrationKind::Up },
-        Migration { version: 7, description: "partial_collection_and_membership_sales", sql: include_str!("../migrations/007_partial_collection_and_membership_sales.sql"), kind: MigrationKind::Up },
-        Migration { version: 8, description: "membership_overtime_rate", sql: include_str!("../migrations/008_membership_overtime_rate.sql"), kind: MigrationKind::Up },
-        Migration { version: 9, description: "waivers_and_visit_cancellations", sql: include_str!("../migrations/009_waivers_and_visit_cancellations.sql"), kind: MigrationKind::Up },
-        Migration { version: 10, description: "shift_payments_expenses_refunds", sql: include_str!("../migrations/010_shift_payments_expenses_refunds.sql"), kind: MigrationKind::Up },
-        Migration { version: 11, description: "shift_variance_reason", sql: include_str!("../migrations/011_shift_variance_reason.sql"), kind: MigrationKind::Up },
-        Migration { version: 12, description: "operations_inventory_and_fixed_expenses", sql: include_str!("../migrations/012_operations_inventory_and_fixed_expenses.sql"), kind: MigrationKind::Up },
-        Migration { version: 13, description: "custom_employee_permissions", sql: include_str!("../migrations/013_custom_employee_permissions.sql"), kind: MigrationKind::Up },
-        Migration { version: 14, description: "extended_payment_methods", sql: include_str!("../migrations/014_extended_payment_methods.sql"), kind: MigrationKind::Up },
-        Migration { version: 15, description: "membership_partial_payments", sql: include_str!("../migrations/015_membership_partial_payments.sql"), kind: MigrationKind::Up },
-        Migration { version: 16, description: "bookings_and_birthday_parties", sql: include_str!("../migrations/016_bookings_and_birthday_parties.sql"), kind: MigrationKind::Up },
-        Migration { version: 17, description: "coupons", sql: include_str!("../migrations/017_coupons.sql"), kind: MigrationKind::Up },
-        Migration { version: 18, description: "booking_visit_link", sql: include_str!("../migrations/018_booking_visit_link.sql"), kind: MigrationKind::Up },
-        Migration { version: 19, description: "custom_pricing_guards", sql: include_str!("../migrations/019_custom_pricing_guards.sql"), kind: MigrationKind::Up },
-        Migration { version: 20, description: "visit_coupons", sql: include_str!("../migrations/020_visit_coupons.sql"), kind: MigrationKind::Up },
-        Migration { version: 21, description: "shift_inventory_reconciliation", sql: include_str!("../migrations/021_shift_inventory_reconciliation.sql"), kind: MigrationKind::Up },
-        Migration { version: 22, description: "visit_entry_collection", sql: include_str!("../migrations/022_visit_entry_collection.sql"), kind: MigrationKind::Up },
-        Migration { version: 23, description: "cafe_item_images", sql: include_str!("../migrations/023_cafe_item_images.sql"), kind: MigrationKind::Up },
-        Migration { version: 24, description: "cafe_expiry_batch_tracking", sql: include_str!("../migrations/024_cafe_expiry_batch_tracking.sql"), kind: MigrationKind::Up },
-    ];
-
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .plugin(
-            tauri_plugin_sql::Builder::default()
-                .add_migrations("sqlite:secret-kids-club.db", migrations)
-                .build(),
-        )
+        .plugin(tauri_plugin_sql::Builder::default().build())
+        .setup(|app| {
+            run_startup_migrations(app.handle())?;
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![greet, list_coupons, save_coupon, set_coupon_active, apply_visit_coupon, create_membership_sale, list_bookings, save_booking, update_booking_status, list_cafe_stock_movements, record_cafe_stock_count, list_cafe_expiry_alerts, save_cafe_recipe, list_cafe_recipes, create_cafe_sale, get_visit_cafe_due, list_cancellable_cafe_sales, cancel_cafe_sale, collect_visit_entry, list_cafe_items, save_cafe_item, adjust_cafe_stock, record_cafe_purchase, save_cafe_supplier, list_cafe_suppliers, cancel_membership, record_membership_payment, record_cash_movement, list_monthly_expenses, save_monthly_expense, checkout_child, extend_visit_child, cancel_visit, update_membership_overtime_rate, list_refundable_payments, record_expense, record_refund, auth_status, setup_first_admin, login_user, logout_user, change_own_password, admin_list_users, admin_set_user_permissions, admin_create_user, admin_set_user_active, admin_reset_user_password, admin_update_user_role, admin_delete_user, delete_pricing_rule, create_pricing_rule, get_active_cash_shift, get_shift_inventory_reconciliation, record_shift_inventory_count, open_cash_shift, close_cash_shift, admin_audit_log])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
