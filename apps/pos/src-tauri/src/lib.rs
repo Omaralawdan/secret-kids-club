@@ -436,7 +436,7 @@ fn extend_visit_child(app:tauri::AppHandle,visit_child_id:String,additional_minu
     }
     let mut db=auth_db(&app)?;
     require_permission(&db,"active")?;
-    require_permission(&db,"pricing")?;
+    require_permission(&db,"extend_time")?;
     let(actor,_)=require_role(&db,&["admin","manager","cashier"])?;
     let tx=db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
     let row:Option<(String,String,String,i64,i64,i64,String,Option<String>,String)>=tx.query_row(
@@ -524,7 +524,7 @@ fn require_permission(db:&Connection,permission:&str)->Result<(String,Vec<String
  if roles.iter().any(|r|r=="admin"){return Ok((id,roles))}
  let stored:String=db.query_row("SELECT permissions_json FROM local_users WHERE id=?",params![id],|r|r.get(0)).map_err(|e|e.to_string())?;
  let parsed:Vec<String>=serde_json::from_str(&stored).unwrap_or_default();
- let allowed=if parsed.iter().any(|p|p=="all"){true}else if parsed.iter().any(|p|p=="__custom__"){parsed.iter().any(|p|p==permission)}else if roles.iter().any(|r|r=="manager"){["reception","active","packages","cafe","cafe_items","reports","shift","pricing","bookings","overtime_waive","discounts"].contains(&permission)}else if roles.iter().any(|r|r=="cashier"){["reception","active","packages","cafe","shift","bookings","discounts"].contains(&permission)}else if roles.iter().any(|r|r=="viewer"){permission=="reports"}else{false};
+ let allowed=if parsed.iter().any(|p|p=="all"){true}else if parsed.iter().any(|p|p=="__custom__"){parsed.iter().any(|p|p==permission)}else if roles.iter().any(|r|r=="manager"){["reception","active","packages","cafe","cafe_items","reports","shift","pricing","bookings","overtime_waive","discounts","extend_time"].contains(&permission)}else if roles.iter().any(|r|r=="cashier"){["reception","active","packages","cafe","shift","bookings","discounts"].contains(&permission)}else if roles.iter().any(|r|r=="viewer"){permission=="reports"}else{false};
  if allowed{Ok((id,roles))}else{Err("هذه الوظيفة غير مفعّلة في صلاحيات حسابك.".into())}
 }
 #[tauri::command]
@@ -570,7 +570,7 @@ fn admin_list_users(app:tauri::AppHandle)->Result<Vec<Value>,String>{
 }
 #[tauri::command]
 fn admin_set_user_permissions(app:tauri::AppHandle,user_id:String,permissions:Vec<String>)->Result<(),String>{
- let allowed=["reception","active","packages","cafe","cafe_items","reports","shift","pricing","settings","bookings","overtime_waive","discounts"];
+ let allowed=["reception","active","packages","cafe","cafe_items","reports","shift","pricing","settings","bookings","overtime_waive","discounts","extend_time"];
  if permissions.iter().any(|p|!allowed.contains(&p.as_str())){return Err("تم إرسال صلاحية غير معروفة.".into())}
  let mut db=auth_db(&app)?;
  let (actor,actor_roles)=require_role(&db,&["admin","manager"])?;
@@ -580,7 +580,7 @@ fn admin_set_user_permissions(app:tauri::AppHandle,user_id:String,permissions:Ve
    if actor==user_id || target_roles.iter().any(|r|r=="admin"||r=="manager") {
      return Err("مدير الوردية يمكنه تخصيص صلاحيات الكاشير ومستخدم التقارير فقط.".into());
    }
-   let manager_assignable=["reception","active","packages","cafe","cafe_items","reports","shift","pricing","bookings","overtime_waive","discounts"];
+   let manager_assignable=["reception","active","packages","cafe","cafe_items","reports","shift","pricing","bookings","overtime_waive","discounts","extend_time"];
    if permissions.iter().any(|p|!manager_assignable.contains(&p.as_str())) {
      return Err("لا يمكن لمدير الوردية منح صلاحيات إعداد الأسعار أو الإعدادات أو إدارة النظام.".into());
    }

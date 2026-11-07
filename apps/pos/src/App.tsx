@@ -348,7 +348,7 @@ export default function App() {
   const total = children.reduce((sum, child) => sum + priceFor(child), 0);
   const ready = databaseStatus === "Connected" && db !== null;
   const authRoles: string[] = (() => { try { return authUser ? JSON.parse(authUser.roles) : []; } catch { return []; } })();
-  const authPermissionKeys: string[] = (() => { if(authRoles.includes("admin"))return ["all"]; try { const p=authUser?.permissions?JSON.parse(authUser.permissions):[]; if(Array.isArray(p)&&p.includes("all"))return ["all"]; if(Array.isArray(p)&&p.includes("__custom__"))return p.filter((x:string)=>x!=="__custom__"); } catch {} return authRoles.includes("admin")?["all"]:authRoles.includes("manager")?["reception","active","packages","cafe","cafe_items","reports","shift","pricing","bookings","overtime_waive","discounts"]:authRoles.includes("cashier")?["reception","active","packages","cafe","shift","bookings","discounts"]:authRoles.includes("viewer")?["reports"]:[]; })();
+  const authPermissionKeys: string[] = (() => { if(authRoles.includes("admin"))return ["all"]; try { const p=authUser?.permissions?JSON.parse(authUser.permissions):[]; if(Array.isArray(p)&&p.includes("all"))return ["all"]; if(Array.isArray(p)&&p.includes("__custom__"))return p.filter((x:string)=>x!=="__custom__"); } catch {} return authRoles.includes("admin")?["all"]:authRoles.includes("manager")?["reception","active","packages","cafe","cafe_items","reports","shift","pricing","bookings","overtime_waive","discounts","extend_time"]:authRoles.includes("cashier")?["reception","active","packages","cafe","shift","bookings","discounts"]:authRoles.includes("viewer")?["reports"]:[]; })();
   const hasPermission = (key:string) => authPermissionKeys.includes("all") || authPermissionKeys.includes(key);
   const isAdmin = authRoles.includes("admin");
   const canManage = isAdmin || authRoles.includes("manager");
@@ -741,7 +741,7 @@ export default function App() {
   }
 
   async function extendVisitChild(child: ActiveChild) {
-    if (!db || !hasPermission("pricing") || child.pricing_type === "membership") return;
+    if (!db || !hasPermission("extend_time") || child.pricing_type === "membership") return;
     const hoursText = window.prompt(ar
       ? "مدة التمديد بالساعات (0.25 أو 0.5 أو 1):"
       : "Extension duration in hours (0.25, 0.5 or 1):", "0.25");
@@ -1137,7 +1137,7 @@ export default function App() {
                         language
                       )}</strong>
                     </div>
-                    {hasPermission("pricing") && child.pricing_type !== "membership" && <button type="button" className="secondary-button" disabled={!ready || checkoutId !== ""} onClick={() => void extendVisitChild(child)}>{ar ? "تمديد الوقت" : "Extend time"}</button>}
+                    {hasPermission("extend_time") && child.pricing_type !== "membership" && <button type="button" className="secondary-button" disabled={!ready || checkoutId !== ""} onClick={() => void extendVisitChild(child)}>{ar ? "تمديد الوقت" : "Extend time"}</button>}
                     <button
                       type="button"
                       className="primary-button"
