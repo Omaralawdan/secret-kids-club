@@ -1235,8 +1235,8 @@ fn create_membership_sale(
         coupon_id=Some(id);
     }
     let total_minor=plan_price.checked_sub(discount_minor).ok_or("حساب الخصم غير صحيح.")?;
-    let paid=amount_paid_minor.unwrap_or(total_minor);
-    if paid<=0 || paid>total_minor { return Err(format!("المدفوع يجب أن يكون أكبر من صفر ولا يتجاوز صافي الباقة: {} جنيه.",total_minor as f64/100.0)); }
+    let paid=amount_paid_minor.unwrap_or(0);
+    if paid<0 || paid>total_minor { return Err(format!("المدفوع لا يجوز أن يكون سالبًا أو يتجاوز صافي الباقة: {} جنيه.",total_minor as f64/100.0)); }
     let sale_id=uuid::Uuid::new_v4().to_string();
     let sale_number:i64=tx.query_row("SELECT COALESCE(MAX(sale_number_local),0)+1 FROM local_sales",[],|r|r.get(0)).map_err(|e|e.to_string())?;
     tx.execute(
@@ -1255,11 +1255,13 @@ fn create_membership_sale(
         "INSERT INTO local_child_memberships(id,child_id,child_name_snapshot,guardian_phone_snapshot,plan_id,purchased_at,starts_at,expires_at,included_minutes,used_minutes,status,sync_state,sale_id) VALUES(?,NULL,?,?,?,?,?,?,?,0,'active','pending',?)",
         params![membership_id,child_name.trim(),guardian_phone.trim(),plan_id,purchased_at,purchased_at,expires,included_minutes,sale_id]
     ).map_err(|e|e.to_string())?;
-    let stored_method=if ["visa","other"].contains(&method.as_str()){"wallet"}else{method.as_str()};
-    tx.execute(
-        "INSERT INTO local_payments(id,sale_id,visit_id,method,method_label,status,amount_minor,external_reference,received_by,created_at,sync_state,cash_session_id) VALUES(?,?,NULL,?,?,'confirmed',?,?,?,?, 'pending',?)",
-        params![uuid::Uuid::new_v4().to_string(),sale_id,stored_method,method,paid,note.trim(),actor,purchased_at,shift_id]
-    ).map_err(|e|e.to_string())?;
+    if paid>0 {
+        let stored_method=if ["visa","other"].contains(&method.as_str()){"wallet"}else{method.as_str()};
+        tx.execute(
+            "INSERT INTO local_payments(id,sale_id,visit_id,method,method_label,status,amount_minor,external_reference,received_by,created_at,sync_state,cash_session_id) VALUES(?,?,NULL,?,?,'confirmed',?,?,?,?, 'pending',?)",
+            params![uuid::Uuid::new_v4().to_string(),sale_id,stored_method,method,paid,note.trim(),actor,purchased_at,shift_id]
+        ).map_err(|e|e.to_string())?;
+    }
     if let Some(id)=coupon_id.as_deref(){tx.execute("UPDATE local_coupons SET used_count=used_count+1 WHERE id=?",params![id]).map_err(|e|e.to_string())?;}
     tx.execute(
         "INSERT INTO local_audit_log(id,actor_user_id,action,entity_type,entity_id,reason,after_json,created_at) VALUES(lower(hex(randomblob(16))),?,'membership_sale_created','membership',?,?,?,?)",
