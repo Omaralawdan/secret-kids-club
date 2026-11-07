@@ -204,6 +204,7 @@ export default function App() {
   const [ruleAmount, setRuleAmount] = useState("");
   const [ruleDurationHours, setRuleDurationHours] = useState("1");
   const [membershipPlans,setMembershipPlans]=useState<MembershipPlan[]>([]);
+  const [allMembershipPlans,setAllMembershipPlans]=useState<MembershipPlan[]>([]);
   const [memberships,setMemberships]=useState<ChildMembership[]>([]);
   const [planName,setPlanName]=useState(""); const [planPrice,setPlanPrice]=useState(""); const [planHours,setPlanHours]=useState("20"); const [planValidity,setPlanValidity]=useState("30"); const [planOvertimeRate,setPlanOvertimeRate]=useState("");
   const [memberName,setMemberName]=useState(""); const [memberPhone,setMemberPhone]=useState(""); const [memberPlanId,setMemberPlanId]=useState(""); const [memberPaymentMethod,setMemberPaymentMethod]=useState<"cash"|"instapay"|"wallet"|"visa"|"other">("cash"); const [memberPaymentAmount,setMemberPaymentAmount]=useState(""); const [memberPaymentNote,setMemberPaymentNote]=useState(""); const [memberCouponCode,setMemberCouponCode]=useState(""); const [membershipPaymentHistory,setMembershipPaymentHistory]=useState<Record<string,MembershipPayment[]>>({});
@@ -217,7 +218,9 @@ export default function App() {
     );
     setRules(loadedRules);
     try {
-      setMembershipPlans(await connection.select<MembershipPlan[]>("SELECT id,name,price_minor,included_minutes,validity_days,overtime_rate_minor,is_active FROM local_membership_plans WHERE is_active=1 ORDER BY name"));
+      const loadedPlans=await connection.select<MembershipPlan[]>("SELECT id,name,price_minor,included_minutes,validity_days,overtime_rate_minor,is_active FROM local_membership_plans ORDER BY is_active DESC,name");
+      setAllMembershipPlans(loadedPlans);
+      setMembershipPlans(loadedPlans.filter(plan=>plan.is_active===1));
       setMemberships(await connection.select<ChildMembership[]>("SELECT m.id,m.child_name_snapshot,m.guardian_phone_snapshot,m.plan_id,p.name AS plan_name,m.purchased_at,m.expires_at,m.included_minutes,m.used_minutes,p.overtime_rate_minor,m.status,m.sale_id,COALESCE((SELECT SUM(pay.amount_minor) FROM local_payments pay WHERE pay.sale_id=m.sale_id AND pay.status='confirmed'),0) AS paid_minor,MAX(0,COALESCE((SELECT sale.total_minor FROM local_sales sale WHERE sale.id=m.sale_id),p.price_minor)-COALESCE((SELECT SUM(pay.amount_minor) FROM local_payments pay WHERE pay.sale_id=m.sale_id AND pay.status='confirmed'),0)) AS remaining_minor FROM local_child_memberships m JOIN local_membership_plans p ON p.id=m.plan_id ORDER BY m.purchased_at DESC"));
     } catch { /* Membership tables are created by the installed schema migration. */ }
 
@@ -400,6 +403,31 @@ export default function App() {
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
+  }
+
+  async function removeOrDeactivateMembershipPlan(plan:MembershipPlan) {
+    if(!db)return;
+    try {
+      const usage=await db.select<{total:number}[]>("SELECT COUNT(*) AS total FROM local_child_memberships WHERE plan_id=?",[plan.id]);
+      const used=(usage[0]?.total??0)>0;
+      if(used) {
+        if(!window.confirm("الباقة مرتبطة باشتراكات مسجلة بالفعل. سيتم إيقافها عن البيع فقط مع الاحتفاظ بكل اشتراكات الأطفال وسجلاتهم. هل تريد المتابعة؟"))return;
+        await db.execute("UPDATE local_membership_plans SET is_active=0 WHERE id=?",[plan.id]);
+        setMessage("تم إيقاف الباقة عن البيع مع الاحتفاظ بسجلات المشتركين.");
+      } else {
+        if(!window.confirm("هذه الباقة لم تُستخدم في أي اشتراك. سيتم حذف تعريفها نهائيًا. هل تريد المتابعة؟"))return;
+        await db.execute("DELETE FROM local_membership_plans WHERE id=? AND NOT EXISTS (SELECT 1 FROM local_child_memberships WHERE plan_id=?)",[plan.id,plan.id]);
+        setMessage("تم حذف الباقة.");
+      }
+      await refreshData(db);setError("");
+    } catch(e) {setError(String(e));}
+  }
+  async function setMembershipPlanActive(plan:MembershipPlan,active:boolean) {
+    if(!db)return;
+    try {
+      await db.execute("UPDATE local_membership_plans SET is_active=? WHERE id=?",[active?1:0,plan.id]);
+      await refreshData(db);setMessage(active?"تم تفعيل الباقة للبيع مرة أخرى.":"تم إيقاف الباقة عن البيع.");setError("");
+    } catch(e) {setError(String(e));}
   }
 
   async function createMembershipPlan(e:FormEvent<HTMLFormElement>) {
@@ -1302,6 +1330,22 @@ export default function App() {
               <label>{ar?"مدة الباقة":"Validity"}<select value={planValidity} onChange={e=>setPlanValidity(e.target.value)}><option value="7">{ar?"أسبوع (7 أيام)":"Weekly (7 days)"}</option><option value="30">{ar?"شهر (30 يومًا)":"Monthly (30 days)"}</option></select></label>
               <div className="full-width"><button className="primary-button" type="submit">{ar?"حفظ الباقة":"Save package"}</button></div>
             </form>
+            <div className="rule-list">
+              <h4>{ar?"الباقات المسجلة":"Saved packages"}</h4>
+              {allMembershipPlans.length===0 ? <p className="muted">{ar?"لا توجد باقات محفوظة حتى الآن.":"No packages saved yet."}</p> : allMembershipPlans.map(plan=>(
+                <div className="rule-item" key={plan.id}>
+                  <div>
+                    <strong>{plan.name}</strong>
+                    <span>{plan.validity_days===7?(ar?"أسبوع":"Weekly"):(ar?"شهر":"Monthly")} · {formatDuration(plan.included_minutes,language)}</span>
+                    <span>{ar?"سعر الباقة":"Package price"}: {money(plan.price_minor,language)} · {ar?"ساعة إضافي":"Overtime/hour"}: {money(plan.overtime_rate_minor,language)}</span>
+                    <span>{plan.is_active===1?(ar?"متاحة للبيع":"Active for sale"):(ar?"متوقفة عن البيع":"Inactive")}</span>
+                  </div>
+                  {plan.is_active===1
+                    ? <button type="button" className="remove-button" onClick={()=>void removeOrDeactivateMembershipPlan(plan)}>{ar?"حذف / إيقاف":"Delete / Deactivate"}</button>
+                    : <button type="button" className="secondary-button" onClick={()=>void setMembershipPlanActive(plan,true)}>{ar?"إعادة تفعيل":"Reactivate"}</button>}
+                </div>
+              ))}
+            </div>
             <h4>{ar?"تسجيل طفل في باقة":"Enroll a child"}</h4>
             <form className="form-grid" onSubmit={enrollMembership}>
               <label>{ar?"اسم الطفل":"Child name"}<input value={memberName} onChange={e=>setMemberName(e.target.value)} required/></label>
